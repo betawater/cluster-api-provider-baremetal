@@ -25,7 +25,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
-	infrav1 "github.com/BetaWater/cluster-api-provider-baremetal/api/v1beta2"
+	infrav1 "github.com/BetaWater/cluster-api-provider-baremetal/api/v1beta1"
 )
 
 // BareMetalClusterReconciler reconciles a BareMetalCluster object.

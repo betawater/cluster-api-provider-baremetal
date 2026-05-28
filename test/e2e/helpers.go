@@ -27,7 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	infrav1 "github.com/BetaWater/cluster-api-provider-baremetal/api/v1beta2"
+	infrav1 "github.com/BetaWater/cluster-api-provider-baremetal/api/v1beta1"
 )
 
 // CreateSSHSecret creates an SSH credentials Secret for testing.

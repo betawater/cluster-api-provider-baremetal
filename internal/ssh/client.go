@@ -21,6 +21,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"golang.org/x/crypto/ssh"
 )
 
 // CommandResult holds the result of a remote command execution.

@@ -25,13 +25,13 @@ import (
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
-	clusterv1 "sigs.k8s.io/cluster-api/api/v1beta2"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	infrav1 "github.com/BetaWater/cluster-api-provider-baremetal/api/v1beta2"
+	infrav1 "github.com/BetaWater/cluster-api-provider-baremetal/api/v1beta1"
 	"github.com/BetaWater/cluster-api-provider-baremetal/internal/controllers"
 	"github.com/BetaWater/cluster-api-provider-baremetal/internal/ssh"
 )
