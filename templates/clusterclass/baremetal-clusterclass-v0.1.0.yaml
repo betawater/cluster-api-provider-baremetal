@@ -1,0 +1,38 @@
+# ClusterClass-based Bare Metal Cluster Template
+# Usage: clusterctl generate cluster my-cluster --from templates/clusterclass/baremetal-clusterclass-v0.1.0.yaml
+
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  name: "${CLUSTER_NAME}"
+  namespace: "${NAMESPACE}"
+spec:
+  topology:
+    classRef:
+      name: baremetal-clusterclass-v0.1.0
+    version: "${KUBERNETES_VERSION}"
+    controlPlane:
+      replicas: ${CONTROL_PLANE_MACHINE_COUNT}
+    workers:
+      machineDeployments:
+      - class: default-worker
+        name: md-0
+        replicas: ${WORKER_MACHINE_COUNT}
+    variables:
+    - name: controlPlaneEndpoint
+      value:
+        host: "${CONTROL_PLANE_ENDPOINT_HOST}"
+        port: ${CONTROL_PLANE_ENDPOINT_PORT}
+    - name: credentialsSecret
+      value: "${SSH_CREDENTIALS_SECRET}"
+    - name: kubernetesVersion
+      value: "${KUBERNETES_VERSION}"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: "${SSH_CREDENTIALS_SECRET}"
+  namespace: "${NAMESPACE}"
+stringData:
+  username: "${SSH_USERNAME}"
+  password: "${SSH_PASSWORD}"

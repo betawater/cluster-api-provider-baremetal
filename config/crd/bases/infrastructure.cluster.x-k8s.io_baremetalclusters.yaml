@@ -1,0 +1,120 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.0
+  name: baremetalclusters.infrastructure.cluster.x-k8s.io
+spec:
+  group: infrastructure.cluster.x-k8s.io
+  names:
+    categories:
+    - cluster-api
+    kind: BareMetalCluster
+    listKind: BareMetalClusterList
+    plural: baremetalclusters
+    singular: baremetalcluster
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - description: BareMetalCluster is Ready
+      jsonPath: .status.ready
+      name: Ready
+      type: string
+    - description: API endpoint host
+      jsonPath: .spec.controlPlaneEndpoint.host
+      name: Endpoint
+      type: string
+    - description: API endpoint port
+      jsonPath: .spec.controlPlaneEndpoint.port
+      name: Port
+      type: integer
+    - description: Time duration since creation of BareMetalCluster
+      jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1beta2
+    schema:
+      openAPIV3Schema:
+        description: BareMetalCluster is the Schema for the baremetalclusters API.
+        properties:
+          apiVersion:
+            description: APIVersion defines the versioned schema of this representation of an object.
+            type: string
+          kind:
+            description: Kind is a string value representing the REST resource this object represents.
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: BareMetalClusterSpec defines the desired state of BareMetalCluster.
+            properties:
+              controlPlaneEndpoint:
+                description: ControlPlaneEndpoint represents the endpoint used to communicate with the control plane.
+                properties:
+                  host:
+                    description: The hostname on which the API server is serving.
+                    type: string
+                  port:
+                    description: The port on which the API server is serving.
+                    format: int32
+                    type: integer
+                required:
+                - host
+                - port
+                type: object
+              network:
+                description: Network holds the cluster-level network configuration.
+                properties:
+                  dnsDomain:
+                    description: DNSDomain is the DNS domain for the cluster.
+                    type: string
+                  podCIDR:
+                    description: PodCIDR is the CIDR block for pods.
+                    type: string
+                  serviceCIDR:
+                    description: ServiceCIDR is the CIDR block for services.
+                    type: string
+                type: object
+            type: object
+          status:
+            description: BareMetalClusterStatus defines the observed state of BareMetalCluster.
+            properties:
+              conditions:
+                description: Conditions defines current service state of the BareMetalCluster.
+                items:
+                  description: Condition defines an observation of a Cluster API resource operational state.
+                  properties:
+                    lastTransitionTime:
+                      description: Last time the condition transitioned from one status to another.
+                      format: date-time
+                      type: string
+                    message:
+                      description: Human-readable message indicating details about last transition.
+                      type: string
+                    reason:
+                      description: Unique, one-word, CamelCase reason for the condition's last transition.
+                      type: string
+                    severity:
+                      description: Severity provides more information about the condition.
+                      type: string
+                    status:
+                      description: Status is the status of the condition.
+                      type: string
+                    type:
+                      description: Type is the type of the condition.
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - status
+                  - type
+                  type: object
+                type: array
+              ready:
+                description: Ready indicates that the cluster infrastructure is ready.
+                type: boolean
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
