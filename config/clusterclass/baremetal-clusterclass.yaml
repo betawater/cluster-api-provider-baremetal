@@ -111,6 +111,112 @@ spec:
           minMemoryGB:
             type: integer
             default: 2
+  - name: componentInstall
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          enabled:
+            type: boolean
+            default: true
+          strategy:
+            type: string
+            default: "InstallIfMissing"
+            enum:
+              - "InstallIfMissing"
+              - "AlwaysInstall"
+              - "Skip"
+          containerRuntime:
+            type: object
+            properties:
+              type:
+                type: string
+                default: "containerd"
+                enum:
+                  - "containerd"
+                  - "cri-o"
+                  - "docker"
+              version:
+                type: string
+              registryMirrors:
+                type: array
+                items:
+                  type: string
+          kubernetes:
+            type: object
+            properties:
+              repository:
+                type: object
+                properties:
+                  baseUrl:
+                    type: string
+                  gpgKey:
+                    type: string
+          airGap:
+            type: object
+            properties:
+              enabled:
+                type: boolean
+                default: false
+              binarySource:
+                type: string
+                default: "HTTPServer"
+                enum:
+                  - "HTTPServer"
+                  - "ConfigMap"
+                  - "LocalPath"
+              httpServerConfig:
+                type: object
+                properties:
+                  baseUrl:
+                    type: string
+                  insecureSkipVerify:
+                    type: boolean
+                    default: false
+              preloadImages:
+                type: array
+                items:
+                  type: string
+          timeout:
+            type: string
+            default: "300s"
+          rollbackOnError:
+            type: boolean
+            default: false
+          maxRetries:
+            type: integer
+            default: 3
+  - name: firewall
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          configure:
+            type: boolean
+            default: true
+          autoDetect:
+            type: boolean
+            default: true
+          additionalPorts:
+            type: array
+            items:
+              type: object
+              properties:
+                port:
+                  type: integer
+                protocol:
+                  type: string
+                  default: "tcp"
+                description:
+                  type: string
+  - name: selinux
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          configure:
+            type: boolean
+            default: true
   patches:
   - name: controlPlaneEndpoint
     definitions:
@@ -204,3 +310,75 @@ spec:
         path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/networking/serviceSubnet
         valueFrom:
           variable: serviceCIDR
+  - name: componentInstall
+    definitions:
+    - selector:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        kind: BareMetalMachineTemplate
+        matchResources:
+          controlPlane: true
+      jsonPatches:
+      - op: add
+        path: /spec/template/spec/componentInstall
+        valueFrom:
+          variable: componentInstall
+    - selector:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        kind: BareMetalMachineTemplate
+        matchResources:
+          machineDeploymentClass:
+            names:
+            - default-worker
+      jsonPatches:
+      - op: add
+        path: /spec/template/spec/componentInstall
+        valueFrom:
+          variable: componentInstall
+  - name: firewall
+    definitions:
+    - selector:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        kind: BareMetalMachineTemplate
+        matchResources:
+          controlPlane: true
+      jsonPatches:
+      - op: add
+        path: /spec/template/spec/firewall
+        valueFrom:
+          variable: firewall
+    - selector:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        kind: BareMetalMachineTemplate
+        matchResources:
+          machineDeploymentClass:
+            names:
+            - default-worker
+      jsonPatches:
+      - op: add
+        path: /spec/template/spec/firewall
+        valueFrom:
+          variable: firewall
+  - name: selinux
+    definitions:
+    - selector:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        kind: BareMetalMachineTemplate
+        matchResources:
+          controlPlane: true
+      jsonPatches:
+      - op: add
+        path: /spec/template/spec/selinux
+        valueFrom:
+          variable: selinux
+    - selector:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        kind: BareMetalMachineTemplate
+        matchResources:
+          machineDeploymentClass:
+            names:
+            - default-worker
+      jsonPatches:
+      - op: add
+        path: /spec/template/spec/selinux
+        valueFrom:
+          variable: selinux

@@ -21,6 +21,18 @@ import clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 const (
 	// SSHConnectedCondition reports the current status of SSH connection.
 	SSHConnectedCondition clusterv1.ConditionType = "SSHConnected"
+
+	// ComponentsInstalledCondition reports whether required components are installed.
+	ComponentsInstalledCondition clusterv1.ConditionType = "ComponentsInstalled"
+
+	// ContainerRuntimeReadyCondition reports whether the container runtime is ready.
+	ContainerRuntimeReadyCondition clusterv1.ConditionType = "ContainerRuntimeReady"
+
+	// FirewallConfiguredCondition reports whether firewall is configured.
+	FirewallConfiguredCondition clusterv1.ConditionType = "FirewallConfigured"
+
+	// SELinuxConfiguredCondition reports whether SELinux is configured.
+	SELinuxConfiguredCondition clusterv1.ConditionType = "SELinuxConfigured"
 )
 
 // Common condition reasons
@@ -33,4 +45,25 @@ const (
 
 	// DeletionFailedReason indicates deletion failed.
 	DeletionFailedReason = "DeletionFailed"
+
+	// ComponentInstallFailedReason indicates component installation failed.
+	ComponentInstallFailedReason = "ComponentInstallFailed"
+
+	// ComponentsInstalledReason indicates components are installed.
+	ComponentsInstalledReason = "ComponentsInstalled"
+
+	// ContainerRuntimeNotReadyReason indicates container runtime is not ready.
+	ContainerRuntimeNotReadyReason = "ContainerRuntimeNotReady"
+
+	// FirewallConfigFailedReason indicates firewall configuration failed.
+	FirewallConfigFailedReason = "FirewallConfigFailed"
+
+	// SELinuxConfigFailedReason indicates SELinux configuration failed.
+	SELinuxConfigFailedReason = "SELinuxConfigFailed"
+
+	// InstallationInProgressReason indicates installation is in progress.
+	InstallationInProgressReason = "InstallationInProgress"
+
+	// InstallationRetryingReason indicates installation is retrying after failure.
+	InstallationRetryingReason = "InstallationRetrying"
 )

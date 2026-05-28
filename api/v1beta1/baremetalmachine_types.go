@@ -90,6 +90,185 @@ type BareMetalMachineSpec struct {
 	// Used to filter hosts from the inventory.
 	// +optional
 	Role string `json:"role,omitempty"`
+
+	// ComponentInstall holds configuration for automatic component installation.
+	// +optional
+	ComponentInstall *ComponentInstallConfig `json:"componentInstall,omitempty"`
+
+	// Firewall holds configuration for firewall management.
+	// +optional
+	Firewall *FirewallConfig `json:"firewall,omitempty"`
+
+	// SELinux holds configuration for SELinux management.
+	// +optional
+	SELinux *SELinuxConfig `json:"selinux,omitempty"`
+}
+
+// ComponentInstallConfig defines configuration for automatic component installation.
+type ComponentInstallConfig struct {
+	// Enabled indicates whether automatic component installation is enabled.
+	// +optional
+	// +kubebuilder:default=true
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Strategy defines the installation strategy.
+	// +optional
+	// +kubebuilder:default=InstallIfMissing
+	Strategy InstallStrategy `json:"strategy,omitempty"`
+
+	// ContainerRuntime specifies the container runtime configuration.
+	// +optional
+	ContainerRuntime ContainerRuntimeConfig `json:"containerRuntime,omitempty"`
+
+	// Kubernetes specifies the Kubernetes components configuration.
+	// +optional
+	Kubernetes KubernetesComponentsConfig `json:"kubernetes,omitempty"`
+
+	// Timeout is the maximum time to wait for installation to complete.
+	// +optional
+	Timeout *metav1.Duration `json:"timeout,omitempty"`
+
+	// AirGap defines configuration for offline/air-gapped installations.
+	// +optional
+	AirGap *AirGapConfig `json:"airGap,omitempty"`
+
+	// RollbackOnError indicates whether to rollback on installation failure.
+	// +optional
+	RollbackOnError bool `json:"rollbackOnError,omitempty"`
+
+	// MaxRetries is the maximum number of retries for installation.
+	// +optional
+	// +kubebuilder:default=3
+	MaxRetries int `json:"maxRetries,omitempty"`
+}
+
+// InstallStrategy defines the component installation strategy.
+type InstallStrategy string
+
+const (
+	// InstallIfMissing installs only if components are not present or version mismatch.
+	InstallIfMissing InstallStrategy = "InstallIfMissing"
+	// AlwaysInstall always reinstalls components.
+	AlwaysInstall InstallStrategy = "AlwaysInstall"
+	// Skip skips installation (assumes components are pre-installed).
+	Skip InstallStrategy = "Skip"
+)
+
+// ContainerRuntimeConfig specifies the container runtime configuration.
+type ContainerRuntimeConfig struct {
+	// Type is the container runtime type (containerd, cri-o, docker).
+	// +optional
+	// +kubebuilder:default=containerd
+	Type string `json:"type,omitempty"`
+
+	// Version is the desired version of the container runtime.
+	// +optional
+	Version string `json:"version,omitempty"`
+
+	// RegistryMirrors is a list of registry mirror URLs.
+	// +optional
+	RegistryMirrors []string `json:"registryMirrors,omitempty"`
+}
+
+// KubernetesComponentsConfig specifies the Kubernetes components configuration.
+type KubernetesComponentsConfig struct {
+	// Version is the desired Kubernetes version.
+	// +optional
+	Version string `json:"version,omitempty"`
+
+	// Repository is the custom package repository configuration.
+	// +optional
+	Repository *PackageRepository `json:"repository,omitempty"`
+}
+
+// PackageRepository is the custom package repository configuration.
+type PackageRepository struct {
+	// BaseURL is the base URL of the package repository.
+	// +optional
+	BaseURL string `json:"baseUrl,omitempty"`
+
+	// GPGKey is the URL to the GPG key for the repository.
+	// +optional
+	GPGKey string `json:"gpgKey,omitempty"`
+}
+
+// AirGapConfig defines configuration for offline/air-gapped installations.
+type AirGapConfig struct {
+	// Enabled indicates whether air-gapped installation mode is used.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// BinarySource specifies how binaries are delivered in air-gapped mode.
+	// Options: HTTPServer | ConfigMap | LocalPath
+	// +optional
+	// +kubebuilder:default=HTTPServer
+	BinarySource string `json:"binarySource,omitempty"`
+
+	// HTTPServerConfig is the configuration for HTTP binary source.
+	// +optional
+	HTTPServerConfig *HTTPServerConfig `json:"httpServerConfig,omitempty"`
+
+	// LocalPath is the path on target machine where binaries are pre-placed.
+	// +optional
+	LocalPath string `json:"localPath,omitempty"`
+
+	// PreloadImages is a list of container images to preload into containerd.
+	// +optional
+	PreloadImages []string `json:"preloadImages,omitempty"`
+}
+
+// HTTPServerConfig is the configuration for HTTP binary source.
+type HTTPServerConfig struct {
+	// BaseURL is the HTTP server URL serving binary packages.
+	BaseURL string `json:"baseUrl"`
+
+	// TLSSecretRef references a Secret containing TLS client certificate.
+	// +optional
+	TLSSecretRef *corev1.LocalObjectReference `json:"tlsSecretRef,omitempty"`
+
+	// InsecureSkipVerify skips TLS verification (for internal CAs).
+	// +optional
+	InsecureSkipVerify bool `json:"insecureSkipVerify,omitempty"`
+}
+
+// FirewallConfig defines configuration for firewall management.
+type FirewallConfig struct {
+	// Configure indicates whether to automatically configure firewall rules.
+	// +optional
+	// +kubebuilder:default=true
+	Configure bool `json:"configure,omitempty"`
+
+	// AutoDetect indicates whether to auto-detect the firewall manager.
+	// +optional
+	// +kubebuilder:default=true
+	AutoDetect bool `json:"autoDetect,omitempty"`
+
+	// AdditionalPorts is a list of additional ports to open.
+	// +optional
+	AdditionalPorts []PortRule `json:"additionalPorts,omitempty"`
+}
+
+// PortRule defines a port to open in the firewall.
+type PortRule struct {
+	// Port is the port number.
+	Port int `json:"port"`
+
+	// Protocol is the protocol (tcp/udp).
+	// +optional
+	// +kubebuilder:default=tcp
+	Protocol string `json:"protocol,omitempty"`
+
+	// Description is a human-readable description of the port.
+	// +optional
+	Description string `json:"description,omitempty"`
+}
+
+// SELinuxConfig defines configuration for SELinux management.
+type SELinuxConfig struct {
+	// Configure indicates whether to automatically configure SELinux.
+	// +optional
+	// +kubebuilder:default=true
+	Configure bool `json:"configure,omitempty"`
 }
 
 // PowerManagementConfig holds power management configuration.
@@ -118,9 +297,40 @@ type BareMetalMachineStatus struct {
 	// +optional
 	Addresses []clusterv1.MachineAddress `json:"addresses,omitempty"`
 
+	// InstalledComponents tracks the versions of installed components.
+	// +optional
+	InstalledComponents ComponentVersions `json:"installedComponents,omitempty"`
+
 	// Conditions defines current service state of the BareMetalMachine.
 	// +optional
 	Conditions clusterv1.Conditions `json:"conditions,omitempty"`
+}
+
+// ComponentVersions tracks the versions of installed components.
+type ComponentVersions struct {
+	// ContainerRuntime is the installed container runtime version.
+	// +optional
+	ContainerRuntime string `json:"containerRuntime,omitempty"`
+
+	// Kubeadm is the installed kubeadm version.
+	// +optional
+	Kubeadm string `json:"kubeadm,omitempty"`
+
+	// Kubelet is the installed kubelet version.
+	// +optional
+	Kubelet string `json:"kubelet,omitempty"`
+
+	// Kubectl is the installed kubectl version.
+	// +optional
+	Kubectl string `json:"kubectl,omitempty"`
+
+	// OSType is the detected OS type.
+	// +optional
+	OSType string `json:"osType,omitempty"`
+
+	// OSVersion is the detected OS version.
+	// +optional
+	OSVersion string `json:"osVersion,omitempty"`
 }
 
 // GetConditions returns the set of conditions for this object.

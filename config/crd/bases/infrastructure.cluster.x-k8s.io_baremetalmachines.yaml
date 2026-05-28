@@ -1,14 +1,13 @@
+---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.16.0
+    controller-gen.kubebuilder.io/version: v0.21.0
   name: baremetalmachines.infrastructure.cluster.x-k8s.io
 spec:
   group: infrastructure.cluster.x-k8s.io
   names:
-    categories:
-    - cluster-api
     kind: BareMetalMachine
     listKind: BareMetalMachineList
     plural: baremetalmachines
@@ -36,43 +35,225 @@ spec:
       jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
-    name: v1beta2
+    name: v1beta1
     schema:
       openAPIV3Schema:
         description: BareMetalMachine is the Schema for the baremetalmachines API.
         properties:
           apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
             type: string
           kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
             type: string
           metadata:
             type: object
           spec:
             description: BareMetalMachineSpec defines the desired state of BareMetalMachine.
             properties:
+              componentInstall:
+                description: ComponentInstall holds configuration for automatic component
+                  installation.
+                properties:
+                  airGap:
+                    description: AirGap defines configuration for offline/air-gapped
+                      installations.
+                    properties:
+                      binarySource:
+                        default: HTTPServer
+                        description: |-
+                          BinarySource specifies how binaries are delivered in air-gapped mode.
+                          Options: HTTPServer | ConfigMap | LocalPath
+                        type: string
+                      enabled:
+                        description: Enabled indicates whether air-gapped installation
+                          mode is used.
+                        type: boolean
+                      httpServerConfig:
+                        description: HTTPServerConfig is the configuration for HTTP
+                          binary source.
+                        properties:
+                          baseUrl:
+                            description: BaseURL is the HTTP server URL serving binary
+                              packages.
+                            type: string
+                          insecureSkipVerify:
+                            description: InsecureSkipVerify skips TLS verification
+                              (for internal CAs).
+                            type: boolean
+                          tlsSecretRef:
+                            description: TLSSecretRef references a Secret containing
+                              TLS client certificate.
+                            properties:
+                              name:
+                                default: ""
+                                description: |-
+                                  Name of the referent.
+                                  This field is effectively required, but due to backwards compatibility is
+                                  allowed to be empty. Instances of this type with an empty value here are
+                                  almost certainly wrong.
+                                  More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                type: string
+                            type: object
+                            x-kubernetes-map-type: atomic
+                        required:
+                        - baseUrl
+                        type: object
+                      localPath:
+                        description: LocalPath is the path on target machine where
+                          binaries are pre-placed.
+                        type: string
+                      preloadImages:
+                        description: PreloadImages is a list of container images to
+                          preload into containerd.
+                        items:
+                          type: string
+                        type: array
+                    type: object
+                  containerRuntime:
+                    description: ContainerRuntime specifies the container runtime
+                      configuration.
+                    properties:
+                      registryMirrors:
+                        description: RegistryMirrors is a list of registry mirror
+                          URLs.
+                        items:
+                          type: string
+                        type: array
+                      type:
+                        default: containerd
+                        description: Type is the container runtime type (containerd,
+                          cri-o, docker).
+                        type: string
+                      version:
+                        description: Version is the desired version of the container
+                          runtime.
+                        type: string
+                    type: object
+                  enabled:
+                    default: true
+                    description: Enabled indicates whether automatic component installation
+                      is enabled.
+                    type: boolean
+                  kubernetes:
+                    description: Kubernetes specifies the Kubernetes components configuration.
+                    properties:
+                      repository:
+                        description: Repository is the custom package repository configuration.
+                        properties:
+                          baseUrl:
+                            description: BaseURL is the base URL of the package repository.
+                            type: string
+                          gpgKey:
+                            description: GPGKey is the URL to the GPG key for the
+                              repository.
+                            type: string
+                        type: object
+                      version:
+                        description: Version is the desired Kubernetes version.
+                        type: string
+                    type: object
+                  maxRetries:
+                    default: 3
+                    description: MaxRetries is the maximum number of retries for installation.
+                    type: integer
+                  rollbackOnError:
+                    description: RollbackOnError indicates whether to rollback on
+                      installation failure.
+                    type: boolean
+                  strategy:
+                    default: InstallIfMissing
+                    description: Strategy defines the installation strategy.
+                    type: string
+                  timeout:
+                    description: Timeout is the maximum time to wait for installation
+                      to complete.
+                    type: string
+                type: object
               credentialsRef:
-                description: CredentialsRef references the Secret containing SSH credentials.
+                description: |-
+                  CredentialsRef references the Secret containing SSH credentials.
+                  This can be specified directly or allocated from HostInventory.
                 properties:
                   name:
-                    description: Name of the referent.
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
                     type: string
-                required:
-                - name
+                type: object
+                x-kubernetes-map-type: atomic
+              firewall:
+                description: Firewall holds configuration for firewall management.
+                properties:
+                  additionalPorts:
+                    description: AdditionalPorts is a list of additional ports to
+                      open.
+                    items:
+                      description: PortRule defines a port to open in the firewall.
+                      properties:
+                        description:
+                          description: Description is a human-readable description
+                            of the port.
+                          type: string
+                        port:
+                          description: Port is the port number.
+                          type: integer
+                        protocol:
+                          default: tcp
+                          description: Protocol is the protocol (tcp/udp).
+                          type: string
+                      required:
+                      - port
+                      type: object
+                    type: array
+                  autoDetect:
+                    default: true
+                    description: AutoDetect indicates whether to auto-detect the firewall
+                      manager.
+                    type: boolean
+                  configure:
+                    default: true
+                    description: Configure indicates whether to automatically configure
+                      firewall rules.
+                    type: boolean
                 type: object
               hostInventoryRef:
-                description: HostInventoryRef references the BareMetalHostInventory to allocate a host from.
+                description: HostInventoryRef references the BareMetalHostInventory
+                  to allocate a host from.
                 properties:
                   name:
-                    description: Name of the referent.
+                    default: ""
+                    description: |-
+                      Name of the referent.
+                      This field is effectively required, but due to backwards compatibility is
+                      allowed to be empty. Instances of this type with an empty value here are
+                      almost certainly wrong.
+                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
                     type: string
-                required:
-                - name
                 type: object
+                x-kubernetes-map-type: atomic
               hostName:
-                description: HostName is the hostname of the bare metal machine.
+                description: |-
+                  HostName is the hostname of the bare metal machine.
+                  This can be specified directly or allocated from HostInventory.
                 type: string
               ipAddress:
-                description: IPAddress is the IP address of the bare metal machine.
+                description: |-
+                  IPAddress is the IP address of the bare metal machine.
+                  This can be specified directly or allocated from HostInventory.
                 type: string
               powerManagement:
                 description: PowerManagement holds optional power management configuration.
@@ -81,15 +262,23 @@ spec:
                     description: Address is the BMC address.
                     type: string
                   credentialsRef:
-                    description: CredentialsRef references the Secret containing BMC credentials.
+                    description: CredentialsRef references the Secret containing BMC
+                      credentials.
                     properties:
                       name:
+                        default: ""
+                        description: |-
+                          Name of the referent.
+                          This field is effectively required, but due to backwards compatibility is
+                          allowed to be empty. Instances of this type with an empty value here are
+                          almost certainly wrong.
+                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
                         type: string
-                    required:
-                    - name
                     type: object
+                    x-kubernetes-map-type: atomic
                   type:
-                    description: Type is the power management protocol type (ipmi, redfish).
+                    description: Type is the power management protocol type (ipmi,
+                      redfish).
                     type: string
                 required:
                 - address
@@ -97,11 +286,23 @@ spec:
                 - type
                 type: object
               providerID:
-                description: ProviderID will be the machine name in ProviderID format.
+                description: ProviderID will be the machine name in ProviderID format
+                  (baremetal://<hostname>).
                 type: string
               role:
-                description: Role indicates the role of this machine.
+                description: |-
+                  Role indicates the role of this machine (control-plane or worker).
+                  Used to filter hosts from the inventory.
                 type: string
+              selinux:
+                description: SELinux holds configuration for SELinux management.
+                properties:
+                  configure:
+                    default: true
+                    description: Configure indicates whether to automatically configure
+                      SELinux.
+                    type: boolean
+                type: object
               sshPort:
                 default: 22
                 description: SSHPort is the SSH port to connect to.
@@ -111,15 +312,26 @@ spec:
             description: BareMetalMachineStatus defines the observed state of BareMetalMachine.
             properties:
               addresses:
-                description: Addresses contains the addresses associated with this machine.
+                description: Addresses contains the addresses associated with this
+                  machine.
                 items:
-                  description: MachineAddress contains information for the node's address.
+                  description: MachineAddress contains information for the node's
+                    address.
                   properties:
                     address:
-                      description: The machine address.
+                      description: address is the machine address.
+                      maxLength: 256
+                      minLength: 1
                       type: string
                     type:
-                      description: Machine address type.
+                      description: type is the machine address type, one of Hostname,
+                        ExternalIP, InternalIP, ExternalDNS or InternalDNS.
+                      enum:
+                      - Hostname
+                      - ExternalIP
+                      - InternalIP
+                      - ExternalDNS
+                      - InternalDNS
                       type: string
                   required:
                   - address
@@ -129,20 +341,50 @@ spec:
               conditions:
                 description: Conditions defines current service state of the BareMetalMachine.
                 items:
-                  description: Condition defines an observation of a Cluster API resource operational state.
+                  description: |-
+                    Condition defines an observation of a Cluster API resource operational state.
+
+                    Deprecated: This type is deprecated and is going to be removed when support for v1beta1 will be dropped. Please see https://github.com/kubernetes-sigs/cluster-api/blob/main/docs/proposals/20240916-improve-status-in-CAPI-resources.md for more details.
                   properties:
                     lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed. If that is not known, then using the time when
+                        the API field changed is acceptable.
                       format: date-time
                       type: string
                     message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This field may be empty.
+                      maxLength: 10240
+                      minLength: 1
                       type: string
                     reason:
+                      description: |-
+                        reason is the reason for the condition's last transition in CamelCase.
+                        The specific API may choose whether or not this field is considered a guaranteed API.
+                        This field may be empty.
+                      maxLength: 256
+                      minLength: 1
                       type: string
                     severity:
+                      description: |-
+                        severity provides an explicit classification of Reason code, so the users or machines can immediately
+                        understand the current situation and act accordingly.
+                        The Severity field MUST be set only when Status=False.
+                      maxLength: 32
                       type: string
                     status:
+                      description: status of the condition, one of True, False, Unknown.
                       type: string
                     type:
+                      description: |-
+                        type of condition in CamelCase or in foo.example.com/CamelCase.
+                        Many .condition.type values are consistent across resources like Available, but because arbitrary conditions
+                        can be useful (see .node.status.conditions), the ability to deconflict is important.
+                      maxLength: 256
+                      minLength: 1
                       type: string
                   required:
                   - lastTransitionTime
@@ -150,6 +392,30 @@ spec:
                   - type
                   type: object
                 type: array
+              installedComponents:
+                description: InstalledComponents tracks the versions of installed
+                  components.
+                properties:
+                  containerRuntime:
+                    description: ContainerRuntime is the installed container runtime
+                      version.
+                    type: string
+                  kubeadm:
+                    description: Kubeadm is the installed kubeadm version.
+                    type: string
+                  kubectl:
+                    description: Kubectl is the installed kubectl version.
+                    type: string
+                  kubelet:
+                    description: Kubelet is the installed kubelet version.
+                    type: string
+                  osType:
+                    description: OSType is the detected OS type.
+                    type: string
+                  osVersion:
+                    description: OSVersion is the detected OS version.
+                    type: string
+                type: object
               providerID:
                 description: ProviderID is the unique identifier for this machine.
                 type: string

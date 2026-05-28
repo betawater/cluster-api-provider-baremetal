@@ -1,14 +1,13 @@
+---
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
   annotations:
-    controller-gen.kubebuilder.io/version: v0.16.0
+    controller-gen.kubebuilder.io/version: v0.21.0
   name: baremetalhostinventories.infrastructure.cluster.x-k8s.io
 spec:
   group: infrastructure.cluster.x-k8s.io
   names:
-    categories:
-    - cluster-api
     kind: BareMetalHostInventory
     listKind: BareMetalHostInventoryList
     plural: baremetalhostinventories
@@ -35,13 +34,23 @@ spec:
     name: v1beta1
     schema:
       openAPIV3Schema:
-        description: BareMetalHostInventory is the Schema for the baremetalhostinventories API.
+        description: BareMetalHostInventory is the Schema for the baremetalhostinventories
+          API.
         properties:
           apiVersion:
-            description: APIVersion defines the versioned schema of this representation of an object.
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
             type: string
           kind:
-            description: Kind is a string value representing the REST resource this object represents.
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
             type: string
           metadata:
             type: object
@@ -54,14 +63,20 @@ spec:
                   description: HostEntry defines a single bare metal host in the inventory.
                   properties:
                     credentialsRef:
-                      description: CredentialsRef references the Secret containing SSH credentials.
+                      description: CredentialsRef references the Secret containing
+                        SSH credentials.
                       properties:
                         name:
-                          description: Name of the referent.
+                          default: ""
+                          description: |-
+                            Name of the referent.
+                            This field is effectively required, but due to backwards compatibility is
+                            allowed to be empty. Instances of this type with an empty value here are
+                            almost certainly wrong.
+                            More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
                           type: string
-                      required:
-                      - name
                       type: object
+                      x-kubernetes-map-type: atomic
                     hostName:
                       description: HostName is the hostname of the bare metal machine.
                       type: string
@@ -77,13 +92,15 @@ spec:
                       description: Name is the unique identifier for this host entry.
                       type: string
                     role:
-                      description: Role indicates the role of this host (control-plane or worker).
+                      description: Role indicates the role of this host (control-plane
+                        or worker).
                       type: string
                     sshPort:
                       default: 22
                       description: SSHPort is the SSH port to connect to.
                       type: integer
                   required:
+                  - credentialsRef
                   - hostName
                   - ipAddress
                   - name
@@ -93,7 +110,8 @@ spec:
             - hosts
             type: object
           status:
-            description: BareMetalHostInventoryStatus defines the observed state of BareMetalHostInventory.
+            description: BareMetalHostInventoryStatus defines the observed state of
+              BareMetalHostInventory.
             properties:
               allocatedHosts:
                 description: AllocatedHosts is the number of allocated hosts.
@@ -107,30 +125,49 @@ spec:
                   description: HostStatusEntry defines the status of a single host.
                   properties:
                     clusterRef:
-                      description: ClusterRef references the cluster that has allocated this host.
+                      description: ClusterRef references the cluster that has allocated
+                        this host.
                       properties:
                         apiVersion:
                           description: API version of the referent.
                           type: string
                         fieldPath:
-                          description: If referring to a piece of an object instead of an entire object, this string should contain a valid JSON/Go field access statement.
+                          description: |-
+                            If referring to a piece of an object instead of an entire object, this string
+                            should contain a valid JSON/Go field access statement, such as desiredState.manifest.containers[2].
+                            For example, if the object reference is to a container within a pod, this would take on a value like:
+                            "spec.containers{name}" (where "name" refers to the name of the container that triggered
+                            the event) or if no container name is specified "spec.containers[2]" (container with
+                            index 2 in this pod). This syntax is chosen only to have some well-defined way of
+                            referencing a part of an object.
                           type: string
                         kind:
-                          description: Kind of the referent.
+                          description: |-
+                            Kind of the referent.
+                            More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
                           type: string
                         name:
-                          description: Name of the referent.
+                          description: |-
+                            Name of the referent.
+                            More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
                           type: string
                         namespace:
-                          description: Namespace of the referent.
+                          description: |-
+                            Namespace of the referent.
+                            More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/namespaces/
                           type: string
                         resourceVersion:
-                          description: Specific resourceVersion to which this reference is made.
+                          description: |-
+                            Specific resourceVersion to which this reference is made, if any.
+                            More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#concurrency-control-and-consistency
                           type: string
                         uid:
-                          description: UID of the referent.
+                          description: |-
+                            UID of the referent.
+                            More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#uids
                           type: string
                       type: object
+                      x-kubernetes-map-type: atomic
                     name:
                       description: Name is the name of the host.
                       type: string

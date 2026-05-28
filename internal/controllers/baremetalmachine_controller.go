@@ -35,6 +35,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 
 	infrav1 "github.com/BetaWater/cluster-api-provider-baremetal/api/v1beta1"
+	"github.com/BetaWater/cluster-api-provider-baremetal/internal/health"
+	"github.com/BetaWater/cluster-api-provider-baremetal/internal/installer"
+	"github.com/BetaWater/cluster-api-provider-baremetal/internal/network"
 	"github.com/BetaWater/cluster-api-provider-baremetal/internal/ssh"
 )
 
@@ -186,6 +189,58 @@ func (r *BareMetalMachineReconciler) reconcileNormal(ctx context.Context, bmMach
 		return ctrl.Result{RequeueAfter: 60 * time.Second}, r.Status().Update(ctx, bmMachine)
 	}
 	markMachineConditionTrue(bmMachine, infrav1.PreFlightChecksPassedCondition)
+
+	if err := r.configureFirewall(ctx, bmMachine, sshConn); err != nil {
+		log.Error(err, "Failed to configure firewall")
+		markMachineConditionFalse(bmMachine, infrav1.FirewallConfiguredCondition, infrav1.FirewallConfigFailedReason, clusterv1.ConditionSeverityWarning, err.Error())
+	} else {
+		markMachineConditionTrue(bmMachine, infrav1.FirewallConfiguredCondition)
+	}
+
+	if err := r.configureSELinux(ctx, bmMachine, sshConn); err != nil {
+		log.Error(err, "Failed to configure SELinux")
+		markMachineConditionFalse(bmMachine, infrav1.SELinuxConfiguredCondition, infrav1.SELinuxConfigFailedReason, clusterv1.ConditionSeverityWarning, err.Error())
+	} else {
+		markMachineConditionTrue(bmMachine, infrav1.SELinuxConfiguredCondition)
+	}
+
+	k8sVersion := extractK8sVersion(machine)
+	installResult, err := r.installComponents(ctx, bmMachine, sshConn, k8sVersion)
+	if err != nil {
+		log.Error(err, "Failed to install components")
+		markMachineConditionFalse(bmMachine, infrav1.ComponentsInstalledCondition, infrav1.ComponentInstallFailedReason, clusterv1.ConditionSeverityError, err.Error())
+		return ctrl.Result{RequeueAfter: 60 * time.Second}, r.Status().Update(ctx, bmMachine)
+	}
+
+	if !installResult.Completed {
+		log.Info("Component installation in progress", "progress", installResult.Progress)
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
+
+	if !installResult.Success {
+		log.Error(fmt.Errorf("installation failed"), "Component installation failed", "error", installResult.Error)
+		markMachineConditionFalse(bmMachine, infrav1.ComponentsInstalledCondition, infrav1.ComponentInstallFailedReason, clusterv1.ConditionSeverityError, installResult.Error)
+		return ctrl.Result{RequeueAfter: 60 * time.Second}, r.Status().Update(ctx, bmMachine)
+	}
+
+	markMachineConditionTrue(bmMachine, infrav1.ComponentsInstalledCondition)
+
+	bmMachine.Status.InstalledComponents = infrav1.ComponentVersions{
+		ContainerRuntime: installResult.ComponentVersions.ContainerRuntime,
+		Kubeadm:          installResult.ComponentVersions.Kubeadm,
+		Kubelet:          installResult.ComponentVersions.Kubelet,
+		Kubectl:          installResult.ComponentVersions.Kubectl,
+		OSType:           installResult.ComponentVersions.OSType,
+		OSVersion:        installResult.ComponentVersions.OSVersion,
+	}
+
+	verifier := health.NewVerifier(sshConn)
+	verificationResult, err := verifier.VerifyInstallation(ctx)
+	if err != nil {
+		log.Error(err, "Failed to verify installation")
+	} else if !verificationResult.Passed {
+		log.Info("Installation verification failed", "errors", verificationResult.Errors)
+	}
 
 	providerID := fmt.Sprintf("baremetal://%s", bmMachine.Spec.HostName)
 	if bmMachine.Spec.ProviderID == nil || *bmMachine.Spec.ProviderID != providerID {
@@ -387,6 +442,64 @@ func (r *BareMetalMachineReconciler) getCredentials(ctx context.Context, bmMachi
 		Username: string(username),
 		Password: string(password),
 	}, nil
+}
+
+func (r *BareMetalMachineReconciler) installComponents(ctx context.Context, bmMachine *infrav1.BareMetalMachine, sshConn *ssh.SSHConnection, k8sVersion string) (*installer.InstallResult, error) {
+	log := ctrl.LoggerFrom(ctx)
+
+	config := bmMachine.Spec.ComponentInstall
+	if config == nil {
+		config = &infrav1.ComponentInstallConfig{
+			Enabled:  true,
+			Strategy: infrav1.InstallIfMissing,
+			ContainerRuntime: infrav1.ContainerRuntimeConfig{
+				Type: "containerd",
+			},
+			MaxRetries: 3,
+		}
+	}
+
+	if !config.Enabled || config.Strategy == infrav1.Skip {
+		log.Info("Component installation disabled or skipped")
+		return &installer.InstallResult{Completed: true, Success: true, Progress: "Installation disabled or skipped"}, nil
+	}
+
+	role := bmMachine.Spec.Role
+	if role == "" {
+		role = "worker"
+	}
+
+	inst := installer.New(sshConn, config, k8sVersion, role)
+	return inst.Install(ctx)
+}
+
+func (r *BareMetalMachineReconciler) configureFirewall(ctx context.Context, bmMachine *infrav1.BareMetalMachine, sshConn *ssh.SSHConnection) error {
+	role := bmMachine.Spec.Role
+	if role == "" {
+		role = "worker"
+	}
+
+	fwManager := network.NewFirewallManager(sshConn, bmMachine.Spec.Firewall, role)
+	return fwManager.Configure(ctx)
+}
+
+func (r *BareMetalMachineReconciler) configureSELinux(ctx context.Context, bmMachine *infrav1.BareMetalMachine, sshConn *ssh.SSHConnection) error {
+	selinuxManager := network.NewSELinuxManager(sshConn, bmMachine.Spec.SELinux)
+	return selinuxManager.Configure(ctx)
+}
+
+func extractK8sVersion(machine *clusterv1.Machine) string {
+	if machine == nil {
+		return ""
+	}
+	version := machine.Spec.Version
+	if version == "" {
+		return ""
+	}
+	if len(version) > 0 && version[0] == 'v' {
+		return version[1:]
+	}
+	return version
 }
 
 // SetupWithManager sets up the controller with the Manager.
