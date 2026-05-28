@@ -28,6 +28,12 @@ const (
 
 	// ClusterReadyCondition reports the current status of the cluster infrastructure.
 	ClusterReadyCondition = clusterv1.ReadyCondition
+
+	// EndpointNotSetReason indicates the control plane endpoint is not set.
+	EndpointNotSetReason = "EndpointNotSet"
+
+	// EndpointSourceAnnotation indicates the source of the control plane endpoint.
+	EndpointSourceAnnotation = "baremetal.cluster.x-k8s.io/endpoint-source"
 )
 
 // BareMetalClusterSpec defines the desired state of BareMetalCluster.
@@ -56,11 +62,22 @@ type NetworkConfig struct {
 	DNSDomain string `json:"dnsDomain,omitempty"`
 }
 
+// BareMetalClusterInitializationStatus provides observations of the BareMetalCluster initialization process.
+type BareMetalClusterInitializationStatus struct {
+	// Provisioned is true when the infrastructure provider reports that the Cluster's infrastructure is fully provisioned.
+	// +optional
+	Provisioned *bool `json:"provisioned,omitempty"`
+}
+
 // BareMetalClusterStatus defines the observed state of BareMetalCluster.
 type BareMetalClusterStatus struct {
 	// Ready indicates that the cluster infrastructure is ready.
 	// +optional
 	Ready bool `json:"ready,omitempty"`
+
+	// Initialization provides observations of the BareMetalCluster initialization process.
+	// +optional
+	Initialization *BareMetalClusterInitializationStatus `json:"initialization,omitempty"`
 
 	// Conditions defines current service state of the BareMetalCluster.
 	// +optional

@@ -38,7 +38,7 @@ import (
 	"github.com/BetaWater/cluster-api-provider-baremetal/internal/ssh"
 )
 
-func setCondition(bmMachine *infrav1.BareMetalMachine, conditionType clusterv1.ConditionType, status corev1.ConditionStatus, reason string, severity clusterv1.ConditionSeverity, message string) {
+func setMachineCondition(bmMachine *infrav1.BareMetalMachine, conditionType clusterv1.ConditionType, status corev1.ConditionStatus, reason string, severity clusterv1.ConditionSeverity, message string) {
 	condition := clusterv1.Condition{
 		Type:               conditionType,
 		Status:             status,
@@ -60,12 +60,12 @@ func setCondition(bmMachine *infrav1.BareMetalMachine, conditionType clusterv1.C
 	bmMachine.SetConditions(conditions)
 }
 
-func markConditionFalse(bmMachine *infrav1.BareMetalMachine, conditionType clusterv1.ConditionType, reason string, severity clusterv1.ConditionSeverity, message string) {
-	setCondition(bmMachine, conditionType, corev1.ConditionFalse, reason, severity, message)
+func markMachineConditionFalse(bmMachine *infrav1.BareMetalMachine, conditionType clusterv1.ConditionType, reason string, severity clusterv1.ConditionSeverity, message string) {
+	setMachineCondition(bmMachine, conditionType, corev1.ConditionFalse, reason, severity, message)
 }
 
-func markConditionTrue(bmMachine *infrav1.BareMetalMachine, conditionType clusterv1.ConditionType) {
-	setCondition(bmMachine, conditionType, corev1.ConditionTrue, "", clusterv1.ConditionSeverityInfo, "")
+func markMachineConditionTrue(bmMachine *infrav1.BareMetalMachine, conditionType clusterv1.ConditionType) {
+	setMachineCondition(bmMachine, conditionType, corev1.ConditionTrue, "", clusterv1.ConditionSeverityInfo, "")
 }
 
 // BareMetalMachineReconciler reconciles a BareMetalMachine object.
@@ -130,14 +130,14 @@ func (r *BareMetalMachineReconciler) reconcileNormal(ctx context.Context, bmMach
 	// Allocate host from inventory if not already allocated
 	if bmMachine.Spec.HostName == "" || bmMachine.Spec.IPAddress == "" {
 		if bmMachine.Spec.HostInventoryRef == nil {
-			markConditionFalse(bmMachine, infrav1.MachineReadyCondition, infrav1.InvalidConfigurationReason, clusterv1.ConditionSeverityError, "hostInventoryRef is required when hostName/ipAddress not specified")
+			markMachineConditionFalse(bmMachine, infrav1.MachineReadyCondition, infrav1.InvalidConfigurationReason, clusterv1.ConditionSeverityError, "hostInventoryRef is required when hostName/ipAddress not specified")
 			return ctrl.Result{}, nil
 		}
 
 		host, err := r.allocateHostFromInventory(ctx, bmMachine)
 		if err != nil {
 			log.Error(err, "Failed to allocate host from inventory")
-			markConditionFalse(bmMachine, infrav1.MachineReadyCondition, "HostAllocationFailed", clusterv1.ConditionSeverityError, err.Error())
+			markMachineConditionFalse(bmMachine, infrav1.MachineReadyCondition, "HostAllocationFailed", clusterv1.ConditionSeverityError, err.Error())
 			return ctrl.Result{RequeueAfter: 30 * time.Second}, r.Status().Update(ctx, bmMachine)
 		}
 
@@ -152,19 +152,19 @@ func (r *BareMetalMachineReconciler) reconcileNormal(ctx context.Context, bmMach
 	}
 
 	if bmMachine.Spec.CredentialsRef == nil {
-		markConditionFalse(bmMachine, infrav1.MachineReadyCondition, infrav1.InvalidConfigurationReason, clusterv1.ConditionSeverityError, "credentialsRef is required")
+		markMachineConditionFalse(bmMachine, infrav1.MachineReadyCondition, infrav1.InvalidConfigurationReason, clusterv1.ConditionSeverityError, "credentialsRef is required")
 		return ctrl.Result{}, nil
 	}
 
 	creds, err := r.getCredentials(ctx, bmMachine)
 	if err != nil {
-		markConditionFalse(bmMachine, infrav1.MachineReadyCondition, infrav1.CredentialsNotFoundReason, clusterv1.ConditionSeverityError, err.Error())
+		markMachineConditionFalse(bmMachine, infrav1.MachineReadyCondition, infrav1.CredentialsNotFoundReason, clusterv1.ConditionSeverityError, err.Error())
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, r.Status().Update(ctx, bmMachine)
 	}
 
 	sshConn, err := r.SSHManager.Connect(bmMachine.Spec.IPAddress, bmMachine.Spec.SSHPort, *creds)
 	if err != nil {
-		markConditionFalse(bmMachine, infrav1.SSHConnectedCondition, infrav1.SSHConnectionFailedReason, clusterv1.ConditionSeverityWarning, err.Error())
+		markMachineConditionFalse(bmMachine, infrav1.SSHConnectedCondition, infrav1.SSHConnectionFailedReason, clusterv1.ConditionSeverityWarning, err.Error())
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, r.Status().Update(ctx, bmMachine)
 	}
 	defer func() {
@@ -173,7 +173,7 @@ func (r *BareMetalMachineReconciler) reconcileNormal(ctx context.Context, bmMach
 		}
 	}()
 
-	markConditionTrue(bmMachine, infrav1.SSHConnectedCondition)
+	markMachineConditionTrue(bmMachine, infrav1.SSHConnectedCondition)
 
 	preflightConfig := ssh.DefaultPreflightConfig()
 	preflightResult, err := ssh.RunPreflightChecks(ctx, sshConn, preflightConfig)
@@ -182,10 +182,10 @@ func (r *BareMetalMachineReconciler) reconcileNormal(ctx context.Context, bmMach
 	}
 
 	if !preflightResult.Passed {
-		markConditionFalse(bmMachine, infrav1.PreFlightChecksPassedCondition, infrav1.PreFlightChecksFailedReason, clusterv1.ConditionSeverityError, fmt.Sprintf("pre-flight checks failed: %v", preflightResult.Errors))
+		markMachineConditionFalse(bmMachine, infrav1.PreFlightChecksPassedCondition, infrav1.PreFlightChecksFailedReason, clusterv1.ConditionSeverityError, fmt.Sprintf("pre-flight checks failed: %v", preflightResult.Errors))
 		return ctrl.Result{RequeueAfter: 60 * time.Second}, r.Status().Update(ctx, bmMachine)
 	}
-	markConditionTrue(bmMachine, infrav1.PreFlightChecksPassedCondition)
+	markMachineConditionTrue(bmMachine, infrav1.PreFlightChecksPassedCondition)
 
 	providerID := fmt.Sprintf("baremetal://%s", bmMachine.Spec.HostName)
 	if bmMachine.Spec.ProviderID == nil || *bmMachine.Spec.ProviderID != providerID {
@@ -201,7 +201,7 @@ func (r *BareMetalMachineReconciler) reconcileNormal(ctx context.Context, bmMach
 		{Type: clusterv1.MachineInternalIP, Address: bmMachine.Spec.IPAddress},
 		{Type: clusterv1.MachineHostName, Address: bmMachine.Spec.HostName},
 	}
-	markConditionTrue(bmMachine, infrav1.MachineReadyCondition)
+	markMachineConditionTrue(bmMachine, infrav1.MachineReadyCondition)
 
 	return ctrl.Result{}, r.Status().Update(ctx, bmMachine)
 }

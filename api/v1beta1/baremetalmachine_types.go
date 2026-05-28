@@ -36,9 +36,6 @@ const (
 
 // Reasons for conditions
 const (
-	// EndpointNotSetReason indicates the control plane endpoint is not set.
-	EndpointNotSetReason = "EndpointNotSet"
-
 	// CredentialsNotFoundReason indicates credentials secret was not found.
 	CredentialsNotFoundReason = "CredentialsNotFound"
 
@@ -47,9 +44,6 @@ const (
 
 	// PreFlightChecksFailedReason indicates pre-flight checks failed.
 	PreFlightChecksFailedReason = "PreFlightChecksFailed"
-
-	// ClusterReadyReason indicates the cluster is ready.
-	ClusterReadyReason = "ClusterReady"
 
 	// SSHConnectedReason indicates SSH connection is established.
 	SSHConnectedReason = "SSHConnected"
