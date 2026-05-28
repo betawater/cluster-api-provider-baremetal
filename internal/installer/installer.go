@@ -247,7 +247,37 @@ func (i *Installer) installContainerRuntime(ctx context.Context, osInfo *OSInfo)
 		"CONTAINERD_VERSION": i.config.ContainerRuntime.Version,
 	})
 
-	if len(i.config.ContainerRuntime.RegistryMirrors) > 0 {
+	config := i.config.ContainerRuntime.Config
+	if config != nil {
+		if config.SystemdCgroup != nil && *config.SystemdCgroup {
+			script = prependEnvVar(script, "SYSTEMD_CGROUP", "true")
+		}
+		if config.SandboxImage != "" {
+			script = prependEnvVar(script, "SANDBOX_IMAGE", config.SandboxImage)
+		}
+		if config.MaxConcurrentDownloads != nil {
+			script = prependEnvVar(script, "MAX_CONCURRENT_DOWNLOADS", fmt.Sprintf("%d", *config.MaxConcurrentDownloads))
+		}
+		if len(config.RegistryMirrors) > 0 {
+			mirrors := ""
+			for _, m := range config.RegistryMirrors {
+				if mirrors != "" {
+					mirrors += ";"
+				}
+				mirrors += m.Host + "="
+				for j, ep := range m.Endpoints {
+					if j > 0 {
+						mirrors += ","
+					}
+					mirrors += ep
+				}
+			}
+			script = prependEnvVar(script, "REGISTRY_MIRRORS", mirrors)
+		}
+		if config.RawConfig != "" {
+			script = prependEnvVar(script, "RAW_CONFIG", config.RawConfig)
+		}
+	} else if len(i.config.ContainerRuntime.RegistryMirrors) > 0 {
 		mirrors := ""
 		for _, m := range i.config.ContainerRuntime.RegistryMirrors {
 			if mirrors != "" {
@@ -297,6 +327,30 @@ func (i *Installer) installKubernetesComponents(ctx context.Context, osInfo *OSI
 		}
 		if i.config.Kubernetes.Repository.GPGKey != "" {
 			script = prependEnvVar(script, "REPO_GPG_KEY", i.config.Kubernetes.Repository.GPGKey)
+		}
+	}
+
+	kubeletConfig := i.config.Kubernetes.Config
+	if kubeletConfig != nil && kubeletConfig.Kubelet != nil {
+		kc := kubeletConfig.Kubelet
+		if kc.CgroupDriver != "" {
+			script = prependEnvVar(script, "CGROUP_DRIVER", kc.CgroupDriver)
+		}
+		if kc.MaxPods != nil {
+			script = prependEnvVar(script, "MAX_PODS", fmt.Sprintf("%d", *kc.MaxPods))
+		}
+		if len(kc.ExtraArgs) > 0 {
+			extraArgs := ""
+			for k, v := range kc.ExtraArgs {
+				if extraArgs != "" {
+					extraArgs += " "
+				}
+				extraArgs += fmt.Sprintf("--%s=%s", k, v)
+			}
+			script = prependEnvVar(script, "EXTRA_ARGS", extraArgs)
+		}
+		if kc.RawConfig != "" {
+			script = prependEnvVar(script, "KUBELET_RAW_CONFIG", kc.RawConfig)
 		}
 	}
 

@@ -123,9 +123,49 @@ spec:
                     description: ContainerRuntime specifies the container runtime
                       configuration.
                     properties:
+                      config:
+                        description: |-
+                          Config holds runtime-specific configuration.
+                          Applied during installation/upgrade.
+                        properties:
+                          maxConcurrentDownloads:
+                            description: MaxConcurrentDownloads sets max concurrent
+                              downloads.
+                            type: integer
+                          rawConfig:
+                            description: RawConfig is raw TOML configuration appended
+                              to the final config.
+                            type: string
+                          registryMirrors:
+                            description: RegistryMirrors declares registry mirror
+                              configuration.
+                            items:
+                              description: RegistryMirrorEntry declares a registry
+                                mirror configuration.
+                              properties:
+                                endpoints:
+                                  description: Endpoints is the list of mirror endpoints.
+                                  items:
+                                    type: string
+                                  type: array
+                                host:
+                                  description: Host is the registry host to mirror.
+                                  type: string
+                              required:
+                              - endpoints
+                              - host
+                              type: object
+                            type: array
+                          sandboxImage:
+                            description: SandboxImage is the pause/sandbox image.
+                            type: string
+                          systemdCgroup:
+                            description: SystemdCgroup enables systemd cgroup driver.
+                            type: boolean
+                        type: object
                       registryMirrors:
                         description: RegistryMirrors is a list of registry mirror
-                          URLs.
+                          URLs (legacy, use Config instead).
                         items:
                           type: string
                         type: array
@@ -147,6 +187,34 @@ spec:
                   kubernetes:
                     description: Kubernetes specifies the Kubernetes components configuration.
                     properties:
+                      config:
+                        description: |-
+                          Config holds kubernetes component configuration.
+                          Applied during installation/upgrade.
+                        properties:
+                          kubelet:
+                            description: Kubelet holds kubelet-specific configuration.
+                            properties:
+                              cgroupDriver:
+                                default: systemd
+                                description: CgroupDriver sets the cgroup driver (cgroupfs
+                                  or systemd).
+                                type: string
+                              extraArgs:
+                                additionalProperties:
+                                  type: string
+                                description: ExtraArgs declares additional kubelet
+                                  command-line arguments.
+                                type: object
+                              maxPods:
+                                description: MaxPods sets the maximum number of pods.
+                                type: integer
+                              rawConfig:
+                                description: RawConfig is raw kubelet configuration
+                                  (YAML format).
+                                type: string
+                            type: object
+                        type: object
                       repository:
                         description: Repository is the custom package repository configuration.
                         properties:

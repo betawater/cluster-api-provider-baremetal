@@ -165,9 +165,45 @@ type ContainerRuntimeConfig struct {
 	// +optional
 	Version string `json:"version,omitempty"`
 
-	// RegistryMirrors is a list of registry mirror URLs.
+	// RegistryMirrors is a list of registry mirror URLs (legacy, use Config instead).
 	// +optional
 	RegistryMirrors []string `json:"registryMirrors,omitempty"`
+
+	// Config holds runtime-specific configuration.
+	// Applied during installation/upgrade.
+	// +optional
+	Config *RuntimeConfig `json:"config,omitempty"`
+}
+
+// RuntimeConfig holds container runtime configuration.
+type RuntimeConfig struct {
+	// SystemdCgroup enables systemd cgroup driver.
+	// +optional
+	SystemdCgroup *bool `json:"systemdCgroup,omitempty"`
+
+	// SandboxImage is the pause/sandbox image.
+	// +optional
+	SandboxImage string `json:"sandboxImage,omitempty"`
+
+	// RegistryMirrors declares registry mirror configuration.
+	// +optional
+	RegistryMirrors []RegistryMirrorEntry `json:"registryMirrors,omitempty"`
+
+	// MaxConcurrentDownloads sets max concurrent downloads.
+	// +optional
+	MaxConcurrentDownloads *int `json:"maxConcurrentDownloads,omitempty"`
+
+	// RawConfig is raw TOML configuration appended to the final config.
+	// +optional
+	RawConfig string `json:"rawConfig,omitempty"`
+}
+
+// RegistryMirrorEntry declares a registry mirror configuration.
+type RegistryMirrorEntry struct {
+	// Host is the registry host to mirror.
+	Host string `json:"host"`
+	// Endpoints is the list of mirror endpoints.
+	Endpoints []string `json:"endpoints"`
 }
 
 // KubernetesComponentsConfig specifies the Kubernetes components configuration.
@@ -179,6 +215,38 @@ type KubernetesComponentsConfig struct {
 	// Repository is the custom package repository configuration.
 	// +optional
 	Repository *PackageRepository `json:"repository,omitempty"`
+
+	// Config holds kubernetes component configuration.
+	// Applied during installation/upgrade.
+	// +optional
+	Config *KubernetesConfig `json:"config,omitempty"`
+}
+
+// KubernetesConfig holds kubernetes component configuration.
+type KubernetesConfig struct {
+	// Kubelet holds kubelet-specific configuration.
+	// +optional
+	Kubelet *KubeletConfig `json:"kubelet,omitempty"`
+}
+
+// KubeletConfig holds kubelet-specific configuration.
+type KubeletConfig struct {
+	// CgroupDriver sets the cgroup driver (cgroupfs or systemd).
+	// +optional
+	// +kubebuilder:default=systemd
+	CgroupDriver string `json:"cgroupDriver,omitempty"`
+
+	// MaxPods sets the maximum number of pods.
+	// +optional
+	MaxPods *int `json:"maxPods,omitempty"`
+
+	// ExtraArgs declares additional kubelet command-line arguments.
+	// +optional
+	ExtraArgs map[string]string `json:"extraArgs,omitempty"`
+
+	// RawConfig is raw kubelet configuration (YAML format).
+	// +optional
+	RawConfig string `json:"rawConfig,omitempty"`
 }
 
 // PackageRepository is the custom package repository configuration.

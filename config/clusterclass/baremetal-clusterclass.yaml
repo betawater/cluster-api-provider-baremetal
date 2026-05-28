@@ -138,13 +138,36 @@ spec:
                   - "docker"
               version:
                 type: string
-              registryMirrors:
-                type: array
-                items:
-                  type: string
+              config:
+                type: object
+                properties:
+                  systemdCgroup:
+                    type: boolean
+                    default: true
+                  sandboxImage:
+                    type: string
+                    default: "registry.k8s.io/pause:3.9"
+                  registryMirrors:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        host:
+                          type: string
+                        endpoints:
+                          type: array
+                          items:
+                            type: string
+                  maxConcurrentDownloads:
+                    type: integer
+                  rawConfig:
+                    type: string
+                    description: "Raw TOML configuration"
           kubernetes:
             type: object
             properties:
+              version:
+                type: string
               repository:
                 type: object
                 properties:
@@ -152,6 +175,25 @@ spec:
                     type: string
                   gpgKey:
                     type: string
+              config:
+                type: object
+                properties:
+                  kubelet:
+                    type: object
+                    properties:
+                      cgroupDriver:
+                        type: string
+                        default: "systemd"
+                      maxPods:
+                        type: integer
+                        default: 250
+                      extraArgs:
+                        type: object
+                        additionalProperties:
+                          type: string
+                      rawConfig:
+                        type: string
+                        description: "Raw kubelet configuration (YAML format)"
           airGap:
             type: object
             properties:
