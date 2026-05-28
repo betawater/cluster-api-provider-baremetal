@@ -382,6 +382,8 @@
 
 ## 四、资源关联关系图
 
+### 4.1 ClusterClass 模式完整架构图
+
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
 │                         Cluster (CAPI Core)                          │
@@ -480,90 +482,151 @@
 │      - clusterRef                                                  │
 └─────────────────────────────────────────────────────────────────────┘
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         Cluster (CAPI Core)                          │
-│  spec:                                                             │
-│    topology.classRef ──────────────────┐                           │
-│    infrastructureRef ────────────┐     │                           │
-│    controlPlaneRef ──────────┐   │     │                           │
-│    controlPlaneEndpoint ◄────┼───┼─────┤ (从 InfraCluster 同步)     │
-│  status:                                                             │
-│    infrastructureReady ◄─────┼───┘     │                           │
-└─────────────────────────────┼─────────┼───────────────────────────┘
-                              │         │
-          ┌───────────────────┼─────────┼───────────────────┐
-          ▼                   ▼         ▼                   ▼
-┌──────────────────┐  ┌──────────────────┐  ┌──────────────────────┐
-│ BareMetalCluster │  │ KubeadmControlPlane│  │    ClusterClass      │
-│                  │  │                  │  │                      │
-│ spec:            │  │ spec:            │  │ spec:                │
-│   controlPlane   │  │   replicas       │  │   variables[]        │
-│     Endpoint     │  │   version        │  │   patches[]          │
-│   network:       │  │   machineTemplate│  │   infrastructure:    │
-│     podCIDR      │  │     infraRef ────┼──┼─► templateRef        │
-│     serviceCIDR  │  │   kubeadmConfig  │  │   controlPlane:      │
-│ status:          │  │ status:          │  │     templateRef      │
-│   ready          │  │   ready          │  │     machineInfra     │
-│   initialized    │  │   conditions     │  │   workers:           │
-│   conditions     │  │                  │  │     machineDeploy    │
-└────────┬─────────┘  └────────┬─────────┘  │       []             │
-         │                     │            │       bootstrap      │
-         │                     │            │       infra          │
-         │                     │            └──────────┬───────────┘
-         │                     │                       │
-         ▼                     ▼                       ▼
-┌──────────────────┐  ┌──────────────────┐  ┌──────────────────────┐
-│ BareMetalMachine │  │ KubeadmConfig    │  │ BareMetalMachineTpl  │
-│ Template         │  │ Template         │  │                      │
-│ spec:            │  │ spec:            │  │ spec:                │
-│   template.spec: │  │   template.spec: │  │   template.spec:     │
-│     sshPort      │  │     joinConfig   │  │     sshPort          │
-│     hostInvent   │  │     nodeReg      │  │     hostInventoryRef │
-│       oryRef     │  │   clusterCon     │  │     credentialsRef   │
-│     credentials  │  │     fig          │  │     role             │
-│     role         │  │                  │  │                      │
-└────────┬─────────┘  └──────────────────┘  └──────────┬───────────┘
-         │                                             │
-         │              ┌──────────────────────────────┘
-         │              │
-         ▼              ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                        BareMetalMachine                             │
-│  spec:                                                             │
-│    providerID ◄──────────── 设置后关联到 Node                        │
-│    hostInventoryRef ──────┐                                        │
-│    hostName ◄─────────────┼── 从机器池分配或直接指定                 │
-│    ipAddress ◄────────────┤                                        │
-│    credentialsRef ◄───────┤                                        │
-│    role                   │                                        │
-│  status:                                                           │
-│    ready                   │                                        │
-│    providerID ────────────► 用于关联 Node 资源                       │
-│    addresses               │                                        │
-│    conditions              │                                        │
-└───────────────────────────┼────────────────────────────────────────┘
-                            │
-                            ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                     BareMetalHostInventory                          │
-│  spec:                                                             │
-│    hosts[]:                                                        │
-│      - name                                                        │
-│      - hostName                                                    │
-│      - ipAddress                                                   │
-│      - sshPort                                                     │
-│      - credentialsRef                                              │
-│      - role                                                        │
-│      - labels                                                      │
-│  status:                                                           │
-│    totalHosts                                                      │
-│    availableHosts                                                  │
-│    allocatedHosts                                                  │
-│    hostsStatus[]:                                                  │
-│      - name                                                        │
-│      - state (Available/Allocated/Maintenance)                     │
-│      - clusterRef                                                  │
-└─────────────────────────────────────────────────────────────────────┘
+
+### 4.2 资源引用关系详细图
+
+```
+Cluster.spec.topology
+    │
+    ├── classRef ──────────────────────────────────────────┐
+    │                                                      │
+    │    ClusterClass                                      │
+    │    ├── infrastructure.templateRef ───────────────────┼──► BareMetalClusterTemplate
+    │    ├── controlPlane.templateRef ─────────────────────┼──► KubeadmControlPlaneTemplate
+    │    ├── controlPlane.machineInfrastructure.templateRef┼──► BareMetalMachineTemplate (CP)
+    │    ├── workers.machineDeployments[].bootstrap        │
+    │    │   .templateRef ─────────────────────────────────┼──► KubeadmConfigTemplate
+    │    └── workers.machineDeployments[].infrastructure   │
+    │        .templateRef ─────────────────────────────────┼──► BareMetalMachineTemplate (Worker)
+    │                                                      │
+    └── variables[] ───────────────────────────────────────┘
+         │
+         ▼ (通过 patches 注入到模板)
+    生成的资源:
+    ├── BareMetalCluster.spec.controlPlaneEndpoint
+    ├── BareMetalMachineTemplate.spec.hostInventoryRef
+    ├── BareMetalMachineTemplate.spec.credentialsRef
+    └── KubeadmControlPlaneTemplate.spec.version
+
+Cluster (自动生成)
+    ├── infrastructureRef ────────────────────────────────► BareMetalCluster
+    ├── controlPlaneRef ──────────────────────────────────► KubeadmControlPlane
+    │
+    KubeadmControlPlane
+    │   ├── machineTemplate.infrastructureRef ────────────► BareMetalMachineTemplate (CP)
+    │   └── (创建 Machine)
+    │       ├── bootstrap.configRef ──────────────────────► KubeadmConfig
+    │       └── infrastructureRef ────────────────────────► BareMetalMachine
+    │
+    MachineDeployment
+    │   ├── template.spec.bootstrap.configRef ────────────► KubeadmConfigTemplate
+    │   └── template.spec.infrastructureRef ──────────────► BareMetalMachineTemplate (Worker)
+    │
+    MachineSet (由 MachineDeployment 创建)
+    │   └── template.spec.infrastructureRef ──────────────► BareMetalMachineTemplate
+    │
+    Machine (由 MachineSet 创建)
+        ├── bootstrap.configRef ──────────────────────────► KubeadmConfig
+        └── infrastructureRef ────────────────────────────► BareMetalMachine
+
+BareMetalMachine
+    └── hostInventoryRef ─────────────────────────────────► BareMetalHostInventory
+```
+
+### 4.3 OwnerReferences 层级关系
+
+```
+Cluster (my-cluster)
+├── ownerReferences: []
+│
+├── BareMetalCluster (my-cluster-xxxxx)
+│   └── ownerReferences: [Cluster]
+│
+├── KubeadmControlPlane (my-cluster-xxxxx)
+│   └── ownerReferences: [Cluster]
+│   │
+│   └── BareMetalMachineTemplate (my-cluster-xxxxx-cp)
+│       └── ownerReferences: [KubeadmControlPlane]
+│       │
+│       └── Machine (my-cluster-xxxxx-abc12)
+│           ├── ownerReferences: [KubeadmControlPlane]
+│           │
+│           ├── BareMetalMachine (my-cluster-xxxxx-abc12)
+│           │   └── ownerReferences: [Machine]
+│           │
+│           └── KubeadmConfig (my-cluster-xxxxx-abc12)
+│               └── ownerReferences: [Machine]
+│
+└── MachineDeployment (my-cluster-md-0-xxxxx)
+    └── ownerReferences: [Cluster]
+    │
+    └── MachineSet (my-cluster-md-0-xxxxx-abc12)
+        └── ownerReferences: [MachineDeployment]
+        │
+        ├── Machine (my-cluster-md-0-xxxxx-def34)
+        │   ├── ownerReferences: [MachineSet]
+        │   │
+        │   ├── BareMetalMachine (my-cluster-md-0-xxxxx-def34)
+        │   │   └── ownerReferences: [Machine]
+        │   │
+        │   └── KubeadmConfig (my-cluster-md-0-xxxxx-def34)
+        │       └── ownerReferences: [Machine]
+        │
+        └── Machine (my-cluster-md-0-xxxxx-ghi56)
+            └── ...
+```
+
+### 4.4 ClusterClass Patch 注入关系
+
+```
+Cluster.spec.topology.variables
+    │
+    ├── controlPlaneEndpoint.host ────────────────────────────────┐
+    ├── controlPlaneEndpoint.port ────────────────────────────────┤
+    ├── credentialsSecret ────────────────────────────────────────┤
+    ├── hostInventoryRef ─────────────────────────────────────────┤
+    ├── kubernetesVersion ────────────────────────────────────────┤
+    ├── podCIDR ──────────────────────────────────────────────────┤
+    ├── serviceCIDR ──────────────────────────────────────────────┤
+    └── preFlightChecks ──────────────────────────────────────────┤
+                                                                  │
+    ClusterClass.spec.patches                                     │
+    ├── name: controlPlaneEndpoint                                │
+    │   └── definitions:                                          │
+    │       └── selector: BareMetalClusterTemplate                │
+    │           └── jsonPatches:                                  │
+    │               ├── path: /spec/template/spec/controlPlane    │
+    │               │   Endpoint/host ◄───────────────────────────┘
+    │               └── path: /spec/template/spec/controlPlane    │
+    │                   Endpoint/port ◄───────────────────────────┘
+    │                                                             │
+    ├── name: credentialsSecret                                   │
+    │   └── definitions:                                          │
+    │       ├── selector: BareMetalMachineTemplate (CP)           │
+    │       │   └── jsonPatches:                                  │
+    │       │       └── path: /spec/template/spec/credentialsRef  │
+    │       │           /name ◄───────────────────────────────────┘
+    │       └── selector: BareMetalMachineTemplate (Worker)       │
+    │           └── jsonPatches:                                  │
+    │               └── path: /spec/template/spec/credentialsRef  │
+    │                   /name ◄───────────────────────────────────┘
+    │                                                             │
+    ├── name: hostInventoryRef                                    │
+    │   └── definitions:                                          │
+    │       ├── selector: BareMetalMachineTemplate (CP)           │
+    │       │   └── jsonPatches:                                  │
+    │       │       └── path: /spec/template/spec/hostInventoryRef│
+    │       │           /name ◄───────────────────────────────────┘
+    │       └── selector: BareMetalMachineTemplate (Worker)       │
+    │           └── jsonPatches:                                  │
+    │               └── path: /spec/template/spec/hostInventoryRef│
+    │                   /name ◄───────────────────────────────────┘
+    │                                                             │
+    └── name: kubernetesVersion                                   │
+        └── definitions:                                          │
+            └── selector: KubeadmControlPlaneTemplate             │
+                └── jsonPatches:                                  │
+                    └── path: /spec/template/spec/version ◄───────┘
 ```
 
 ---

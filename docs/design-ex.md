@@ -889,7 +889,2030 @@ Reconcile
     └── 更新 status
 ```
 
-## 六、SSH 连接管理 (保持不变)
+## 六、组件安装设计
+
+### 6.1 问题背景
+
+裸金属机器通常只安装了基础操作系统，缺少 Kubernetes 运行所需的组件：
+- **containerd**: 容器运行时
+- **kubeadm**: 集群初始化工具
+- **kubelet**: 节点代理
+- **kubectl**: 命令行工具（可选）
+
+CAPBM 需要在预检通过后、kubeadm 执行前，通过 SSH 远程安装这些组件。
+
+### 6.2 架构设计
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    组件安装流程                                  │
+│                                                                 │
+│  预检通过                                                        │
+│      │                                                          │
+│      ▼                                                          │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │ 1. 检测 OS 类型和包管理器                                 │  │
+│  │    - Ubuntu/Debian → apt                                 │  │
+│  │    - CentOS/RHEL/Rocky → yum/dnf                         │  │
+│  └────────────────────────┬─────────────────────────────────┘  │
+│                           │                                    │
+│                           ▼                                    │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │ 2. 检查组件是否已安装及版本                               │  │
+│  │    - containerd --version                                │  │
+│  │    - kubeadm version                                     │  │
+│  │    - kubelet --version                                   │  │
+│  └────────────────────────┬─────────────────────────────────┘  │
+│                           │                                    │
+│                    已安装且版本匹配？                           │
+│                    ╱              ╲                            │
+│                   是              否                           │
+│                   │               │                            │
+│                   ▼               ▼                            │
+│  ┌─────────────────────┐ ┌──────────────────────────────────┐ │
+│  │ 跳过安装            │ │ 3. 执行安装脚本                   │ │
+│  │ 继续预检            │ │    - 配置包仓库                   │ │
+│  │                     │ │    - 安装 containerd              │ │
+│  │                     │ │    - 安装 kubeadm/kubelet/kubectl │ │
+│  │                     │ │    - 配置 systemd 服务            │ │
+│  └─────────────────────┘ └──────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### 6.3 CRD 设计扩展
+
+在 `BareMetalMachineSpec` 中新增组件安装配置：
+
+```yaml
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: BareMetalMachine
+spec:
+  # ... 现有字段 ...
+  
+  componentInstall:
+    # 是否启用自动安装（默认 true）
+    enabled: true
+    
+    # 安装策略
+    strategy: "InstallIfMissing"  # InstallIfMissing | AlwaysInstall | Skip
+    
+    # 容器运行时配置
+    containerRuntime:
+      type: "containerd"          # containerd | docker | cri-o
+      version: "1.7.0"            # 可选，不指定则安装最新版
+      registryMirror:             # 镜像加速配置
+        - "https://mirror.example.com"
+      
+    # Kubernetes 组件配置
+    kubernetes:
+      version: "1.31.0"           # 与 Cluster.spec.topology.version 一致
+      repository:                 # 自定义仓库配置
+        baseUrl: "https://pkgs.k8s.io"
+        gpgKey: "https://pkgs.k8s.io/core:/stable:/v1.31/deb/Release.key"
+      
+    # 安装超时
+    timeout: "300s"
+```
+
+**Go 类型定义**:
+
+```go
+type ComponentInstallConfig struct {
+    // Enabled indicates whether automatic component installation is enabled.
+    // +optional
+    // +kubebuilder:default=true
+    Enabled bool `json:"enabled,omitempty"`
+    
+    // Strategy defines the installation strategy.
+    // +optional
+    // +kubebuilder:default=InstallIfMissing
+    Strategy InstallStrategy `json:"strategy,omitempty"`
+    
+    // ContainerRuntime specifies the container runtime configuration.
+    // +optional
+    ContainerRuntime ContainerRuntimeConfig `json:"containerRuntime,omitempty"`
+    
+    // Kubernetes specifies the Kubernetes components configuration.
+    // +optional
+    Kubernetes KubernetesComponentsConfig `json:"kubernetes,omitempty"`
+    
+    // Timeout is the maximum time to wait for installation to complete.
+    // +optional
+    Timeout *metav1.Duration `json:"timeout,omitempty"`
+    
+    // AirGap defines configuration for offline/air-gapped installations.
+    // +optional
+    AirGap *AirGapConfig `json:"airGap,omitempty"`
+    
+    // RollbackOnError indicates whether to rollback on installation failure.
+    // +optional
+    RollbackOnError bool `json:"rollbackOnError,omitempty"`
+    
+    // MaxRetries is the maximum number of retries for installation.
+    // +optional
+    // +kubebuilder:default=3
+    MaxRetries int `json:"maxRetries,omitempty"`
+}
+
+type InstallStrategy string
+
+const (
+    // InstallIfMissing installs only if components are not present or version mismatch.
+    InstallIfMissing InstallStrategy = "InstallIfMissing"
+    // AlwaysInstall always reinstalls components.
+    AlwaysInstall InstallStrategy = "AlwaysInstall"
+    // Skip skips installation (assumes components are pre-installed).
+    Skip InstallStrategy = "Skip"
+)
+
+type ContainerRuntimeConfig struct {
+    // Type is the container runtime type (containerd, docker, cri-o).
+    // +optional
+    // +kubebuilder:default=containerd
+    Type string `json:"type,omitempty"`
+    
+    // Version is the desired version of the container runtime.
+    // +optional
+    Version string `json:"version,omitempty"`
+    
+    // RegistryMirrors is a list of registry mirror URLs.
+    // +optional
+    RegistryMirrors []string `json:"registryMirrors,omitempty"`
+}
+
+type KubernetesComponentsConfig struct {
+    // Version is the desired Kubernetes version.
+    // +optional
+    Version string `json:"version,omitempty"`
+    
+    // Repository is the custom package repository configuration.
+    // +optional
+    Repository *PackageRepository `json:"repository,omitempty"`
+}
+
+type PackageRepository struct {
+    // BaseURL is the base URL of the package repository.
+    // +optional
+    BaseURL string `json:"baseUrl,omitempty"`
+    
+    // GPGKey is the URL to the GPG key for the repository.
+    // +optional
+    GPGKey string `json:"gpgKey,omitempty"`
+}
+
+// AirGapConfig defines configuration for offline/air-gapped installations.
+type AirGapConfig struct {
+    // Enabled indicates whether air-gapped installation mode is used.
+    // +optional
+    Enabled bool `json:"enabled,omitempty"`
+    
+    // BinarySource specifies how binaries are delivered in air-gapped mode.
+    // Options: HTTPServer | ConfigMap | Secret | LocalPath
+    // +optional
+    // +kubebuilder:default=HTTPServer
+    BinarySource string `json:"binarySource,omitempty"`
+    
+    // HTTPServerConfig is the configuration for HTTP binary source.
+    // +optional
+    HTTPServerConfig *HTTPServerConfig `json:"httpServerConfig,omitempty"`
+    
+    // LocalPath is the path on target machine where binaries are pre-placed.
+    // +optional
+    LocalPath string `json:"localPath,omitempty"`
+    
+    // PreloadImages is a list of container images to preload into containerd.
+    // +optional
+    PreloadImages []string `json:"preloadImages,omitempty"`
+}
+
+type HTTPServerConfig struct {
+    // BaseURL is the HTTP server URL serving binary packages.
+    BaseURL string `json:"baseUrl"`
+    
+    // TLSSecretRef references a Secret containing TLS client certificate.
+    // +optional
+    TLSSecretRef *corev1.LocalObjectReference `json:"tlsSecretRef,omitempty"`
+    
+    // InsecureSkipVerify skips TLS verification (for internal CAs).
+    // +optional
+    InsecureSkipVerify bool `json:"insecureSkipVerify,omitempty"`
+}
+```
+
+### 6.4 ClusterClass 变量和 Patches
+
+在 ClusterClass 中新增组件安装变量：
+
+```yaml
+  variables:
+  - name: componentInstall
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          enabled:
+            type: boolean
+            default: true
+          strategy:
+            type: string
+            default: "InstallIfMissing"
+            enum:
+              - "InstallIfMissing"
+              - "AlwaysInstall"
+              - "Skip"
+          containerRuntime:
+            type: object
+            properties:
+              type:
+                type: string
+                default: "containerd"
+                enum:
+                  - "containerd"
+                  - "cri-o"
+                  - "docker"
+              version:
+                type: string
+              registryMirrors:
+                type: array
+                items:
+                  type: string
+          kubernetes:
+            type: object
+            properties:
+              repository:
+                type: object
+                properties:
+                  baseUrl:
+                    type: string
+                  gpgKey:
+                    type: string
+          airGap:
+            type: object
+            properties:
+              enabled:
+                type: boolean
+                default: false
+              binarySource:
+                type: string
+                default: "HTTPServer"
+                enum:
+                  - "HTTPServer"
+                  - "ConfigMap"
+                  - "LocalPath"
+              httpServerConfig:
+                type: object
+                properties:
+                  baseUrl:
+                    type: string
+                  insecureSkipVerify:
+                    type: boolean
+                    default: false
+              preloadImages:
+                type: array
+                items:
+                  type: string
+          firewall:
+            type: object
+            properties:
+              configure:
+                type: boolean
+                default: true
+              autoDetect:
+                type: boolean
+                default: true
+          selinux:
+            type: object
+            properties:
+              configure:
+                type: boolean
+                default: true
+          timeout:
+            type: string
+            default: "300s"
+          rollbackOnError:
+            type: boolean
+            default: false
+          maxRetries:
+            type: integer
+            default: 3
+```
+
+Patch 定义：
+
+```yaml
+  patches:
+  - name: componentInstall
+    definitions:
+    - selector:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        kind: BareMetalMachineTemplate
+        matchResources:
+          controlPlane: true
+      jsonPatches:
+      - op: add
+        path: /spec/template/spec/componentInstall
+        valueFrom:
+          variable: componentInstall
+    - selector:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        kind: BareMetalMachineTemplate
+        matchResources:
+          machineDeploymentClass:
+            names:
+            - default-worker
+      jsonPatches:
+      - op: add
+        path: /spec/template/spec/componentInstall
+        valueFrom:
+          variable: componentInstall
+```
+
+### 6.5 安装脚本设计
+
+#### 6.5.1 安装流程
+
+```
+SSH 连接成功
+    │
+    ▼
+检测 OS 类型
+    │
+    ├── Ubuntu/Debian
+    │   ├── 检测 apt
+    │   ├── 配置 Kubernetes apt 仓库
+    │   └── 使用 apt 安装
+    │
+    ├── CentOS/RHEL/Rocky/AlmaLinux
+    │   ├── 检测 yum/dnf
+    │   ├── 配置 Kubernetes yum 仓库
+    │   └── 使用 yum/dnf 安装
+    │
+    └── 不支持的 OS → 报错退出
+    
+    ▼
+安装 containerd
+    │
+    ├── 检查是否已安装
+    ├── 安装 containerd 包
+    ├── 生成默认配置
+    ├── 配置 systemd cgroup driver
+    └── 启动并启用服务
+    
+    ▼
+安装 Kubernetes 组件
+    │
+    ├── 安装 kubeadm
+    ├── 安装 kubelet
+    ├── 安装 kubectl
+    ├── 启用 kubelet 服务
+    └── 设置 kubelet 开机自启
+    
+    ▼
+验证安装
+    │
+    ├── containerd --version
+    ├── kubeadm version
+    ├── kubelet --version
+    └── systemctl is-active kubelet
+```
+
+#### 6.5.2 Ubuntu/Debian 安装脚本
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+K8S_VERSION="${K8S_VERSION:-1.31.0}"
+CONTAINERD_VERSION="${CONTAINERD_VERSION:-}"
+REGISTRY_MIRRORS="${REGISTRY_MIRRORS:-}"
+
+echo "=== 开始安装 Kubernetes 组件 ==="
+
+# 1. 安装 containerd
+install_containerd() {
+    echo "--- 安装 containerd ---"
+    
+    if command -v containerd &>/dev/null; then
+        current_version=$(containerd --version | awk '{print $3}')
+        if [ -n "$CONTAINERD_VERSION" ] && [ "$current_version" != "$CONTAINERD_VERSION" ]; then
+            echo "containerd 版本不匹配，当前: $current_version, 需要: $CONTAINERD_VERSION"
+            apt-get remove -y containerd
+        else
+            echo "containerd 已安装: $current_version"
+            return 0
+        fi
+    fi
+    
+    apt-get update
+    apt-get install -y containerd
+    
+    # 生成默认配置
+    mkdir -p /etc/containerd
+    containerd config default > /etc/containerd/config.toml
+    
+    # 配置 systemd cgroup driver
+    sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
+    
+    # 配置镜像加速
+    if [ -n "$REGISTRY_MIRRORS" ]; then
+        # 添加镜像加速配置到 config.toml
+        cat >> /etc/containerd/config.toml << EOF
+[plugins."io.containerd.grpc.v1.cri".registry.mirrors]
+  [plugins."io.containerd.grpc.v1.cri".registry.mirrors."docker.io"]
+    endpoint = ["${REGISTRY_MIRRORS}"]
+EOF
+    fi
+    
+    systemctl restart containerd
+    systemctl enable containerd
+    
+    echo "containerd 安装完成: $(containerd --version)"
+}
+
+# 2. 安装 Kubernetes 组件
+install_kubernetes() {
+    echo "--- 安装 Kubernetes 组件 ---"
+    
+    # 检查是否已安装且版本匹配
+    if command -v kubeadm &>/dev/null; then
+        current_version=$(kubeadm version -o short 2>/dev/null || echo "")
+        if [ "$current_version" = "v${K8S_VERSION}" ]; then
+            echo "Kubernetes 组件已安装且版本匹配: $current_version"
+            return 0
+        fi
+        echo "Kubernetes 版本不匹配，当前: $current_version, 需要: v${K8S_VERSION}"
+    fi
+    
+    # 安装依赖
+    apt-get update
+    apt-get install -y apt-transport-https ca-certificates curl gpg
+    
+    # 添加 Kubernetes apt 仓库
+    curl -fsSL "https://pkgs.k8s.io/core:/stable:/v${K8S_VERSION%.*}/deb/Release.key" | \
+        gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+    
+    echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v${K8S_VERSION%.*}/deb/ /" > \
+        /etc/apt/sources.list.d/kubernetes.list
+    
+    # 安装组件
+    apt-get update
+    apt-get install -y kubelet="${K8S_VERSION}-*" kubeadm="${K8S_VERSION}-*" kubectl="${K8S_VERSION}-*"
+    
+    # 锁定版本防止自动升级
+    apt-mark hold kubelet kubeadm kubectl
+    
+    # 启用 kubelet
+    systemctl enable kubelet
+    
+    echo "Kubernetes 组件安装完成"
+    echo "  kubeadm: $(kubeadm version -o short)"
+    echo "  kubelet: $(kubelet --version)"
+    echo "  kubectl: $(kubectl version --client --short 2>/dev/null || kubectl version --client)"
+}
+
+# 执行安装
+install_containerd
+install_kubernetes
+
+echo "=== 组件安装完成 ==="
+```
+
+#### 6.5.3 CentOS/RHEL/Rocky 安装脚本
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+K8S_VERSION="${K8S_VERSION:-1.31.0}"
+CONTAINERD_VERSION="${CONTAINERD_VERSION:-}"
+REGISTRY_MIRRORS="${REGISTRY_MIRRORS:-}"
+
+echo "=== 开始安装 Kubernetes 组件 ==="
+
+# 检测包管理器
+if command -v dnf &>/dev/null; then
+    PKG_MANAGER="dnf"
+elif command -v yum &>/dev/null; then
+    PKG_MANAGER="yum"
+else
+    echo "ERROR: 不支持的包管理器"
+    exit 1
+fi
+
+# 1. 安装 containerd
+install_containerd() {
+    echo "--- 安装 containerd ---"
+    
+    if command -v containerd &>/dev/null; then
+        current_version=$(containerd --version | awk '{print $3}')
+        if [ -n "$CONTAINERD_VERSION" ] && [ "$current_version" != "$CONTAINERD_VERSION" ]; then
+            echo "containerd 版本不匹配，当前: $current_version, 需要: $CONTAINERD_VERSION"
+            $PKG_MANAGER remove -y containerd
+        else
+            echo "containerd 已安装: $current_version"
+            return 0
+        fi
+    fi
+    
+    $PKG_MANAGER install -y containerd
+    
+    # 生成默认配置
+    mkdir -p /etc/containerd
+    containerd config default > /etc/containerd/config.toml
+    
+    # 配置 systemd cgroup driver
+    sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
+    
+    systemctl restart containerd
+    systemctl enable containerd
+    
+    echo "containerd 安装完成: $(containerd --version)"
+}
+
+# 2. 安装 Kubernetes 组件
+install_kubernetes() {
+    echo "--- 安装 Kubernetes 组件 ---"
+    
+    # 检查是否已安装且版本匹配
+    if command -v kubeadm &>/dev/null; then
+        current_version=$(kubeadm version -o short 2>/dev/null || echo "")
+        if [ "$current_version" = "v${K8S_VERSION}" ]; then
+            echo "Kubernetes 组件已安装且版本匹配: $current_version"
+            return 0
+        fi
+    fi
+    
+    # 添加 Kubernetes yum 仓库
+    cat > /etc/yum.repos.d/kubernetes.repo << EOF
+[kubernetes]
+name=Kubernetes
+baseurl=https://pkgs.k8s.io/core:/stable:/v${K8S_VERSION%.*}/rpm/
+enabled=1
+gpgcheck=1
+gpgkey=https://pkgs.k8s.io/core:/stable:/v${K8S_VERSION%.*}/rpm/repodata/repomd.xml.key
+EOF
+    
+    # 安装组件
+    $PKG_MANAGER install -y kubelet-${K8S_VERSION} kubeadm-${K8S_VERSION} kubectl-${K8S_VERSION}
+    
+    # 启用 kubelet
+    systemctl enable kubelet
+    
+    echo "Kubernetes 组件安装完成"
+    echo "  kubeadm: $(kubeadm version -o short)"
+    echo "  kubelet: $(kubelet --version)"
+    echo "  kubectl: $(kubectl version --client --short 2>/dev/null || kubectl version --client)"
+}
+
+# 执行安装
+install_containerd
+install_kubernetes
+
+echo "=== 组件安装完成 ==="
+```
+
+### 6.6 Controller 集成
+
+在 `BareMetalMachine Controller` 的调谐流程中集成组件安装：
+
+```go
+func (r *BareMetalMachineReconciler) reconcileNormal(ctx context.Context, bmMachine *infrav1.BareMetalMachine, machine *clusterv1.Machine) (ctrl.Result, error) {
+    log := ctrl.LoggerFrom(ctx)
+
+    // 1. 获取 HostInventory
+    hostInventory, err := r.getHostInventory(ctx, bmMachine)
+    if err != nil {
+        return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+    }
+
+    // 2. 分配机器 (如果尚未分配)
+    if bmMachine.Spec.HostName == "" {
+        host, err := r.allocateHost(ctx, hostInventory, bmMachine)
+        if err != nil {
+            return ctrl.Result{RequeueAfter: 30 * time.Second}, err
+        }
+        bmMachine.Spec.HostName = host.HostName
+        bmMachine.Spec.IPAddress = host.IPAddress
+        bmMachine.Spec.CredentialsRef = &host.CredentialsRef
+        if err := r.Update(ctx, bmMachine); err != nil {
+            return ctrl.Result{}, err
+        }
+    }
+
+    // 3. 获取凭据
+    creds, err := r.getCredentials(ctx, bmMachine)
+    if err != nil {
+        markConditionFalse(bmMachine, infrav1.MachineReadyCondition, infrav1.CredentialsNotFoundReason, clusterv1.ConditionSeverityError, err.Error())
+        return ctrl.Result{RequeueAfter: 10 * time.Second}, r.Status().Update(ctx, bmMachine)
+    }
+
+    // 4. 建立 SSH 连接
+    sshConn, err := r.SSHManager.Connect(bmMachine.Spec.IPAddress, bmMachine.Spec.SSHPort, *creds)
+    if err != nil {
+        markConditionFalse(bmMachine, infrav1.SSHConnectedCondition, infrav1.SSHConnectionFailedReason, clusterv1.ConditionSeverityWarning, err.Error())
+        return ctrl.Result{RequeueAfter: 30 * time.Second}, r.Status().Update(ctx, bmMachine)
+    }
+    defer sshConn.Close()
+
+    markConditionTrue(bmMachine, infrav1.SSHConnectedCondition)
+
+    // 5. 执行预检
+    preflightConfig := ssh.DefaultPreflightConfig()
+    preflightResult, err := ssh.RunPreflightChecks(ctx, sshConn, preflightConfig)
+    if err != nil || !preflightResult.Passed {
+        markConditionFalse(bmMachine, infrav1.PreFlightChecksPassedCondition, infrav1.PreFlightChecksFailedReason, clusterv1.ConditionSeverityError, fmt.Sprintf("pre-flight checks failed: %v", preflightResult.Errors))
+        return ctrl.Result{RequeueAfter: 60 * time.Second}, r.Status().Update(ctx, bmMachine)
+    }
+    markConditionTrue(bmMachine, infrav1.PreFlightChecksPassedCondition)
+
+    // 6. 安装组件 (新增)
+    if bmMachine.Spec.ComponentInstall != nil && bmMachine.Spec.ComponentInstall.Enabled {
+        installResult, err := r.installComponents(ctx, sshConn, bmMachine)
+        if err != nil {
+            markConditionFalse(bmMachine, infrav1.ComponentsInstalledCondition, infrav1.ComponentInstallFailedReason, clusterv1.ConditionSeverityError, err.Error())
+            return ctrl.Result{RequeueAfter: 60 * time.Second}, r.Status().Update(ctx, bmMachine)
+        }
+        if !installResult.Completed {
+            log.Info("Component installation in progress", "progress", installResult.Progress)
+            return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+        }
+        markConditionTrue(bmMachine, infrav1.ComponentsInstalledCondition)
+    }
+
+    // 7. 设置 ProviderID
+    providerID := fmt.Sprintf("baremetal://%s", bmMachine.Spec.HostName)
+    if bmMachine.Spec.ProviderID == nil || *bmMachine.Spec.ProviderID != providerID {
+        bmMachine.Spec.ProviderID = &providerID
+        if err := r.Update(ctx, bmMachine); err != nil {
+            return ctrl.Result{}, err
+        }
+    }
+
+    // 8. 更新状态
+    bmMachine.Status.Ready = true
+    bmMachine.Status.ProviderID = providerID
+    bmMachine.Status.Addresses = []clusterv1.MachineAddress{
+        {Type: clusterv1.MachineInternalIP, Address: bmMachine.Spec.IPAddress},
+        {Type: clusterv1.MachineHostName, Address: bmMachine.Spec.HostName},
+    }
+    markConditionTrue(bmMachine, infrav1.MachineReadyCondition)
+
+    return ctrl.Result{}, r.Status().Update(ctx, bmMachine)
+}
+```
+
+### 6.7 安装状态 Condition
+
+新增 `ComponentsInstalled` Condition 跟踪组件安装状态：
+
+```go
+const (
+    // ComponentsInstalledCondition reports whether required components are installed.
+    ComponentsInstalledCondition clusterv1.ConditionType = "ComponentsInstalled"
+    
+    // ComponentInstallFailedReason indicates component installation failed.
+    ComponentInstallFailedReason = "ComponentInstallFailed"
+    
+    // ComponentsInstalledReason indicates components are installed.
+    ComponentsInstalledReason = "ComponentsInstalled"
+)
+```
+
+### 6.8 升级场景处理
+
+当 Kubernetes 版本升级时，组件安装逻辑需要处理版本更新：
+
+```
+升级触发
+    │
+    ▼
+检测当前组件版本
+    │
+    ├── 版本匹配 → 跳过安装
+    │
+    └── 版本不匹配 → 执行升级
+         │
+         ├── 升级 containerd (如果需要)
+         ├── 升级 kubeadm
+         ├── 升级 kubelet
+         └── 升级 kubectl
+```
+
+在 `InstallIfMissing` 策略下，版本不匹配会触发自动升级。
+
+### 6.9 用户自定义仓库
+
+对于内网环境，用户可能需要配置自定义包仓库：
+
+```yaml
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+spec:
+  topology:
+    variables:
+    - name: componentInstall
+      value:
+        enabled: true
+        strategy: "InstallIfMissing"
+        kubernetes:
+          repository:
+            baseUrl: "https://internal-mirror.example.com/kubernetes"
+            gpgKey: "https://internal-mirror.example.com/kubernetes/gpg.key"
+        containerRuntime:
+          registryMirrors:
+            - "https://internal-registry-mirror.example.com"
+```
+
+### 6.10 超时和重试
+
+安装脚本通过 context timeout 控制超时：
+
+```go
+func (r *BareMetalMachineReconciler) installComponents(ctx context.Context, sshConn *ssh.SSHConnection, bmMachine *infrav1.BareMetalMachine) (*InstallResult, error) {
+    timeout := 5 * time.Minute
+    if bmMachine.Spec.ComponentInstall.Timeout != nil {
+        timeout = bmMachine.Spec.ComponentInstall.Timeout.Duration
+    }
+    
+    ctx, cancel := context.WithTimeout(ctx, timeout)
+    defer cancel()
+    
+    // 执行安装脚本...
+}
+```
+
+### 6.11 离线/Air-Gap 安装支持
+
+#### 6.11.1 问题背景
+
+在内网或隔离环境中，目标机器无法访问外部包仓库。CAPBM 需要支持离线安装模式，通过以下方式分发组件：
+
+| 模式 | 适用场景 | 分发方式 |
+|------|---------|---------|
+| HTTP Server | 内网有 HTTP 服务 | 从内网 HTTP 服务器下载 RPM/DEB/二进制 |
+| ConfigMap/Secret | 小体积二进制 | 通过 Kubernetes 资源下发 |
+| Local Path | 镜像已预烧录 | 从本地指定路径读取 |
+| Preload Images | 容器镜像预加载 | tar 包导入 containerd |
+
+#### 6.11.2 CRD 扩展
+
+```yaml
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: BareMetalMachine
+spec:
+  componentInstall:
+    enabled: true
+    airGap:
+      enabled: true
+      binarySource: "HTTPServer"  # HTTPServer | ConfigMap | LocalPath
+      
+      # HTTP Server 模式
+      httpServerConfig:
+        baseUrl: "https://internal-pkg.example.com/k8s/v1.31.0"
+        insecureSkipVerify: false
+        tlsSecretRef:
+          name: "internal-ca-cert"
+      
+      # LocalPath 模式（当 binarySource=LocalPath 时）
+      # localPath: "/opt/k8s-binaries"
+      
+      # 预加载容器镜像列表
+      preloadImages:
+        - "registry.k8s.io/kube-apiserver:v1.31.0"
+        - "registry.k8s.io/kube-controller-manager:v1.31.0"
+        - "registry.k8s.io/kube-scheduler:v1.31.0"
+        - "registry.k8s.io/kube-proxy:v1.31.0"
+        - "registry.k8s.io/pause:3.9"
+        - "registry.k8s.io/etcd:3.5.15-0"
+        - "registry.k8s.io/coredns/coredns:v1.11.1"
+```
+
+#### 6.11.3 二进制包准备流程
+
+```
+管理端准备
+    │
+    ├── 1. 下载所需二进制包
+    │   ├── kubeadm/kubelet/kubectl (指定版本)
+    │   ├── containerd 静态二进制
+    │   └── 依赖库 (libseccomp 等)
+    │
+    ├── 2. 打包
+    │   ├── 按 OS 类型分类 (deb/rpm/tar.gz)
+    │   ├── 生成 checksum 文件
+    │   └── 打包为 versioned archive
+    │
+    └── 3. 分发到内网
+        ├── 上传到内网 HTTP 服务器
+        ├── 或导入 ConfigMap/Secret
+        └── 或预置到目标机器本地路径
+```
+
+#### 6.11.4 离线安装脚本 (HTTP Server 模式)
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+K8S_VERSION="${K8S_VERSION:-1.31.0}"
+BASE_URL="${BASE_URL:-https://internal-pkg.example.com/k8s}"
+CHECKSUM_FILE="checksums.sha256"
+INSTALL_DIR="/tmp/k8s-install"
+
+echo "=== 离线安装开始 ==="
+
+# 1. 创建安装目录
+mkdir -p "$INSTALL_DIR"
+cd "$INSTALL_DIR"
+
+# 2. 下载包并校验
+download_and_verify() {
+    local file="$1"
+    local url="${BASE_URL}/${file}"
+    
+    echo "下载: $file"
+    curl -fsSL --retry 3 --retry-delay 5 "$url" -o "$file"
+    
+    echo "校验: $file"
+    local expected_checksum
+    expected_checksum=$(grep "$file" "$CHECKSUM_FILE" | awk '{print $1}')
+    local actual_checksum
+    actual_checksum=$(sha256sum "$file" | awk '{print $1}')
+    
+    if [ "$expected_checksum" != "$actual_checksum" ]; then
+        echo "ERROR: 校验失败 $file"
+        echo "  期望: $expected_checksum"
+        echo "  实际: $actual_checksum"
+        return 1
+    fi
+    echo "校验通过: $file"
+}
+
+# 3. 安装 containerd
+install_containerd_offline() {
+    echo "--- 离线安装 containerd ---"
+    
+    if command -v containerd &>/dev/null; then
+        current_version=$(containerd --version | awk '{print $3}')
+        if [ "$current_version" = "${CONTAINERD_VERSION:-}" ]; then
+            echo "containerd 已安装: $current_version"
+            return 0
+        fi
+    fi
+    
+    download_and_verify "containerd-${CONTAINERD_VERSION:-latest}.linux-amd64.tar.gz"
+    
+    tar -C /usr/local -xzf "containerd-*.linux-amd64.tar.gz"
+    
+    # 安装 systemd 服务文件
+    cp /usr/local/bin/containerd /usr/bin/
+    containerd config default > /etc/containerd/config.toml
+    sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
+    
+    # 创建 systemd service
+    cat > /etc/systemd/system/containerd.service << 'EOF'
+[Unit]
+Description=containerd container runtime
+Documentation=https://containerd.io
+After=network.target local-fs.target
+
+[Service]
+ExecStartPre=-/sbin/modprobe overlay
+ExecStart=/usr/bin/containerd
+Type=notify
+Delegate=yes
+KillMode=process
+Restart=always
+RestartSec=5
+LimitNPROC=infinity
+LimitCORE=infinity
+LimitNOFILE=infinity
+TasksMax=infinity
+OOMScoreAdjust=-999
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable --now containerd
+    
+    echo "containerd 离线安装完成"
+}
+
+# 4. 安装 Kubernetes 组件
+install_k8s_offline() {
+    echo "--- 离线安装 Kubernetes 组件 ---"
+    
+    if command -v kubeadm &>/dev/null; then
+        current_version=$(kubeadm version -o short 2>/dev/null || echo "")
+        if [ "$current_version" = "v${K8S_VERSION}" ]; then
+            echo "Kubernetes 组件已安装且版本匹配"
+            return 0
+        fi
+    fi
+    
+    download_and_verify "kubeadm-v${K8S_VERSION}-linux-amd64"
+    download_and_verify "kubelet-v${K8S_VERSION}-linux-amd64"
+    download_and_verify "kubectl-v${K8S_VERSION}-linux-amd64"
+    
+    install -m 0755 "kubeadm-v${K8S_VERSION}-linux-amd64" /usr/bin/kubeadm
+    install -m 0755 "kubelet-v${K8S_VERSION}-linux-amd64" /usr/bin/kubelet
+    install -m 0755 "kubectl-v${K8S_VERSION}-linux-amd64" /usr/bin/kubectl
+    
+    # 创建 kubelet systemd service
+    cat > /etc/systemd/system/kubelet.service << 'EOF'
+[Unit]
+Description=kubelet: The Kubernetes Node Agent
+Documentation=https://kubernetes.io/docs/home/
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+ExecStart=/usr/bin/kubelet
+Restart=always
+StartLimitInterval=0
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable kubelet
+    
+    echo "Kubernetes 组件离线安装完成"
+}
+
+# 5. 预加载容器镜像 (如果有)
+preload_images() {
+    local images_file="${1:-}"
+    if [ -z "$images_file" ] || [ ! -f "$images_file" ]; then
+        echo "无预加载镜像列表"
+        return 0
+    fi
+    
+    echo "--- 预加载容器镜像 ---"
+    while IFS= read -r image_tar; do
+        if [ -f "$image_tar" ]; then
+            echo "导入: $image_tar"
+            ctr -n k8s.io images import "$image_tar" || true
+        fi
+    done < "$images_file"
+    echo "镜像预加载完成"
+}
+
+# 执行安装
+install_containerd_offline
+install_k8s_offline
+preload_images "${PRELOAD_IMAGES_LIST:-}"
+
+# 清理
+rm -rf "$INSTALL_DIR"
+
+echo "=== 离线安装完成 ==="
+```
+
+#### 6.11.5 镜像预加载设计
+
+```yaml
+# 预加载配置示例
+spec:
+  componentInstall:
+    airGap:
+      enabled: true
+      preloadImages:
+        - "registry.k8s.io/kube-apiserver:v1.31.0"
+        - "registry.k8s.io/kube-controller-manager:v1.31.0"
+        - "registry.k8s.io/kube-scheduler:v1.31.0"
+        - "registry.k8s.io/kube-proxy:v1.31.0"
+        - "registry.k8s.io/pause:3.9"
+        - "registry.k8s.io/etcd:3.5.15-0"
+        - "registry.k8s.io/coredns/coredns:v1.11.1"
+```
+
+预加载流程：
+```
+管理端准备镜像 tar 包
+    │
+    ├── 1. 拉取并打包
+    │   ├── skopeo copy docker://registry.k8s.io/kube-apiserver:v1.31.0 oci-archive:kube-apiserver.tar
+    │   └── 对所有必需镜像执行
+    │
+    ├── 2. 分发到目标机器
+    │   ├── 通过 HTTP Server 下载
+    │   └── 或预置到本地路径
+    │
+    └── 3. 导入 containerd
+        ├── ctr -n k8s.io images import kube-apiserver.tar
+        └── 验证镜像已加载
+```
+
+### 6.12 安装脚本健壮性设计
+
+#### 6.12.1 幂等性保证
+
+所有安装脚本必须满足幂等性，即多次执行结果一致：
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+# 幂等性安装函数模板
+install_with_idempotency() {
+    local component="$1"
+    local desired_version="$2"
+    local version_cmd="$3"
+    local install_cmd="$4"
+    
+    # 检查当前状态
+    if command -v "$component" &>/dev/null; then
+        local current_version
+        current_version=$(eval "$version_cmd" 2>/dev/null || echo "unknown")
+        
+        if [ "$current_version" = "$desired_version" ]; then
+            echo "[SKIP] $component 已安装且版本匹配: $current_version"
+            return 0
+        else
+            echo "[UPGRADE] $component 版本不匹配: $current_version -> $desired_version"
+            # 记录当前状态用于可能的回滚
+            echo "$current_version" > "/tmp/.capbm_rollback_${component}.version"
+        fi
+    else
+        echo "[INSTALL] $component 未安装，开始安装"
+    fi
+    
+    # 执行安装
+    eval "$install_cmd"
+    
+    # 验证安装结果
+    if command -v "$component" &>/dev/null; then
+        local new_version
+        new_version=$(eval "$version_cmd" 2>/dev/null || echo "unknown")
+        if [ "$new_version" = "$desired_version" ]; then
+            echo "[SUCCESS] $component 安装成功: $new_version"
+            return 0
+        else
+            echo "[ERROR] $component 安装后版本不正确: $new_version"
+            return 1
+        fi
+    else
+        echo "[ERROR] $component 安装后仍不可用"
+        return 1
+    fi
+}
+
+# 使用示例
+install_with_idempotency \
+    "kubeadm" \
+    "v1.31.0" \
+    "kubeadm version -o short" \
+    "apt-get install -y kubeadm=1.31.0-*"
+```
+
+#### 6.12.2 错误处理和回滚机制
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+# 全局错误处理
+ROLLBACK_STACK=()
+ERROR_OCCURRED=false
+
+# 注册回滚操作
+register_rollback() {
+    ROLLBACK_STACK=("$1" "${ROLLBACK_STACK[@]}")
+}
+
+# 执行回滚
+perform_rollback() {
+    echo "=== 开始回滚 ==="
+    ERROR_OCCURRED=true
+    
+    for action in "${ROLLBACK_STACK[@]}"; do
+        echo "执行回滚: $action"
+        eval "$action" || echo "WARNING: 回滚操作失败: $action"
+    done
+    
+    echo "=== 回滚完成 ==="
+}
+
+# 陷阱捕获错误
+trap 'perform_rollback' ERR
+
+# 安全安装函数
+safe_install() {
+    local component="$1"
+    local install_fn="$2"
+    local rollback_fn="$3"
+    
+    echo "安装: $component"
+    register_rollback "$rollback_fn"
+    
+    # 执行安装
+    eval "$install_fn"
+    
+    # 安装成功，移除此回滚注册
+    ROLLBACK_STACK=("${ROLLBACK_STACK[@]/$rollback_fn/}")
+    echo "安装成功: $component"
+}
+
+# 回滚操作示例
+rollback_containerd() {
+    systemctl stop containerd 2>/dev/null || true
+    apt-get remove -y containerd 2>/dev/null || yum remove -y containerd 2>/dev/null || true
+}
+
+rollback_kubelet() {
+    systemctl stop kubelet 2>/dev/null || true
+    apt-get remove -y kubelet 2>/dev/null || yum remove -y kubelet 2>/dev/null || true
+}
+
+# 使用安全安装
+safe_install "containerd" "install_containerd" "rollback_containerd"
+safe_install "kubelet" "install_kubelet" "rollback_kubelet"
+
+if [ "$ERROR_OCCURRED" = false ]; then
+    echo "=== 安装成功，无需回滚 ==="
+fi
+```
+
+#### 6.12.3 安装进度追踪
+
+```bash
+#!/bin/bash
+
+# 进度状态文件
+PROGRESS_FILE="/tmp/.capbm_install_progress"
+
+# 更新进度
+update_progress() {
+    local step="$1"
+    local status="$2"  # started | completed | failed
+    local message="${3:-}"
+    local timestamp
+    timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    
+    cat > "$PROGRESS_FILE" << EOF
+{
+    "step": "$step",
+    "status": "$status",
+    "message": "$message",
+    "timestamp": "$timestamp"
+}
+EOF
+}
+
+# 安装步骤包装器
+with_progress() {
+    local step_name="$1"
+    shift
+    
+    update_progress "$step_name" "started" "开始执行"
+    
+    if "$@"; then
+        update_progress "$step_name" "completed" "执行成功"
+        return 0
+    else
+        update_progress "$step_name" "failed" "执行失败"
+        return 1
+    fi
+}
+
+# 使用示例
+with_progress "detect_os" detect_os_type
+with_progress "install_containerd" install_containerd
+with_progress "install_kubeadm" install_kubeadm
+with_progress "install_kubelet" install_kubelet
+with_progress "verify_installation" verify_all
+```
+
+Controller 读取进度状态：
+```go
+type InstallProgress struct {
+    Step      string    `json:"step"`
+    Status    string    `json:"status"`    // started | completed | failed
+    Message   string    `json:"message"`
+    Timestamp time.Time `json:"timestamp"`
+}
+
+func (r *BareMetalMachineReconciler) getInstallProgress(ctx context.Context, sshConn *ssh.SSHConnection) (*InstallProgress, error) {
+    result, err := sshConn.RunCommand(ctx, "cat /tmp/.capbm_install_progress 2>/dev/null || echo '{}'")
+    if err != nil {
+        return nil, err
+    }
+    
+    var progress InstallProgress
+    if err := json.Unmarshal([]byte(result.Stdout), &progress); err != nil {
+        return nil, err
+    }
+    
+    return &progress, nil
+}
+```
+
+#### 6.12.4 健康检查验证
+
+安装完成后必须执行健康检查：
+
+```bash
+#!/bin/bash
+
+verify_installation() {
+    local errors=()
+    
+    echo "=== 安装验证 ==="
+    
+    # 1. containerd 验证
+    echo "--- containerd ---"
+    if ! command -v containerd &>/dev/null; then
+        errors+=("containerd 未找到")
+    else
+        echo "版本: $(containerd --version)"
+    fi
+    
+    if ! systemctl is-active --quiet containerd; then
+        errors+=("containerd 服务未运行")
+    else
+        echo "服务状态: running"
+    fi
+    
+    # 验证 crictl 连接
+    if command -v crictl &>/dev/null; then
+        if crictl info &>/dev/null; then
+            echo "CRI 连接: OK"
+        else
+            errors+=("crictl 无法连接 containerd")
+        fi
+    fi
+    
+    # 2. kubeadm 验证
+    echo "--- kubeadm ---"
+    if ! command -v kubeadm &>/dev/null; then
+        errors+=("kubeadm 未找到")
+    else
+        echo "版本: $(kubeadm version -o short)"
+    fi
+    
+    # 3. kubelet 验证
+    echo "--- kubelet ---"
+    if ! command -v kubelet &>/dev/null; then
+        errors+=("kubelet 未找到")
+    else
+        echo "版本: $(kubelet --version)"
+    fi
+    
+    if ! systemctl is-active --quiet kubelet; then
+        echo "WARNING: kubelet 服务未运行 (正常，等待 kubeadm 初始化)"
+    fi
+    
+    # 4. 网络端口验证
+    echo "--- 网络端口 ---"
+    check_port 10250 "kubelet API"
+    check_port 6443 "kube-apiserver (control-plane only)"
+    
+    # 5. 文件系统验证
+    echo "--- 文件系统 ---"
+    check_dir "/etc/kubernetes" "Kubernetes 配置目录"
+    check_dir "/var/lib/kubelet" "kubelet 数据目录"
+    check_dir "/etc/containerd" "containerd 配置目录"
+    
+    # 输出结果
+    if [ ${#errors[@]} -gt 0 ]; then
+        echo ""
+        echo "=== 验证失败 ==="
+        for err in "${errors[@]}"; do
+            echo "  ERROR: $err"
+        done
+        return 1
+    fi
+    
+    echo "=== 验证通过 ==="
+    return 0
+}
+
+check_port() {
+    local port="$1"
+    local desc="$2"
+    if ss -tlnp | grep -q ":${port} "; then
+        echo "端口 $port ($desc): 监听中"
+    else
+        echo "端口 $port ($desc): 未监听 (可能正常)"
+    fi
+}
+
+check_dir() {
+    local dir="$1"
+    local desc="$2"
+    if [ -d "$dir" ]; then
+        echo "目录 $dir ($desc): 存在"
+    else
+        echo "目录 $dir ($desc): 不存在 (可能正常)"
+    fi
+}
+```
+
+### 6.13 更多 OS 和运行时支持
+
+#### 6.13.1 支持的 OS 矩阵
+
+| OS | 版本 | 包管理器 | 支持状态 |
+|----|------|---------|---------|
+| Ubuntu | 20.04, 22.04, 24.04 | apt | 完全支持 |
+| Debian | 11, 12 | apt | 完全支持 |
+| CentOS | 7, 8, 9 | yum/dnf | 完全支持 |
+| RHEL | 8, 9 | dnf | 完全支持 |
+| Rocky Linux | 8, 9 | dnf | 完全支持 |
+| AlmaLinux | 8, 9 | dnf | 完全支持 |
+| openSUSE | 15.x | zypper | 实验性支持 |
+| SLES | 15.x | zypper | 实验性支持 |
+| Amazon Linux | 2, 2023 | yum/dnf | 实验性支持 |
+| Flatcar | 最新版 | 二进制/ignition | 特殊支持 (见 6.13.3) |
+| Talos | 最新版 | 不可变 OS | 不支持 (自带组件) |
+
+#### 6.13.2 SUSE/zypper 安装脚本
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+K8S_VERSION="${K8S_VERSION:-1.31.0}"
+
+echo "=== SUSE 安装开始 ==="
+
+# 安装 containerd
+install_containerd_suse() {
+    echo "--- 安装 containerd ---"
+    
+    if command -v containerd &>/dev/null; then
+        echo "containerd 已安装: $(containerd --version)"
+        return 0
+    fi
+    
+    zypper refresh
+    zypper install -y containerd
+    
+    mkdir -p /etc/containerd
+    containerd config default > /etc/containerd/config.toml
+    sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
+    
+    systemctl enable --now containerd
+    echo "containerd 安装完成"
+}
+
+# 安装 Kubernetes 组件
+install_k8s_suse() {
+    echo "--- 安装 Kubernetes 组件 ---"
+    
+    if command -v kubeadm &>/dev/null; then
+        current_version=$(kubeadm version -o short 2>/dev/null || echo "")
+        if [ "$current_version" = "v${K8S_VERSION}" ]; then
+            echo "Kubernetes 组件已安装且版本匹配"
+            return 0
+        fi
+    fi
+    
+    # 添加 Kubernetes 仓库
+    cat > /etc/zypp/repos.d/kubernetes.repo << EOF
+[kubernetes]
+name=Kubernetes
+baseurl=https://pkgs.k8s.io/core:/stable:/v${K8S_VERSION%.*}/rpm/
+enabled=1
+gpgcheck=1
+gpgkey=https://pkgs.k8s.io/core:/stable:/v${K8S_VERSION%.*}/rpm/repodata/repomd.xml.key
+EOF
+
+    zypper refresh
+    zypper install -y "kubelet-${K8S_VERSION}" "kubeadm-${K8S_VERSION}" "kubectl-${K8S_VERSION}"
+    
+    systemctl enable kubelet
+    
+    echo "Kubernetes 组件安装完成"
+}
+
+install_containerd_suse
+install_k8s_suse
+
+echo "=== SUSE 安装完成 ==="
+```
+
+#### 6.13.3 Flatcar Container Linux 支持
+
+Flatcar 是只读文件系统 OS，需要特殊处理：
+
+```yaml
+# Flatcar 安装配置
+spec:
+  componentInstall:
+    strategy: "InstallIfMissing"
+    osType: "flatcar"
+    flatcar:
+      # 使用 Ignition 配置
+      useIgnition: true
+      # 写入 /opt 目录 (Flatcar 可写路径)
+      installPath: "/opt/kubernetes"
+      # binfmt_misc 配置
+      enableBinfmtMisc: true
+```
+
+Flatcar 安装脚本：
+```bash
+#!/bin/bash
+set -euo pipefail
+
+# Flatcar 使用 /opt/bin 作为自定义二进制安装路径
+INSTALL_PREFIX="/opt/bin"
+K8S_VERSION="${K8S_VERSION:-1.31.0}"
+
+echo "=== Flatcar 安装开始 ==="
+
+# Flatcar 已预装 containerd，只需验证
+verify_containerd() {
+    if command -v containerd &>/dev/null; then
+        echo "containerd 已预装: $(containerd --version)"
+        
+        # 确保配置正确
+        if [ ! -f /etc/containerd/config.toml ]; then
+            mkdir -p /etc/containerd
+            containerd config default > /etc/containerd/config.toml
+            sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' /etc/containerd/config.toml
+            systemctl restart containerd
+        fi
+        return 0
+    fi
+    echo "ERROR: containerd 未找到"
+    return 1
+}
+
+# 安装 Kubernetes 二进制到 /opt/bin
+install_k8s_binaries() {
+    echo "--- 安装 Kubernetes 二进制 ---"
+    
+    mkdir -p "$INSTALL_PREFIX"
+    
+    # 下载二进制 (从官方或内网源)
+    local base_url="https://dl.k8s.io/v${K8S_VERSION}/bin/linux/amd64"
+    
+    for binary in kubeadm kubelet kubectl; do
+        echo "下载 $binary"
+        curl -fsSL "${base_url}/${binary}" -o "${INSTALL_PREFIX}/${binary}"
+        chmod +x "${INSTALL_PREFIX}/${binary}"
+    done
+    
+    # 创建符号链接到 PATH
+    for binary in kubeadm kubelet kubectl; do
+        ln -sf "${INSTALL_PREFIX}/${binary}" "/usr/local/bin/${binary}" 2>/dev/null || true
+    done
+    
+    echo "Kubernetes 二进制安装完成"
+}
+
+# 配置 kubelet systemd 服务 (使用 drop-in)
+configure_kubelet_service() {
+    echo "--- 配置 kubelet 服务 ---"
+    
+    mkdir -p /etc/systemd/system/kubelet.service.d
+    
+    cat > /etc/systemd/system/kubelet.service.d/10-kubeadm.conf << 'EOF'
+[Service]
+Environment="KUBELET_EXTRA_ARGS=--container-runtime-endpoint=unix:///run/containerd/containerd.sock"
+EOF
+
+    systemctl daemon-reload
+    systemctl enable kubelet
+    
+    echo "kubelet 服务配置完成"
+}
+
+verify_containerd
+install_k8s_binaries
+configure_kubelet_service
+
+echo "=== Flatcar 安装完成 ==="
+```
+
+#### 6.13.4 CRI-O 运行时支持
+
+```yaml
+spec:
+  componentInstall:
+    containerRuntime:
+      type: "cri-o"
+      version: "1.31"
+```
+
+CRI-O 安装脚本：
+```bash
+#!/bin/bash
+set -euo pipefail
+
+CRIO_VERSION="${CRIO_VERSION:-1.31}"
+OS_ID=$(. /etc/os-release && echo "$ID")
+
+echo "=== CRI-O 安装开始 ==="
+
+install_crio_debian() {
+    echo "--- Debian/Ubuntu 安装 CRI-O ---"
+    
+    if command -v crio &>/dev/null; then
+        echo "CRI-O 已安装: $(crio --version | head -1)"
+        return 0
+    fi
+    
+    export OS="xUbuntu_22.04"  # 根据实际版本调整
+    
+    echo "deb https://pkgs.k8s.io/addons:/cri-o:/stable:/${CRIO_VERSION}/deb/${OS}/ /" > \
+        /etc/apt/sources.list.d/cri-o.list
+    
+    curl -fsSL "https://pkgs.k8s.io/addons:/cri-o:/stable:/${CRIO_VERSION}/deb/${OS}/Release.key" | \
+        gpg --dearmor -o /etc/apt/keyrings/cri-o-apt-keyring.gpg
+    
+    apt-get update
+    apt-get install -y "cri-o-${CRIO_VERSION}"
+    
+    systemctl enable --now crio
+    echo "CRI-O 安装完成"
+}
+
+install_crio_rhel() {
+    echo "--- RHEL/CentOS 安装 CRI-O ---"
+    
+    if command -v crio &>/dev/null; then
+        echo "CRI-O 已安装: $(crio --version | head -1)"
+        return 0
+    fi
+    
+    cat > /etc/yum.repos.d/cri-o.repo << EOF
+[cri-o]
+name=CRI-O
+baseurl=https://pkgs.k8s.io/addons:/cri-o:/stable:/${CRIO_VERSION}/rpm/
+enabled=1
+gpgcheck=1
+gpgkey=https://pkgs.k8s.io/addons:/cri-o:/stable:/${CRIO_VERSION}/rpm/repodata/repomd.xml.key
+EOF
+
+    dnf install -y "cri-o-${CRIO_VERSION}"
+    
+    systemctl enable --now crio
+    echo "CRI-O 安装完成"
+}
+
+# 根据 OS 选择安装方法
+case "$OS_ID" in
+    ubuntu|debian)
+        install_crio_debian
+        ;;
+    centos|rhel|rocky|almalinux|fedora)
+        install_crio_rhel
+        ;;
+    *)
+        echo "ERROR: 不支持的 OS: $OS_ID"
+        exit 1
+        ;;
+esac
+
+echo "=== CRI-O 安装完成 ==="
+```
+
+#### 6.13.5 Docker 运行时支持 (仅用于兼容)
+
+```yaml
+spec:
+  componentInstall:
+    containerRuntime:
+      type: "docker"
+      version: "24.0"
+      # 需要安装 cri-dockerd 作为 shim
+      criDockerd:
+        enabled: true
+        version: "0.3.12"
+```
+
+Docker + cri-dockerd 安装脚本：
+```bash
+#!/bin/bash
+set -euo pipefail
+
+DOCKER_VERSION="${DOCKER_VERSION:-24.0}"
+CRI_DOCKERD_VERSION="${CRI_DOCKERD_VERSION:-0.3.12}"
+
+echo "=== Docker + cri-dockerd 安装开始 ==="
+
+# 安装 Docker
+install_docker() {
+    echo "--- 安装 Docker ---"
+    
+    if command -v docker &>/dev/null; then
+        echo "Docker 已安装: $(docker --version)"
+        return 0
+    fi
+    
+    # 使用官方安装脚本
+    curl -fsSL https://get.docker.com | sh -s -- --version "$DOCKER_VERSION"
+    
+    systemctl enable --now docker
+    echo "Docker 安装完成"
+}
+
+# 安装 cri-dockerd
+install_cri_dockerd() {
+    echo "--- 安装 cri-dockerd ---"
+    
+    if command -v cri-dockerd &>/dev/null; then
+        echo "cri-dockerd 已安装"
+        return 0
+    fi
+    
+    local arch="amd64"
+    curl -fsSL "https://github.com/Mirantis/cri-dockerd/releases/download/v${CRI_DOCKERD_VERSION}/cri-dockerd-${CRI_DOCKERD_VERSION}.${arch}.tgz" | \
+        tar -xz -C /tmp
+    
+    install /tmp/cri-dockerd/cri-dockerd /usr/local/bin/
+    
+    # 创建 systemd service
+    cat > /etc/systemd/system/cri-dockerd.service << 'EOF'
+[Unit]
+Description=CRI Interface for Docker Application Container Engine
+Documentation=https://docs.mirantis.com
+After=network-online.target firewalld.service docker.service
+Wants=network-online.target
+
+[Service]
+Type=notify
+ExecStart=/usr/local/bin/cri-dockerd --network-plugin=cni --pod-infra-container-image=registry.k8s.io/pause:3.9
+ExecReload=/bin/kill -s HUP $MAINPID
+TimeoutSec=0
+RestartSec=2
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    cat > /etc/systemd/system/cri-dockerd.socket << 'EOF'
+[Unit]
+Description=CRI Docker Socket for the API
+PartOf=cri-dockerd.service
+
+[Socket]
+ListenStream=/run/cri-dockerd.sock
+
+[Install]
+WantedBy=sockets.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable --now cri-dockerd.socket cri-dockerd
+    
+    echo "cri-dockerd 安装完成"
+}
+
+install_docker
+install_cri_dockerd
+
+echo "=== Docker + cri-dockerd 安装完成 ==="
+```
+
+### 6.14 网络配置和防火墙
+
+#### 6.14.1 端口需求
+
+| 组件 | 端口 | 协议 | 方向 | 说明 |
+|------|------|------|------|------|
+| kube-apiserver | 6443 | TCP | 入站 | Kubernetes API server |
+| etcd | 2379-2380 | TCP | 入站 | etcd 客户端和 peer |
+| kubelet | 10250 | TCP | 入站 | kubelet API |
+| kubelet | 10259 | TCP | 入站 | kube-scheduler (control-plane) |
+| kubelet | 10257 | TCP | 入站 | kube-controller-manager (control-plane) |
+| containerd | 未开放 | - | - | 使用 Unix socket |
+| CNI |  varies | TCP/UDP | 双向 | 取决于 CNI 插件 |
+
+#### 6.14.2 防火墙配置脚本
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+ROLE="${ROLE:-worker}"  # control-plane | worker
+FIREWALL_CMD="firewall-cmd"
+USE_FIREWALLD=false
+USE_UFW=false
+USE_IPTABLES=false
+
+# 检测防火墙工具
+detect_firewall() {
+    if command -v firewall-cmd &>/dev/null && systemctl is-active --quiet firewalld; then
+        USE_FIREWALLD=true
+        FIREWALL_CMD="firewall-cmd"
+        echo "检测到 firewalld"
+    elif command -v ufw &>/dev/null && ufw status | grep -q "Status: active"; then
+        USE_UFW=true
+        FIREWALL_CMD="ufw"
+        echo "检测到 ufw"
+    else
+        USE_IPTABLES=true
+        echo "使用 iptables (默认)"
+    fi
+}
+
+# 开放端口
+open_port() {
+    local port="$1"
+    local proto="${2:-tcp}"
+    local desc="$3"
+    
+    echo "开放端口: $port/$proto ($desc)"
+    
+    if $USE_FIREWALLD; then
+        firewall-cmd --permanent --add-port="${port}/${proto}"
+    elif $USE_UFW; then
+        ufw allow "${port}/${proto}" comment "$desc"
+    else
+        iptables -A INPUT -p "$proto" --dport "$port" -j ACCEPT
+    fi
+}
+
+# 配置防火墙规则
+configure_firewall() {
+    echo "=== 配置防火墙 ==="
+    
+    # 通用规则 (所有节点)
+    open_port 10250 tcp "kubelet API"
+    
+    # Control-plane 额外规则
+    if [ "$ROLE" = "control-plane" ]; then
+        open_port 6443 tcp "kube-apiserver"
+        open_port 2379 tcp "etcd client"
+        open_port 2380 tcp "etcd peer"
+        open_port 10257 tcp "kube-controller-manager"
+        open_port 10259 tcp "kube-scheduler"
+    fi
+    
+    # 应用更改
+    if $USE_FIREWALLD; then
+        firewall-cmd --reload
+    elif $USE_UFW; then
+        ufw reload
+    fi
+    
+    echo "防火墙配置完成"
+}
+
+detect_firewall
+configure_firewall
+```
+
+#### 6.14.3 SELinux 配置
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+echo "=== SELinux 配置 ==="
+
+if ! command -v getenforce &>/dev/null; then
+    echo "SELinux 未安装，跳过"
+    exit 0
+fi
+
+SELINUX_STATUS=$(getenforce)
+echo "当前 SELinux 状态: $SELINUX_STATUS"
+
+if [ "$SELINUX_STATUS" = "Disabled" ]; then
+    echo "SELinux 已禁用，跳过配置"
+    exit 0
+fi
+
+# 安装 containerd SELinux 策略 (如果可用)
+install_containerd_selinux() {
+    echo "--- 配置 containerd SELinux ---"
+    
+    if command -v semodule &>/dev/null; then
+        # 检查是否有 containerd 策略
+        if semodule -l 2>/dev/null | grep -q containerd; then
+            echo "containerd SELinux 策略已安装"
+        else
+            echo "安装 containerd SELinux 策略"
+            # 通常由 containerd-selinux 包提供
+            if command -v dnf &>/dev/null; then
+                dnf install -y container-selinux 2>/dev/null || true
+            elif command -v yum &>/dev/null; then
+                yum install -y container-selinux 2>/dev/null || true
+            fi
+        fi
+    fi
+}
+
+# 配置 kubelet SELinux 上下文
+configure_kubelet_selinux() {
+    echo "--- 配置 kubelet SELinux 上下文 ---"
+    
+    # 确保 kubelet 数据目录有正确上下文
+    if command -v semanage &>/dev/null; then
+        semanage fcontext -a -t var_lib_t "/var/lib/kubelet(/.*)?" 2>/dev/null || true
+        restorecon -Rv /var/lib/kubelet 2>/dev/null || true
+    fi
+}
+
+# 配置 CNI SELinux
+configure_cni_selinux() {
+    echo "--- 配置 CNI SELinux ---"
+    
+    if [ -d /etc/cni ]; then
+        restorecon -Rv /etc/cni 2>/dev/null || true
+    fi
+    
+    if [ -d /opt/cni ]; then
+        restorecon -Rv /opt/cni 2>/dev/null || true
+    fi
+}
+
+install_containerd_selinux
+configure_kubelet_selinux
+configure_cni_selinux
+
+echo "=== SELinux 配置完成 ==="
+```
+
+#### 6.14.4 网络预检脚本
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+echo "=== 网络预检 ==="
+
+ERRORS=()
+
+# 检查必需端口是否可用
+check_port_available() {
+    local port="$1"
+    local proto="${2:-tcp}"
+    local desc="$3"
+    
+    if ss -tlnp | grep -q ":${port} "; then
+        echo "WARNING: 端口 $port/$proto ($desc) 已被占用"
+    else
+        echo "OK: 端口 $port/$proto ($desc) 可用"
+    fi
+}
+
+# 检查网络连通性
+check_connectivity() {
+    echo "--- 网络连通性 ---"
+    
+    # 检查到 API server 的连通性 (worker 节点)
+    if [ -n "${API_SERVER_ENDPOINT:-}" ]; then
+        if curl -fsSk --connect-timeout 5 "https://${API_SERVER_ENDPOINT}:6443/healthz" &>/dev/null; then
+            echo "OK: API server 可达"
+        else
+            ERRORS+=("无法连接到 API server: ${API_SERVER_ENDPOINT}")
+        fi
+    fi
+    
+    # 检查 DNS 解析
+    if command -v nslookup &>/dev/null; then
+        if nslookup kubernetes.default.svc.cluster.local &>/dev/null; then
+            echo "OK: DNS 解析正常"
+        else
+            echo "WARNING: DNS 解析可能有问题"
+        fi
+    fi
+    
+    # 检查到 etcd peer 的连通性 (control-plane)
+    if [ "$ROLE" = "control-plane" ] && [ -n "${ETCD_PEERS:-}" ]; then
+        for peer in $ETCD_PEERS; do
+            if ping -c 1 -W 2 "$peer" &>/dev/null; then
+                echo "OK: etcd peer $peer 可达"
+            else
+                ERRORS+=("无法到达 etcd peer: $peer")
+            fi
+        done
+    fi
+}
+
+# 检查 MTU
+check_mtu() {
+    echo "--- MTU 检查 ---"
+    
+    local mtu
+    mtu=$(ip link show | grep "mtu" | head -1 | awk '{print $5}')
+    
+    if [ -n "$mtu" ] && [ "$mtu" -lt 1280 ]; then
+        ERRORS+=("MTU 过小: $mtu (最小 1280)")
+    else
+        echo "OK: MTU = $mtu"
+    fi
+}
+
+# 检查桥接流量 iptables
+check_bridge_nf() {
+    echo "--- 桥接流量检查 ---"
+    
+    local br_nf
+    br_nf=$(sysctl -n net.bridge.bridge-nf-call-iptables 2>/dev/null || echo "0")
+    
+    if [ "$br_nf" = "1" ]; then
+        echo "OK: bridge-nf-call-iptables 已启用"
+    else
+        echo "WARNING: bridge-nf-call-iptables 未启用，可能导致网络问题"
+        echo "执行: sysctl net.bridge.bridge-nf-call-iptables=1"
+    fi
+}
+
+# 执行检查
+check_port_available 6443 tcp "kube-apiserver"
+check_port_available 10250 tcp "kubelet"
+check_port_available 2379 tcp "etcd"
+check_connectivity
+check_mtu
+check_bridge_nf
+
+# 输出结果
+if [ ${#ERRORS[@]} -gt 0 ]; then
+    echo ""
+    echo "=== 网络预检发现以下问题 ==="
+    for err in "${ERRORS[@]}"; do
+        echo "  ERROR: $err"
+    done
+    exit 1
+fi
+
+echo "=== 网络预检通过 ==="
+```
+
+#### 6.14.5 完整安装流程集成
+
+更新后的完整安装流程：
+
+```
+SSH 连接成功
+    │
+    ▼
+┌─────────────────────────────────────────┐
+│ 1. 环境准备                              │
+│    ├── 检测 OS 类型和版本                │
+│    ├── 检测包管理器                      │
+│    ├── 检测防火墙工具                    │
+│    └── 检测 SELinux 状态                │
+└─────────────────┬───────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────┐
+│ 2. 网络预检                              │
+│    ├── 端口可用性检查                    │
+│    ├── 网络连通性检查                    │
+│    ├── MTU 检查                         │
+│    └── 桥接流量检查                      │
+└─────────────────┬───────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────┐
+│ 3. 前置配置                              │
+│    ├── 配置防火墙规则                    │
+│    ├── 配置 SELinux 策略                │
+│    ├── 禁用 swap                        │
+│    └── 配置内核参数                      │
+│        ├── net.bridge.bridge-nf-call-iptables │
+│        └── fs.inotify.max-user-watches  │
+└─────────────────┬───────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────┐
+│ 4. 组件安装                              │
+│    ├── 选择安装模式 (在线/离线)          │
+│    ├── 安装容器运行时                    │
+│    │   ├── containerd (默认)            │
+│    │   ├── CRI-O (可选)                 │
+│    │   └ Docker + cri-dockerd (兼容)    │
+│    └── 安装 Kubernetes 组件              │
+│        ├── kubeadm                      │
+│        ├── kubelet                      │
+│        └── kubectl                      │
+└─────────────────┬───────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────┐
+│ 5. 安装验证                              │
+│    ├── 组件版本验证                      │
+│    ├── 服务状态检查                      │
+│    ├── CRI 连接检查                      │
+│    └── 文件系统检查                      │
+└─────────────────┬───────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────┐
+│ 6. 清理                                  │
+│    ├── 删除临时文件                      │
+│    ├── 清理包缓存                        │
+│    └── 记录安装结果                      │
+└─────────────────────────────────────────┘
+```
+
+---
+
+## 七、SSH 连接管理 (保持不变)
 
 ### 6.1 SSH Manager 设计
 
@@ -1045,10 +3068,38 @@ cluster-api-provider-baremetal/
 │   │   ├── baremetalmachine_controller.go       # 优化：增加机器分配逻辑
 │   │   ├── baremetalhostinventory_controller.go # 新增
 │   │   └── suite_test.go
-│   └── ssh/
-│       ├── manager.go
-│       ├── client.go
-│       └── preflight.go
+│   ├── ssh/
+│   │   ├── manager.go
+│   │   ├── client.go
+│   │   └── preflight.go
+│   ├── installer/                                # 新增：组件安装模块
+│   │   ├── installer.go                         # 安装入口和调度
+│   │   ├── detector.go                          # OS/包管理器检测
+│   │   ├── progress.go                          # 进度追踪
+│   │   ├── rollback.go                          # 回滚管理
+│   │   ├── scripts/
+│   │   │   ├── install_containerd_ubuntu.sh     # containerd Ubuntu
+│   │   │   ├── install_containerd_rhel.sh       # containerd RHEL
+│   │   │   ├── install_k8s_ubuntu.sh            # K8s Ubuntu
+│   │   │   ├── install_k8s_rhel.sh              # K8s RHEL
+│   │   │   ├── install_crio.sh                  # CRI-O 安装
+│   │   │   ├── install_docker.sh                # Docker + cri-dockerd
+│   │   │   ├── install_offline.sh               # 离线安装
+│   │   │   ├── install_flatcar.sh               # Flatcar 特殊处理
+│   │   │   └── install_suse.sh                  # SUSE 安装
+│   │   └── templates/
+│   │       ├── containerd.service.tmpl          # systemd 模板
+│   │       └── kubelet.service.tmpl
+│   ├── network/                                  # 新增：网络配置模块
+│   │   ├── firewall.go                          # 防火墙配置
+│   │   ├── selinux.go                           # SELinux 配置
+│   │   ├── sysctl.go                            # 内核参数
+│   │   └── scripts/
+│   │       ├── configure_firewall.sh
+│   │       ├── configure_selinux.sh
+│   │       └── network_preflight.sh
+│   └── health/
+│       └── verify_installation.go               # 安装验证
 ├── config/
 │   ├── crd/
 │   │   ├── bases/
@@ -1070,6 +3121,9 @@ cluster-api-provider-baremetal/
 ├── templates/
 │   └── clusterclass/
 │       └── baremetal-clusterclass-v0.1.0.yaml
+├── hack/
+│   ├── prepare-offline-packages.sh              # 离线包准备脚本
+│   └── preload-images.sh                        # 镜像预加载脚本
 ├── go.mod
 └── go.sum
 ```
@@ -1171,7 +3225,12 @@ kubectl patch cluster my-baremetal-cluster --type='merge' -p '{
 | **Phase 7** | 删除逻辑 + 机器释放 | 1 周 |
 | **Phase 8** | ClusterClass 集成测试 + 变量覆盖测试 | 1 周 |
 | **Phase 9** | 升级/扩缩容 E2E 测试 + 文档 | 2 周 |
-| **总计** | | **11 周** |
+| **Phase 10** | 组件安装模块 (在线模式: Ubuntu/CentOS + containerd) | 1.5 周 |
+| **Phase 11** | 组件安装模块 (离线模式 + 多 OS 支持) | 1.5 周 |
+| **Phase 12** | 组件安装模块 (CRI-O/Docker + 回滚机制) | 1 周 |
+| **Phase 13** | 网络配置模块 (防火墙/SELinux/内核参数) | 1 周 |
+| **Phase 14** | 组件安装 E2E 测试 + 健壮性优化 | 1.5 周 |
+| **总计** | | **15.5 周** |
 
 ## 十一、优势总结
 
@@ -1205,6 +3264,20 @@ kubectl patch cluster my-baremetal-cluster --type='merge' -p '{
    - 支持 Runtime SDK 扩展 (未来)
    - 支持 Patches 条件启用 (enabledIf)
 
+7. **完整的组件安装能力**
+   - 自动检测 OS 类型并选择对应安装方式
+   - 支持在线和离线 (air-gap) 两种安装模式
+   - 支持多种容器运行时 (containerd/CRI-O/Docker)
+   - 幂等性保证，支持安全重试
+   - 失败自动回滚，避免机器处于不一致状态
+   - 安装进度实时追踪
+
+8. **企业级网络和安全支持**
+   - 自动配置防火墙规则 (firewalld/ufw/iptables)
+   - SELinux 策略自动配置
+   - 内核参数自动优化
+   - 网络预检和端口检查
+
 ### 11.2 适用场景
 
 - **标准化裸金属集群部署**：多套相同配置的集群
@@ -1212,3 +3285,6 @@ kubectl patch cluster my-baremetal-cluster --type='merge' -p '{
 - **需要频繁升级的环境**：利用 ClusterClass 升级能力
 - **多租户场景**：通过 ClusterClass 隔离不同租户的集群模板
 - **共享基础设施**：多个集群共享同一批裸金属机器
+- **隔离网络环境**：支持 air-gap 离线安装，适用于内网/安全隔离环境
+- **混合 OS 环境**：同时管理 Ubuntu/CentOS/SUSE/Flatcar 等多种 OS
+- **合规要求严格的环境**：自动配置 SELinux、防火墙等安全策略
