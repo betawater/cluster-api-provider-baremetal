@@ -44,8 +44,13 @@ type BareMetalMachineTemplateSpecInner struct {
 	// +kubebuilder:default=22
 	SSHPort int `json:"sshPort,omitempty"`
 
+	// HostInventoryRef references the BareMetalHostInventory to allocate a host from.
+	// +optional
+	HostInventoryRef *corev1.LocalObjectReference `json:"hostInventoryRef,omitempty"`
+
 	// CredentialsRef references the Secret containing SSH credentials.
-	CredentialsRef corev1.LocalObjectReference `json:"credentialsRef"`
+	// +optional
+	CredentialsRef *corev1.LocalObjectReference `json:"credentialsRef,omitempty"`
 
 	// PowerManagement holds optional power management configuration.
 	// +optional

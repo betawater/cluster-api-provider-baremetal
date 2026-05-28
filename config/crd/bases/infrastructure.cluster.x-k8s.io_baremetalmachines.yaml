@@ -59,6 +59,15 @@ spec:
                 required:
                 - name
                 type: object
+              hostInventoryRef:
+                description: HostInventoryRef references the BareMetalHostInventory to allocate a host from.
+                properties:
+                  name:
+                    description: Name of the referent.
+                    type: string
+                required:
+                - name
+                type: object
               hostName:
                 description: HostName is the hostname of the bare metal machine.
                 type: string
@@ -97,10 +106,6 @@ spec:
                 default: 22
                 description: SSHPort is the SSH port to connect to.
                 type: integer
-            required:
-            - credentialsRef
-            - hostName
-            - ipAddress
             type: object
           status:
             description: BareMetalMachineStatus defines the observed state of BareMetalMachine.

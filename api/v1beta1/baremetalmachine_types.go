@@ -64,11 +64,19 @@ type BareMetalMachineSpec struct {
 	// +optional
 	ProviderID *string `json:"providerID,omitempty"`
 
+	// HostInventoryRef references the BareMetalHostInventory to allocate a host from.
+	// +optional
+	HostInventoryRef *corev1.LocalObjectReference `json:"hostInventoryRef,omitempty"`
+
 	// HostName is the hostname of the bare metal machine.
-	HostName string `json:"hostName"`
+	// This can be specified directly or allocated from HostInventory.
+	// +optional
+	HostName string `json:"hostName,omitempty"`
 
 	// IPAddress is the IP address of the bare metal machine.
-	IPAddress string `json:"ipAddress"`
+	// This can be specified directly or allocated from HostInventory.
+	// +optional
+	IPAddress string `json:"ipAddress,omitempty"`
 
 	// SSHPort is the SSH port to connect to.
 	// +optional
@@ -76,13 +84,16 @@ type BareMetalMachineSpec struct {
 	SSHPort int `json:"sshPort,omitempty"`
 
 	// CredentialsRef references the Secret containing SSH credentials.
-	CredentialsRef corev1.LocalObjectReference `json:"credentialsRef"`
+	// This can be specified directly or allocated from HostInventory.
+	// +optional
+	CredentialsRef *corev1.LocalObjectReference `json:"credentialsRef,omitempty"`
 
 	// PowerManagement holds optional power management configuration.
 	// +optional
 	PowerManagement *PowerManagementConfig `json:"powerManagement,omitempty"`
 
 	// Role indicates the role of this machine (control-plane or worker).
+	// Used to filter hosts from the inventory.
 	// +optional
 	Role string `json:"role,omitempty"`
 }

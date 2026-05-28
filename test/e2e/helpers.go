@@ -25,6 +25,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	infrav1 "github.com/BetaWater/cluster-api-provider-baremetal/api/v1beta1"
@@ -53,7 +54,7 @@ func CreateBareMetalCluster(ctx context.Context, k8sClient client.Client, name, 
 			Namespace: namespace,
 		},
 		Spec: infrav1.BareMetalClusterSpec{
-			ControlPlaneEndpoint: infrav1.APIEndpoint{
+			ControlPlaneEndpoint: clusterv1.APIEndpoint{
 				Host: endpointHost,
 				Port: int32(endpointPort),
 			},

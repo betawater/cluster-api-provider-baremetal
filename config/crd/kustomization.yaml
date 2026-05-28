@@ -5,4 +5,5 @@ resources:
 - bases/infrastructure.cluster.x-k8s.io_baremetalclustertemplates.yaml
 - bases/infrastructure.cluster.x-k8s.io_baremetalmachines.yaml
 - bases/infrastructure.cluster.x-k8s.io_baremetalmachinetemplates.yaml
+- bases/infrastructure.cluster.x-k8s.io_baremetalhostinventories.yaml
 #+kubebuilder:scaffoldresource

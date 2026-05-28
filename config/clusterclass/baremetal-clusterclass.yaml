@@ -72,6 +72,12 @@ spec:
       openAPIV3Schema:
         type: string
         description: "SSH credentials Secret name"
+  - name: hostInventoryRef
+    required: true
+    schema:
+      openAPIV3Schema:
+        type: string
+        description: "BareMetalHostInventory resource name"
   - name: kubernetesVersion
     required: true
     schema:
@@ -146,6 +152,30 @@ spec:
         path: /spec/template/spec/credentialsRef/name
         valueFrom:
           variable: credentialsSecret
+  - name: hostInventoryRef
+    definitions:
+    - selector:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        kind: BareMetalMachineTemplate
+        matchResources:
+          controlPlane: true
+      jsonPatches:
+      - op: add
+        path: /spec/template/spec/hostInventoryRef/name
+        valueFrom:
+          variable: hostInventoryRef
+    - selector:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        kind: BareMetalMachineTemplate
+        matchResources:
+          machineDeploymentClass:
+            names:
+            - default-worker
+      jsonPatches:
+      - op: add
+        path: /spec/template/spec/hostInventoryRef/name
+        valueFrom:
+          variable: hostInventoryRef
   - name: kubernetesVersion
     definitions:
     - selector:

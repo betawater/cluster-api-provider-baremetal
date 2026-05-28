@@ -5,13 +5,14 @@
 - [1. 前置条件](#1-前置条件)
 - [2. 安装 CAPBM Provider](#2-安装-capbm-provider)
 - [3. 部署 ClusterClass 模板](#3-部署-clusterclass-模板)
-- [4. 创建裸金属集群](#4-创建裸金属集群)
-- [5. 集群管理](#5-集群管理)
-- [6. 多 Worker 池配置](#6-多-worker-池配置)
-- [7. 升级集群](#7-升级集群)
-- [8. 删除集群](#8-删除集群)
-- [9. 故障排查](#9-故障排查)
-- [10. 常见问题](#10-常见问题)
+- [4. 配置机器池 (BareMetalHostInventory)](#4-配置机器池-baremetalhostinventory)
+- [5. 创建裸金属集群](#5-创建裸金属集群)
+- [6. 集群管理](#6-集群管理)
+- [7. 多 Worker 池配置](#7-多-worker-池配置)
+- [8. 升级集群](#8-升级集群)
+- [9. 删除集群](#9-删除集群)
+- [10. 故障排查](#10-故障排查)
+- [11. 常见问题](#11-常见问题)
 
 ---
 
@@ -40,6 +41,23 @@
 - 管理集群可通过 SSH 访问所有裸金属机器
 - 外部负载均衡器地址（用于 API Server 端点）
 
+### 1.4 机器信息配置 (BareMetalHostInventory)
+
+在 ClusterClass 模式下，裸金属机器的具体信息（IP、主机名、凭据）通过 **BareMetalHostInventory** 资源统一管理。这是一个机器池概念，CAPBM 会从中自动分配可用机器给集群使用。
+
+**为什么需要机器池？**
+- ClusterClass 使用 `replicas` 指定节点数量，但不指定具体机器
+- 裸金属机器是预先存在的物理服务器，需要有一个地方定义它们的信息
+- 机器池支持多集群共享、自动分配和释放
+
+**机器池工作流程**：
+```
+1. 创建 BareMetalHostInventory 定义所有可用机器
+2. 创建 Cluster 时引用机器池
+3. CAPBM 自动从池中分配可用机器（根据 role 过滤）
+4. 删除集群时机器自动释放回池中
+```
+
 ---
 
 ## 2. 安装 CAPBM Provider
@@ -47,7 +65,6 @@
 ### 2.1 安装 Cluster API 核心组件
 
 ```bash
-# 安装 CAPI 核心、kubeadm bootstrap 和 control-plane provider
 clusterctl init \
   --core cluster-api \
   --bootstrap kubeadm \
@@ -58,13 +75,11 @@ clusterctl init \
 ### 2.2 验证安装
 
 ```bash
-# 检查所有组件是否正常运行
 kubectl get pods -n capi-system
 kubectl get pods -n capi-kubeadm-bootstrap-system
 kubectl get pods -n capi-kubeadm-control-plane-system
 kubectl get pods -n capbm-system
 
-# 检查 CRD 是否已注册
 kubectl get crd | grep -E "baremetal|cluster.x-k8s.io"
 ```
 
@@ -75,17 +90,13 @@ kubectl get crd | grep -E "baremetal|cluster.x-k8s.io"
 ### 3.1 应用 ClusterClass 及相关模板
 
 ```bash
-# 部署完整的 ClusterClass 定义和所有关联模板
 kubectl apply -f config/clusterclass/
 ```
 
 ### 3.2 验证部署
 
 ```bash
-# 检查 ClusterClass 是否已创建
 kubectl get clusterclass baremetal-clusterclass-v0.1.0
-
-# 检查所有模板资源
 kubectl get baremetalclustertemplate
 kubectl get baremetalmachinetemplate
 kubectl get kubeadmcontrolplanetemplate
@@ -94,26 +105,173 @@ kubectl get kubeadmconfigtemplate
 
 ---
 
-## 4. 创建裸金属集群
+## 4. 配置机器池 (BareMetalHostInventory)
 
-### 4.1 创建 SSH 凭据 Secret
+### 4.1 创建机器池定义
 
-```bash
-# 方式一：使用密码认证
-kubectl create secret generic baremetal-ssh-credentials \
-  --from-literal=username=root \
-  --from-literal=password=your-secure-password
+机器池定义了所有可用的裸金属机器信息，包括 IP、主机名、凭据和角色：
 
-# 方式二：使用 SSH Key 认证（推荐生产环境）
-kubectl create secret generic baremetal-ssh-credentials \
-  --from-literal=username=root \
-  --from-file=ssh-privatekey=/path/to/ssh/private-key
+```yaml
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: BareMetalHostInventory
+metadata:
+  name: datacenter-a-hosts
+  namespace: default
+spec:
+  hosts:
+  # 控制面节点
+  - name: node-01
+    hostName: "node-01"
+    ipAddress: "192.168.1.101"
+    sshPort: 22
+    credentialsRef:
+      name: node-01-credentials
+    role: "control-plane"
+    labels:
+      rack: "rack-1"
+      zone: "zone-a"
+  - name: node-02
+    hostName: "node-02"
+    ipAddress: "192.168.1.102"
+    sshPort: 22
+    credentialsRef:
+      name: node-02-credentials
+    role: "control-plane"
+    labels:
+      rack: "rack-1"
+      zone: "zone-a"
+  - name: node-03
+    hostName: "node-03"
+    ipAddress: "192.168.1.103"
+    sshPort: 22
+    credentialsRef:
+      name: node-03-credentials
+    role: "control-plane"
+    labels:
+      rack: "rack-2"
+      zone: "zone-b"
+  # Worker 节点
+  - name: node-04
+    hostName: "node-04"
+    ipAddress: "192.168.1.104"
+    sshPort: 22
+    credentialsRef:
+      name: node-04-credentials
+    role: "worker"
+    labels:
+      rack: "rack-2"
+      zone: "zone-b"
+  - name: node-05
+    hostName: "node-05"
+    ipAddress: "192.168.1.105"
+    sshPort: 22
+    credentialsRef:
+      name: node-05-credentials
+    role: "worker"
+    labels:
+      rack: "rack-3"
+      zone: "zone-a"
 ```
 
-### 4.2 使用 clusterctl 生成集群配置
+### 4.2 创建机器凭据 Secret
+
+为每台机器创建独立的凭据 Secret（或使用统一的凭据）：
 
 ```bash
-# 生成集群 YAML 配置
+# 方式一：每台机器独立凭据
+kubectl create secret generic node-01-credentials \
+  --from-literal=username=root \
+  --from-literal=password=node01-password
+
+kubectl create secret generic node-02-credentials \
+  --from-literal=username=root \
+  --from-literal=password=node02-password
+
+# 方式二：使用统一凭据（所有机器相同）
+kubectl create secret generic baremetal-unified-credentials \
+  --from-literal=username=root \
+  --from-literal=password=unified-password
+```
+
+### 4.3 应用机器池配置
+
+```bash
+kubectl apply -f baremetalhostinventory.yaml
+
+kubectl get baremetalhostinventory datacenter-a-hosts
+kubectl get baremetalhostinventory datacenter-a-hosts -o yaml
+```
+
+### 4.4 查看机器池状态
+
+```bash
+kubectl get baremetalhostinventory datacenter-a-hosts -o jsonpath='{.status}'
+```
+
+输出示例:
+```json
+{
+  "totalHosts": 5,
+  "availableHosts": 5,
+  "allocatedHosts": 0,
+  "hostsStatus": [
+    {"name": "node-01", "state": "Available"},
+    {"name": "node-02", "state": "Available"}
+  ]
+}
+```
+
+### 4.5 多机器池管理
+
+您可以创建多个机器池来管理不同位置或类型的机器：
+
+```yaml
+# 北京数据中心机器池
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: BareMetalHostInventory
+metadata:
+  name: beijing-datacenter-hosts
+  namespace: default
+spec:
+  hosts:
+  - name: bj-node-01
+    hostName: "bj-node-01"
+    ipAddress: "10.0.1.101"
+    credentialsRef:
+      name: beijing-credentials
+    role: "control-plane"
+---
+# 上海数据中心机器池
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: BareMetalHostInventory
+metadata:
+  name: shanghai-datacenter-hosts
+  namespace: default
+spec:
+  hosts:
+  - name: sh-node-01
+    hostName: "sh-node-01"
+    ipAddress: "10.0.2.101"
+    credentialsRef:
+      name: shanghai-credentials
+    role: "control-plane"
+```
+
+创建集群时通过 `hostInventoryRef` 变量指定使用哪个机器池：
+
+```yaml
+variables:
+- name: hostInventoryRef
+  value: "beijing-datacenter-hosts"
+```
+
+---
+
+## 5. 创建裸金属集群
+
+### 5.1 使用 clusterctl 生成集群配置
+
+```bash
 clusterctl generate cluster my-baremetal-cluster \
   --from templates/clusterclass/baremetal-clusterclass-v0.1.0.yaml \
   --variable CLUSTER_NAME=my-baremetal-cluster \
@@ -123,15 +281,12 @@ clusterctl generate cluster my-baremetal-cluster \
   --variable WORKER_MACHINE_COUNT=2 \
   --variable CONTROL_PLANE_ENDPOINT_HOST=lb.example.com \
   --variable CONTROL_PLANE_ENDPOINT_PORT=6443 \
+  --variable HOST_INVENTORY_REF=datacenter-a-hosts \
   --variable SSH_CREDENTIALS_SECRET=baremetal-ssh-credentials \
-  --variable SSH_USERNAME=root \
-  --variable SSH_PASSWORD=your-secure-password \
   > cluster.yaml
 ```
 
-### 4.3 手动编写集群配置（可选）
-
-如果您需要更精细的控制，可以手动编写 Cluster 资源：
+### 5.2 手动编写集群配置
 
 ```yaml
 apiVersion: cluster.x-k8s.io/v1beta2
@@ -149,8 +304,6 @@ spec:
       metadata:
         labels:
           role: control-plane
-        annotations:
-          description: "Control plane nodes"
     workers:
       machineDeployments:
       - class: default-worker
@@ -159,8 +312,6 @@ spec:
         metadata:
           labels:
             role: worker
-          annotations:
-            description: "Worker nodes"
     variables:
     - name: controlPlaneEndpoint
       value:
@@ -168,74 +319,56 @@ spec:
         port: 6443
     - name: credentialsSecret
       value: "baremetal-ssh-credentials"
+    - name: hostInventoryRef
+      value: "datacenter-a-hosts"
     - name: kubernetesVersion
       value: "v1.31.0"
     - name: podCIDR
       value: "10.244.0.0/16"
     - name: serviceCIDR
       value: "10.96.0.0/12"
----
-apiVersion: v1
-kind: Secret
-metadata:
-  name: baremetal-ssh-credentials
-  namespace: default
-stringData:
-  username: "root"
-  password: "your-secure-password"
 ```
 
-### 4.4 应用集群配置
+### 5.3 应用集群配置
 
 ```bash
-# 应用集群配置
 kubectl apply -f cluster.yaml
 
-# 查看集群创建进度
 clusterctl describe cluster my-baremetal-cluster
 
-# 或使用 kubectl 查看
 kubectl get cluster my-baremetal-cluster
 kubectl get baremetalcluster my-baremetal-cluster
 ```
 
-### 4.5 监控集群创建过程
+### 5.4 监控集群创建过程
 
 ```bash
-# 实时监控集群状态
 kubectl get cluster my-baremetal-cluster --watch
 
-# 查看基础设施状态
 kubectl get baremetalcluster my-baremetal-cluster -o yaml
 
-# 查看 Machine 状态
 kubectl get machines -l cluster.x-k8s.io/cluster-name=my-baremetal-cluster
 
-# 查看 BareMetalMachine 状态
 kubectl get baremetalmachines -l cluster.x-k8s.io/cluster-name=my-baremetal-cluster
 ```
 
-### 4.6 获取工作集群 kubeconfig
+### 5.5 获取工作集群 kubeconfig
 
 ```bash
-# 获取工作集群的 kubeconfig
 clusterctl get kubeconfig my-baremetal-cluster > workload-kubeconfig
 
-# 使用 kubeconfig 访问工作集群
 kubectl --kubeconfig workload-kubeconfig get nodes
 kubectl --kubeconfig workload-kubeconfig get pods -A
 ```
 
 ---
 
-## 5. 集群管理
+## 6. 集群管理
 
-### 5.1 扩缩容
-
-#### 扩容 Worker 节点
+### 6.1 扩缩容
 
 ```bash
-# 将 Worker 节点扩容到 5 个
+# 扩容 Worker 节点到 5 个
 kubectl patch cluster my-baremetal-cluster --type='merge' -p '{
   "spec": {
     "topology": {
@@ -252,53 +385,31 @@ kubectl patch cluster my-baremetal-cluster --type='merge' -p '{
   }
 }'
 
-# 验证扩容
 kubectl get machines -l cluster.x-k8s.io/cluster-name=my-baremetal-cluster
 ```
 
-#### 缩容控制面节点
+### 6.2 查看集群详情
 
 ```bash
-# 将控制面节点缩容到 1 个（仅用于测试环境）
-kubectl patch cluster my-baremetal-cluster --type='merge' -p '{
-  "spec": {
-    "topology": {
-      "controlPlane": {
-        "replicas": 1
-      }
-    }
-  }
-}'
-```
-
-### 5.2 查看集群详情
-
-```bash
-# 使用 clusterctl 查看集群拓扑
 clusterctl describe cluster my-baremetal-cluster --show-conditions all
 
-# 查看 ClusterClass 生成的资源
 kubectl get all -l cluster.x-k8s.io/cluster-name=my-baremetal-cluster
 ```
 
-### 5.3 健康检查
+### 6.3 健康检查
 
 ```bash
-# 查看 MachineHealthCheck 状态
 kubectl get machinehealthcheck -l cluster.x-k8s.io/cluster-name=my-baremetal-cluster
 
-# 查看节点健康状态
 kubectl --kubeconfig workload-kubeconfig get nodes
 kubectl --kubeconfig workload-kubeconfig describe node <node-name>
 ```
 
 ---
 
-## 6. 多 Worker 池配置
+## 7. 多 Worker 池配置
 
-### 6.1 创建多 Worker 池集群
-
-当您需要不同规格的 Worker 节点时，可以定义多个 MachineDeployment：
+### 7.1 创建多 Worker 池集群
 
 ```yaml
 apiVersion: cluster.x-k8s.io/v1beta2
@@ -341,11 +452,13 @@ spec:
         port: 6443
     - name: credentialsSecret
       value: "baremetal-ssh-credentials"
+    - name: hostInventoryRef
+      value: "datacenter-a-hosts"
     - name: kubernetesVersion
       value: "v1.31.0"
 ```
 
-### 6.2 使用节点选择器调度工作负载
+### 7.2 使用节点选择器调度工作负载
 
 ```yaml
 apiVersion: apps/v1
@@ -372,12 +485,11 @@ spec:
 
 ---
 
-## 7. 升级集群
+## 8. 升级集群
 
-### 7.1 升级 Kubernetes 版本
+### 8.1 升级 Kubernetes 版本
 
 ```bash
-# 升级到 v1.32.0
 kubectl patch cluster my-baremetal-cluster --type='merge' -p '{
   "spec": {
     "topology": {
@@ -387,159 +499,136 @@ kubectl patch cluster my-baremetal-cluster --type='merge' -p '{
 }'
 ```
 
-### 7.2 升级流程说明
-
-ClusterClass 会自动编排升级流程：
+### 8.2 升级流程说明
 
 ```
 1. 控制面升级
-   ├── etcd 集群逐个升级
-   ├── API Server 逐个滚动升级
-   └── 等待控制面健康
+   - etcd 集群逐个升级
+   - API Server 逐个滚动升级
+   - 等待控制面健康
 
 2. Worker 节点升级
-   ├── 逐个滚动升级 MachineDeployment
-   ├── 每个节点升级前执行预检
-   └── 等待新节点 Ready 后驱逐旧节点
+   - 逐个滚动升级 MachineDeployment
+   - 每个节点升级前执行预检
+   - 等待新节点 Ready 后驱逐旧节点
 
 3. 升级完成
-   └── 所有节点运行新版本
+   - 所有节点运行新版本
 ```
 
-### 7.3 监控升级进度
+### 8.3 监控升级进度
 
 ```bash
-# 查看升级状态
 clusterctl describe cluster my-baremetal-cluster --show-conditions all
 
-# 查看各 Machine 的版本
 kubectl get machines -l cluster.x-k8s.io/cluster-name=my-baremetal-cluster \
   -o custom-columns=NAME:.metadata.name,VERSION:.spec.version,PHASE:.status.phase
 ```
 
 ---
 
-## 8. 删除集群
+## 9. 删除集群
 
-### 8.1 删除集群
+### 9.1 删除集群
 
 ```bash
-# 删除集群（会级联删除所有关联资源）
 kubectl delete cluster my-baremetal-cluster
 
-# 或使用 clusterctl
 clusterctl delete cluster my-baremetal-cluster
 ```
 
-### 8.2 清理凭据
+### 9.2 清理凭据
 
 ```bash
-# 删除 SSH 凭据 Secret
 kubectl delete secret baremetal-ssh-credentials
 ```
 
-### 8.3 卸载 Provider（可选）
+### 9.3 卸载 Provider
 
 ```bash
-# 卸载 CAPBM Provider
 clusterctl delete --infrastructure baremetal
 
-# 卸载所有 CAPI 组件
 clusterctl delete --all
 ```
 
 ---
 
-## 9. 故障排查
+## 10. 故障排查
 
-### 9.1 集群创建失败
+### 10.1 集群创建失败
 
 ```bash
-# 查看集群事件
 kubectl describe cluster my-baremetal-cluster
 
-# 查看 BareMetalCluster 事件
 kubectl describe baremetalcluster my-baremetal-cluster
 
-# 查看 BareMetalMachine 事件
 kubectl describe baremetalmachine <machine-name>
 
-# 查看 Controller 日志
 kubectl logs -n capbm-system -l control-plane=controller-manager --tail=100
 ```
 
-### 9.2 SSH 连接问题
+### 10.2 SSH 连接问题
 
 ```bash
-# 检查凭据 Secret 是否存在
 kubectl get secret baremetal-ssh-credentials
 
-# 检查 Secret 内容
 kubectl get secret baremetal-ssh-credentials -o jsonpath='{.data.username}' | base64 -d
-kubectl get secret baremetal-ssh-credentials -o jsonpath='{.data.password}' | base64 -d
 
-# 测试 SSH 连接
 ssh -o StrictHostKeyChecking=no root@<machine-ip> echo "SSH connection successful"
 ```
 
-### 9.3 预检失败
+### 10.3 预检失败
 
 ```bash
-# 查看预检条件状态
 kubectl get baremetalmachine <machine-name> -o jsonpath='{.status.conditions}'
-
-# 常见预检失败原因：
-# 1. OS 不支持 - 检查 /etc/os-release
-# 2. 内核版本过低 - 检查 uname -r
-# 3. 磁盘空间不足 - 检查 df -h
-# 4. 内存不足 - 检查 free -g
-# 5. Swap 未关闭 - 检查 swapon --show
 ```
 
-### 9.4 网络问题
+常见预检失败原因：
+1. OS 不支持 - 检查 /etc/os-release
+2. 内核版本过低 - 检查 uname -r
+3. 磁盘空间不足 - 检查 df -h
+4. 内存不足 - 检查 free -g
+5. Swap 未关闭 - 检查 swapon --show
+
+### 10.4 网络问题
 
 ```bash
-# 检查负载均衡器是否可达
 curl -k https://lb.example.com:6443/version
 
-# 检查节点间网络连通性
 kubectl --kubeconfig workload-kubeconfig exec -it <pod-name> -- ping <other-node-ip>
 
-# 检查 DNS 解析
 kubectl --kubeconfig workload-kubeconfig run -it dns-test --image=busybox:1.28 --restart=Never -- nslookup kubernetes.default
 ```
 
 ---
 
-## 10. 常见问题
+## 11. 常见问题
 
 ### Q1: 如何添加新的裸金属机器？
 
-**A:** 确保新机器的 IP 和凭据已配置，然后增加 `replicas` 值：
+更新 BareMetalHostInventory 添加新机器，然后增加 replicas：
 
 ```bash
+kubectl edit baremetalhostinventory datacenter-a-hosts
+
 kubectl patch cluster my-baremetal-cluster --type='merge' -p \
   '{"spec":{"topology":{"workers":{"machineDeployments":[{"class":"default-worker","name":"md-0","replicas":3}]}}}}'
 ```
 
 ### Q2: 如何更换 SSH 凭据？
 
-**A:** 更新 Secret 并重新触发调和：
+更新 Secret 并重新触发调和：
 
 ```bash
-# 更新 Secret
 kubectl create secret generic baremetal-ssh-credentials \
   --from-literal=username=newuser \
   --from-literal=password=newpassword \
   --dry-run=client -o yaml | kubectl apply -f -
 
-# 触发重新调和（给 BareMetalMachine 添加 annotation）
 kubectl annotate baremetalmachine <machine-name> force-reconcile=$(date +%s)
 ```
 
 ### Q3: 如何禁用预检？
-
-**A:** 在 Cluster 的 variables 中设置：
 
 ```yaml
 variables:
@@ -550,7 +639,6 @@ variables:
 
 ### Q4: 支持哪些操作系统？
 
-**A:** 目前支持以下操作系统：
 - Ubuntu 20.04, 22.04
 - CentOS 7, 8
 - Rocky Linux 8, 9
@@ -558,8 +646,6 @@ variables:
 - Debian 10, 11, 12
 
 ### Q5: 如何自定义 Pod CIDR 和 Service CIDR？
-
-**A:** 在 Cluster 的 variables 中设置：
 
 ```yaml
 variables:
@@ -575,15 +661,11 @@ variables:
 kubectl get clusterclass baremetal-clusterclass-v0.1.0 -o yaml
 ```
 
-### Q7: 如何自定义 ClusterClass？
-
-**A:** 编辑 ClusterClass 资源并应用：
+### Q7: 如何查看机器池分配状态？
 
 ```bash
-kubectl edit clusterclass baremetal-clusterclass-v0.1.0
+kubectl get baremetalhostinventory datacenter-a-hosts -o jsonpath='{.status.hostsStatus}'
 ```
-
-修改后，现有的 Cluster 会自动根据新的 ClusterClass 进行调和。
 
 ---
 
@@ -595,6 +677,7 @@ kubectl edit clusterclass baremetal-clusterclass-v0.1.0
 |--------|------|------|--------|------|
 | controlPlaneEndpoint | object | 是 | - | 控制面负载均衡地址 (host, port) |
 | credentialsSecret | string | 是 | - | SSH 凭据 Secret 名称 |
+| hostInventoryRef | string | 是 | - | BareMetalHostInventory 资源名称 |
 | kubernetesVersion | string | 是 | - | Kubernetes 版本 (格式: vX.Y.Z) |
 | podCIDR | string | 否 | 10.244.0.0/16 | Pod 网络 CIDR |
 | serviceCIDR | string | 否 | 10.96.0.0/12 | Service 网络 CIDR |

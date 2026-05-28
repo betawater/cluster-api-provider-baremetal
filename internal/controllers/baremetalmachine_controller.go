@@ -24,11 +24,11 @@ import (
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 	"sigs.k8s.io/cluster-api/util"
-	"sigs.k8s.io/cluster-api/util/conditions"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -37,6 +37,36 @@ import (
 	infrav1 "github.com/BetaWater/cluster-api-provider-baremetal/api/v1beta1"
 	"github.com/BetaWater/cluster-api-provider-baremetal/internal/ssh"
 )
+
+func setCondition(bmMachine *infrav1.BareMetalMachine, conditionType clusterv1.ConditionType, status corev1.ConditionStatus, reason string, severity clusterv1.ConditionSeverity, message string) {
+	condition := clusterv1.Condition{
+		Type:               conditionType,
+		Status:             status,
+		Reason:             reason,
+		Severity:           severity,
+		Message:            message,
+		LastTransitionTime: metav1.Now(),
+	}
+
+	conditions := bmMachine.GetConditions()
+	for i, c := range conditions {
+		if c.Type == conditionType {
+			conditions[i] = condition
+			bmMachine.SetConditions(conditions)
+			return
+		}
+	}
+	conditions = append(conditions, condition)
+	bmMachine.SetConditions(conditions)
+}
+
+func markConditionFalse(bmMachine *infrav1.BareMetalMachine, conditionType clusterv1.ConditionType, reason string, severity clusterv1.ConditionSeverity, message string) {
+	setCondition(bmMachine, conditionType, corev1.ConditionFalse, reason, severity, message)
+}
+
+func markConditionTrue(bmMachine *infrav1.BareMetalMachine, conditionType clusterv1.ConditionType) {
+	setCondition(bmMachine, conditionType, corev1.ConditionTrue, "", clusterv1.ConditionSeverityInfo, "")
+}
 
 // BareMetalMachineReconciler reconciles a BareMetalMachine object.
 type BareMetalMachineReconciler struct {
@@ -49,6 +79,8 @@ type BareMetalMachineReconciler struct {
 // +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=baremetalmachines,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=baremetalmachines/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=baremetalmachines/finalizers,verbs=update
+// +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=baremetalhostinventories,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=baremetalhostinventories/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=cluster.x-k8s.io,resources=machines;machines/status,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 
@@ -95,15 +127,44 @@ func (r *BareMetalMachineReconciler) reconcileNormal(ctx context.Context, bmMach
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 	}
 
+	// Allocate host from inventory if not already allocated
+	if bmMachine.Spec.HostName == "" || bmMachine.Spec.IPAddress == "" {
+		if bmMachine.Spec.HostInventoryRef == nil {
+			markConditionFalse(bmMachine, infrav1.MachineReadyCondition, infrav1.InvalidConfigurationReason, clusterv1.ConditionSeverityError, "hostInventoryRef is required when hostName/ipAddress not specified")
+			return ctrl.Result{}, nil
+		}
+
+		host, err := r.allocateHostFromInventory(ctx, bmMachine)
+		if err != nil {
+			log.Error(err, "Failed to allocate host from inventory")
+			markConditionFalse(bmMachine, infrav1.MachineReadyCondition, "HostAllocationFailed", clusterv1.ConditionSeverityError, err.Error())
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, r.Status().Update(ctx, bmMachine)
+		}
+
+		bmMachine.Spec.HostName = host.HostName
+		bmMachine.Spec.IPAddress = host.IPAddress
+		bmMachine.Spec.SSHPort = host.SSHPort
+		bmMachine.Spec.CredentialsRef = &host.CredentialsRef
+		if err := r.Update(ctx, bmMachine); err != nil {
+			return ctrl.Result{}, err
+		}
+		log.Info("Allocated host from inventory", "hostName", host.HostName, "ipAddress", host.IPAddress)
+	}
+
+	if bmMachine.Spec.CredentialsRef == nil {
+		markConditionFalse(bmMachine, infrav1.MachineReadyCondition, infrav1.InvalidConfigurationReason, clusterv1.ConditionSeverityError, "credentialsRef is required")
+		return ctrl.Result{}, nil
+	}
+
 	creds, err := r.getCredentials(ctx, bmMachine)
 	if err != nil {
-		conditions.MarkFalse(bmMachine, infrav1.MachineReadyCondition, infrav1.CredentialsNotFoundReason, clusterv1.ConditionSeverityError, err.Error())
+		markConditionFalse(bmMachine, infrav1.MachineReadyCondition, infrav1.CredentialsNotFoundReason, clusterv1.ConditionSeverityError, err.Error())
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, r.Status().Update(ctx, bmMachine)
 	}
 
 	sshConn, err := r.SSHManager.Connect(bmMachine.Spec.IPAddress, bmMachine.Spec.SSHPort, *creds)
 	if err != nil {
-		conditions.MarkFalse(bmMachine, infrav1.SSHConnectedCondition, infrav1.SSHConnectionFailedReason, clusterv1.ConditionSeverityWarning, err.Error())
+		markConditionFalse(bmMachine, infrav1.SSHConnectedCondition, infrav1.SSHConnectionFailedReason, clusterv1.ConditionSeverityWarning, err.Error())
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, r.Status().Update(ctx, bmMachine)
 	}
 	defer func() {
@@ -112,7 +173,7 @@ func (r *BareMetalMachineReconciler) reconcileNormal(ctx context.Context, bmMach
 		}
 	}()
 
-	conditions.MarkTrue(bmMachine, infrav1.SSHConnectedCondition)
+	markConditionTrue(bmMachine, infrav1.SSHConnectedCondition)
 
 	preflightConfig := ssh.DefaultPreflightConfig()
 	preflightResult, err := ssh.RunPreflightChecks(ctx, sshConn, preflightConfig)
@@ -121,10 +182,10 @@ func (r *BareMetalMachineReconciler) reconcileNormal(ctx context.Context, bmMach
 	}
 
 	if !preflightResult.Passed {
-		conditions.MarkFalse(bmMachine, infrav1.PreFlightChecksPassedCondition, infrav1.PreFlightChecksFailedReason, clusterv1.ConditionSeverityError, fmt.Sprintf("pre-flight checks failed: %v", preflightResult.Errors))
+		markConditionFalse(bmMachine, infrav1.PreFlightChecksPassedCondition, infrav1.PreFlightChecksFailedReason, clusterv1.ConditionSeverityError, fmt.Sprintf("pre-flight checks failed: %v", preflightResult.Errors))
 		return ctrl.Result{RequeueAfter: 60 * time.Second}, r.Status().Update(ctx, bmMachine)
 	}
-	conditions.MarkTrue(bmMachine, infrav1.PreFlightChecksPassedCondition)
+	markConditionTrue(bmMachine, infrav1.PreFlightChecksPassedCondition)
 
 	providerID := fmt.Sprintf("baremetal://%s", bmMachine.Spec.HostName)
 	if bmMachine.Spec.ProviderID == nil || *bmMachine.Spec.ProviderID != providerID {
@@ -140,7 +201,7 @@ func (r *BareMetalMachineReconciler) reconcileNormal(ctx context.Context, bmMach
 		{Type: clusterv1.MachineInternalIP, Address: bmMachine.Spec.IPAddress},
 		{Type: clusterv1.MachineHostName, Address: bmMachine.Spec.HostName},
 	}
-	conditions.MarkTrue(bmMachine, infrav1.MachineReadyCondition)
+	markConditionTrue(bmMachine, infrav1.MachineReadyCondition)
 
 	return ctrl.Result{}, r.Status().Update(ctx, bmMachine)
 }
@@ -149,12 +210,130 @@ func (r *BareMetalMachineReconciler) reconcileDelete(ctx context.Context, bmMach
 	log := ctrl.LoggerFrom(ctx)
 	log.Info("Deleting BareMetalMachine")
 
+	// Release host back to inventory if it was allocated
+	if bmMachine.Spec.HostInventoryRef != nil && bmMachine.Spec.HostName != "" {
+		if err := r.releaseHostToInventory(ctx, bmMachine); err != nil {
+			log.Error(err, "Failed to release host to inventory", "hostName", bmMachine.Spec.HostName)
+		}
+	}
+
 	controllerutil.RemoveFinalizer(bmMachine, infrav1.MachineFinalizer)
 	if err := r.Update(ctx, bmMachine); err != nil {
 		return ctrl.Result{}, err
 	}
 
 	return ctrl.Result{}, nil
+}
+
+func (r *BareMetalMachineReconciler) allocateHostFromInventory(ctx context.Context, bmMachine *infrav1.BareMetalMachine) (*infrav1.HostEntry, error) {
+	inventory := &infrav1.BareMetalHostInventory{}
+	inventoryKey := types.NamespacedName{
+		Namespace: bmMachine.Namespace,
+		Name:      bmMachine.Spec.HostInventoryRef.Name,
+	}
+
+	if err := r.Get(ctx, inventoryKey, inventory); err != nil {
+		return nil, fmt.Errorf("failed to get host inventory %s: %w", inventoryKey, err)
+	}
+
+	for i, host := range inventory.Spec.Hosts {
+		if bmMachine.Spec.Role != "" && host.Role != bmMachine.Spec.Role {
+			continue
+		}
+
+		if inventory.Status.HostsStatus != nil && i < len(inventory.Status.HostsStatus) {
+			if inventory.Status.HostsStatus[i].State != infrav1.HostStateAvailable {
+				continue
+			}
+		}
+
+		allocatedMachine, err := r.getAllocatedMachine(ctx, inventory, host.Name)
+		if err != nil {
+			return nil, err
+		}
+		if allocatedMachine != nil {
+			continue
+		}
+
+		if inventory.Status.HostsStatus == nil {
+			inventory.Status.HostsStatus = make([]infrav1.HostStatusEntry, len(inventory.Spec.Hosts))
+		}
+		if i >= len(inventory.Status.HostsStatus) {
+			inventory.Status.HostsStatus = append(inventory.Status.HostsStatus, make([]infrav1.HostStatusEntry, i-len(inventory.Status.HostsStatus)+1)...)
+		}
+
+		clusterName := bmMachine.Labels[clusterv1.ClusterNameLabel]
+		inventory.Status.HostsStatus[i] = infrav1.HostStatusEntry{
+			Name:  host.Name,
+			State: infrav1.HostStateAllocated,
+			ClusterRef: &corev1.ObjectReference{
+				Name:      clusterName,
+				Namespace: bmMachine.Namespace,
+			},
+		}
+
+		inventory.Status.AvailableHosts--
+		inventory.Status.AllocatedHosts++
+
+		if err := r.Status().Update(ctx, inventory); err != nil {
+			return nil, fmt.Errorf("failed to update host inventory status: %w", err)
+		}
+
+		return &host, nil
+	}
+
+	return nil, fmt.Errorf("no available hosts in inventory %s matching role %s", inventory.Name, bmMachine.Spec.Role)
+}
+
+func (r *BareMetalMachineReconciler) releaseHostToInventory(ctx context.Context, bmMachine *infrav1.BareMetalMachine) error {
+	inventory := &infrav1.BareMetalHostInventory{}
+	inventoryKey := types.NamespacedName{
+		Namespace: bmMachine.Namespace,
+		Name:      bmMachine.Spec.HostInventoryRef.Name,
+	}
+
+	if err := r.Get(ctx, inventoryKey, inventory); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to get host inventory %s: %w", inventoryKey, err)
+	}
+
+	for i, host := range inventory.Spec.Hosts {
+		if host.Name == bmMachine.Spec.HostName {
+			if inventory.Status.HostsStatus != nil && i < len(inventory.Status.HostsStatus) {
+				inventory.Status.HostsStatus[i].State = infrav1.HostStateAvailable
+				inventory.Status.HostsStatus[i].ClusterRef = nil
+			}
+
+			inventory.Status.AvailableHosts++
+			if inventory.Status.AllocatedHosts > 0 {
+				inventory.Status.AllocatedHosts--
+			}
+
+			if err := r.Status().Update(ctx, inventory); err != nil {
+				return fmt.Errorf("failed to update host inventory status: %w", err)
+			}
+			break
+		}
+	}
+
+	return nil
+}
+
+func (r *BareMetalMachineReconciler) getAllocatedMachine(ctx context.Context, inventory *infrav1.BareMetalHostInventory, hostName string) (*infrav1.BareMetalMachine, error) {
+	machineList := &infrav1.BareMetalMachineList{}
+	if err := r.List(ctx, machineList, client.InNamespace(inventory.Namespace)); err != nil {
+		return nil, err
+	}
+
+	for _, machine := range machineList.Items {
+		if machine.Spec.HostName == hostName && machine.DeletionTimestamp.IsZero() {
+			return &machine, nil
+		}
+	}
+
+	return nil, nil
 }
 
 func (r *BareMetalMachineReconciler) getBareMetalCluster(ctx context.Context, bmMachine *infrav1.BareMetalMachine) (*infrav1.BareMetalCluster, error) {
@@ -180,6 +359,10 @@ func (r *BareMetalMachineReconciler) getBareMetalCluster(ctx context.Context, bm
 }
 
 func (r *BareMetalMachineReconciler) getCredentials(ctx context.Context, bmMachine *infrav1.BareMetalMachine) (*ssh.Credentials, error) {
+	if bmMachine.Spec.CredentialsRef == nil {
+		return nil, fmt.Errorf("credentialsRef is not set")
+	}
+
 	secret := &corev1.Secret{}
 	secretKey := types.NamespacedName{
 		Namespace: bmMachine.Namespace,

@@ -1,0 +1,157 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.0
+  name: baremetalhostinventories.infrastructure.cluster.x-k8s.io
+spec:
+  group: infrastructure.cluster.x-k8s.io
+  names:
+    categories:
+    - cluster-api
+    kind: BareMetalHostInventory
+    listKind: BareMetalHostInventoryList
+    plural: baremetalhostinventories
+    singular: baremetalhostinventory
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - description: Total hosts
+      jsonPath: .status.totalHosts
+      name: Total
+      type: integer
+    - description: Available hosts
+      jsonPath: .status.availableHosts
+      name: Available
+      type: integer
+    - description: Allocated hosts
+      jsonPath: .status.allocatedHosts
+      name: Allocated
+      type: integer
+    - description: Time duration since creation
+      jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1beta1
+    schema:
+      openAPIV3Schema:
+        description: BareMetalHostInventory is the Schema for the baremetalhostinventories API.
+        properties:
+          apiVersion:
+            description: APIVersion defines the versioned schema of this representation of an object.
+            type: string
+          kind:
+            description: Kind is a string value representing the REST resource this object represents.
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: BareMetalHostInventorySpec defines the desired state of BareMetalHostInventory.
+            properties:
+              hosts:
+                description: Hosts is the list of bare metal hosts in this inventory.
+                items:
+                  description: HostEntry defines a single bare metal host in the inventory.
+                  properties:
+                    credentialsRef:
+                      description: CredentialsRef references the Secret containing SSH credentials.
+                      properties:
+                        name:
+                          description: Name of the referent.
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    hostName:
+                      description: HostName is the hostname of the bare metal machine.
+                      type: string
+                    ipAddress:
+                      description: IPAddress is the IP address of the bare metal machine.
+                      type: string
+                    labels:
+                      additionalProperties:
+                        type: string
+                      description: Labels are user-defined labels for the host.
+                      type: object
+                    name:
+                      description: Name is the unique identifier for this host entry.
+                      type: string
+                    role:
+                      description: Role indicates the role of this host (control-plane or worker).
+                      type: string
+                    sshPort:
+                      default: 22
+                      description: SSHPort is the SSH port to connect to.
+                      type: integer
+                  required:
+                  - hostName
+                  - ipAddress
+                  - name
+                  type: object
+                type: array
+            required:
+            - hosts
+            type: object
+          status:
+            description: BareMetalHostInventoryStatus defines the observed state of BareMetalHostInventory.
+            properties:
+              allocatedHosts:
+                description: AllocatedHosts is the number of allocated hosts.
+                type: integer
+              availableHosts:
+                description: AvailableHosts is the number of available hosts.
+                type: integer
+              hostsStatus:
+                description: HostsStatus contains the status of each host.
+                items:
+                  description: HostStatusEntry defines the status of a single host.
+                  properties:
+                    clusterRef:
+                      description: ClusterRef references the cluster that has allocated this host.
+                      properties:
+                        apiVersion:
+                          description: API version of the referent.
+                          type: string
+                        fieldPath:
+                          description: If referring to a piece of an object instead of an entire object, this string should contain a valid JSON/Go field access statement.
+                          type: string
+                        kind:
+                          description: Kind of the referent.
+                          type: string
+                        name:
+                          description: Name of the referent.
+                          type: string
+                        namespace:
+                          description: Namespace of the referent.
+                          type: string
+                        resourceVersion:
+                          description: Specific resourceVersion to which this reference is made.
+                          type: string
+                        uid:
+                          description: UID of the referent.
+                          type: string
+                      type: object
+                    name:
+                      description: Name is the name of the host.
+                      type: string
+                    state:
+                      description: State is the current state of the host.
+                      type: string
+                  required:
+                  - name
+                  - state
+                  type: object
+                type: array
+              totalHosts:
+                description: TotalHosts is the total number of hosts in the inventory.
+                type: integer
+            required:
+            - allocatedHosts
+            - availableHosts
+            - totalHosts
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

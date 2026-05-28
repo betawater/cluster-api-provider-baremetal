@@ -15,7 +15,7 @@ spec:
     singular: baremetalmachinetemplate
   scope: Namespaced
   versions:
-  - name: v1beta2
+  - name: v1beta1
     schema:
       openAPIV3Schema:
         description: BareMetalMachineTemplate is the Schema for the baremetalmachinetemplates API.
@@ -52,6 +52,13 @@ spec:
                         required:
                         - name
                         type: object
+                      hostInventoryRef:
+                        properties:
+                          name:
+                            type: string
+                        required:
+                        - name
+                        type: object
                       powerManagement:
                         properties:
                           address:
@@ -75,8 +82,6 @@ spec:
                       sshPort:
                         default: 22
                         type: integer
-                    required:
-                    - credentialsRef
                     type: object
                 required:
                 - spec
