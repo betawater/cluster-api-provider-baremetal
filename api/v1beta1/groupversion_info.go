@@ -47,5 +47,13 @@ func init() {
 		&BareMetalMachineTemplateList{},
 		&BareMetalHostInventory{},
 		&BareMetalHostInventoryList{},
+		&ClusterVersion{},
+		&ClusterVersionList{},
+		&ReleaseImage{},
+		&ReleaseImageList{},
+		&UpgradePath{},
+		&UpgradePathList{},
+		&ReleaseCatalog{},
+		&ReleaseCatalogList{},
 	)
 }
