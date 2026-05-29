@@ -35,6 +35,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 
 	infrav1 "github.com/BetaWater/cluster-api-provider-baremetal/api/v1beta1"
+	"github.com/BetaWater/cluster-api-provider-baremetal/internal/cni"
+	"github.com/BetaWater/cluster-api-provider-baremetal/internal/csi"
 	"github.com/BetaWater/cluster-api-provider-baremetal/internal/health"
 	"github.com/BetaWater/cluster-api-provider-baremetal/internal/installer"
 	"github.com/BetaWater/cluster-api-provider-baremetal/internal/network"
@@ -232,6 +234,46 @@ func (r *BareMetalMachineReconciler) reconcileNormal(ctx context.Context, bmMach
 		Kubectl:          installResult.ComponentVersions.Kubectl,
 		OSType:           installResult.ComponentVersions.OSType,
 		OSVersion:        installResult.ComponentVersions.OSVersion,
+	}
+
+	if result, err := r.installCNI(ctx, bmMachine, sshConn); err != nil || !result.Completed {
+		if err != nil {
+			log.Error(err, "Failed to install CNI")
+			markMachineConditionFalse(bmMachine, infrav1.CNIInstalledCondition, infrav1.CNIInstallFailedReason, clusterv1.ConditionSeverityError, err.Error())
+			return ctrl.Result{RequeueAfter: 60 * time.Second}, r.Status().Update(ctx, bmMachine)
+		}
+		log.Info("CNI installation in progress", "progress", result.Error)
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	} else if !result.Success {
+		log.Error(fmt.Errorf("CNI installation failed"), "CNI installation failed", "error", result.Error)
+		markMachineConditionFalse(bmMachine, infrav1.CNIInstalledCondition, infrav1.CNIInstallFailedReason, clusterv1.ConditionSeverityError, result.Error)
+		return ctrl.Result{RequeueAfter: 60 * time.Second}, r.Status().Update(ctx, bmMachine)
+	} else {
+		markMachineConditionTrue(bmMachine, infrav1.CNIInstalledCondition)
+		bmMachine.Status.InstalledComponents.CNI = result.Version
+		if config := bmMachine.Spec.ComponentInstall; config != nil {
+			bmMachine.Status.InstalledComponents.CNIType = config.CNI.Type
+		}
+	}
+
+	if result, err := r.installCSI(ctx, bmMachine, sshConn); err != nil || !result.Completed {
+		if err != nil {
+			log.Error(err, "Failed to install CSI")
+			markMachineConditionFalse(bmMachine, infrav1.CSIInstalledCondition, infrav1.CSIInstallFailedReason, clusterv1.ConditionSeverityError, err.Error())
+			return ctrl.Result{RequeueAfter: 60 * time.Second}, r.Status().Update(ctx, bmMachine)
+		}
+		log.Info("CSI installation in progress", "progress", result.Error)
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	} else if !result.Success {
+		log.Error(fmt.Errorf("CSI installation failed"), "CSI installation failed", "error", result.Error)
+		markMachineConditionFalse(bmMachine, infrav1.CSIInstalledCondition, infrav1.CSIInstallFailedReason, clusterv1.ConditionSeverityError, result.Error)
+		return ctrl.Result{RequeueAfter: 60 * time.Second}, r.Status().Update(ctx, bmMachine)
+	} else {
+		markMachineConditionTrue(bmMachine, infrav1.CSIInstalledCondition)
+		bmMachine.Status.InstalledComponents.CSI = result.Version
+		if config := bmMachine.Spec.ComponentInstall; config != nil {
+			bmMachine.Status.InstalledComponents.CSIDriver = config.CSI.Driver
+		}
 	}
 
 	verifier := health.NewVerifier(sshConn)
@@ -500,6 +542,45 @@ func extractK8sVersion(machine *clusterv1.Machine) string {
 		return version[1:]
 	}
 	return version
+}
+
+func (r *BareMetalMachineReconciler) installCNI(ctx context.Context, bmMachine *infrav1.BareMetalMachine, sshConn *ssh.SSHConnection) (*cni.InstallResult, error) {
+	log := ctrl.LoggerFrom(ctx)
+
+	if bmMachine.Spec.ComponentInstall == nil {
+		return &cni.InstallResult{Completed: true, Success: true}, nil
+	}
+
+	cniConfig := bmMachine.Spec.ComponentInstall.CNI
+	if !cniConfig.Enabled {
+		log.Info("CNI installation disabled")
+		return &cni.InstallResult{Completed: true, Success: true}, nil
+	}
+
+	podCIDR := "10.244.0.0/16"
+	if cniConfig.Config != nil && cniConfig.Config.PodCIDR != "" {
+		podCIDR = cniConfig.Config.PodCIDR
+	}
+
+	inst := cni.New(sshConn, cniConfig, podCIDR)
+	return inst.Install(ctx)
+}
+
+func (r *BareMetalMachineReconciler) installCSI(ctx context.Context, bmMachine *infrav1.BareMetalMachine, sshConn *ssh.SSHConnection) (*csi.InstallResult, error) {
+	log := ctrl.LoggerFrom(ctx)
+
+	if bmMachine.Spec.ComponentInstall == nil {
+		return &csi.InstallResult{Completed: true, Success: true}, nil
+	}
+
+	csiConfig := bmMachine.Spec.ComponentInstall.CSI
+	if !csiConfig.Enabled {
+		log.Info("CSI installation disabled")
+		return &csi.InstallResult{Completed: true, Success: true}, nil
+	}
+
+	inst := csi.New(sshConn, csiConfig)
+	return inst.Install(ctx)
 }
 
 // SetupWithManager sets up the controller with the Manager.

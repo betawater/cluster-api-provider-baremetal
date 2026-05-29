@@ -33,6 +33,12 @@ const (
 
 	// SELinuxConfiguredCondition reports whether SELinux is configured.
 	SELinuxConfiguredCondition clusterv1.ConditionType = "SELinuxConfigured"
+
+	// CNIInstalledCondition reports whether CNI plugin is installed.
+	CNIInstalledCondition clusterv1.ConditionType = "CNIInstalled"
+
+	// CSIInstalledCondition reports whether CSI driver is installed.
+	CSIInstalledCondition clusterv1.ConditionType = "CSIInstalled"
 )
 
 // Common condition reasons
@@ -66,4 +72,16 @@ const (
 
 	// InstallationRetryingReason indicates installation is retrying after failure.
 	InstallationRetryingReason = "InstallationRetrying"
+
+	// CNIInstallFailedReason indicates CNI installation failed.
+	CNIInstallFailedReason = "CNIInstallFailed"
+
+	// CNIInstalledReason indicates CNI is installed.
+	CNIInstalledReason = "CNIInstalled"
+
+	// CSIInstallFailedReason indicates CSI installation failed.
+	CSIInstallFailedReason = "CSIInstallFailed"
+
+	// CSIInstalledReason indicates CSI is installed.
+	CSIInstalledReason = "CSIInstalled"
 )

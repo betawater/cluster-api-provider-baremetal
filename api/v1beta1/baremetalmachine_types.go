@@ -140,6 +140,14 @@ type ComponentInstallConfig struct {
 	// +optional
 	// +kubebuilder:default=3
 	MaxRetries int `json:"maxRetries,omitempty"`
+
+	// CNI defines the CNI plugin installation configuration.
+	// +optional
+	CNI CNIConfig `json:"cni,omitempty"`
+
+	// CSI defines the CSI driver installation configuration.
+	// +optional
+	CSI CSIConfig `json:"csi,omitempty"`
 }
 
 // InstallStrategy defines the component installation strategy.
@@ -339,6 +347,358 @@ type SELinuxConfig struct {
 	Configure bool `json:"configure,omitempty"`
 }
 
+// CNIConfig defines the CNI plugin installation configuration.
+type CNIConfig struct {
+	// Enabled indicates whether CNI installation is enabled.
+	// +optional
+	// +kubebuilder:default=true
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Type is the CNI plugin type (calico, cilium, flannel).
+	// +optional
+	// +kubebuilder:default=calico
+	Type string `json:"type,omitempty"`
+
+	// Version is the desired CNI plugin version.
+	// +optional
+	Version string `json:"version,omitempty"`
+
+	// InstallMode defines how the CNI plugin is installed (Manifest or Helm).
+	// +optional
+	// +kubebuilder:default=Manifest
+	InstallMode string `json:"installMode,omitempty"`
+
+	// UpgradeStrategy defines the upgrade strategy for CNI plugin.
+	// +optional
+	// +kubebuilder:default=RollingUpdate
+	UpgradeStrategy string `json:"upgradeStrategy,omitempty"`
+
+	// Config holds CNI-specific configuration.
+	// +optional
+	Config *CNIPluginConfig `json:"config,omitempty"`
+
+	// AirGap defines air-gapped installation configuration for CNI.
+	// +optional
+	AirGap *CNIAirGapConfig `json:"airGap,omitempty"`
+}
+
+// CNIPluginConfig holds CNI plugin specific configuration.
+type CNIPluginConfig struct {
+	// PodCIDR is the Pod network CIDR (auto-detected from Cluster if empty).
+	// +optional
+	PodCIDR string `json:"podCIDR,omitempty"`
+
+	// Calico holds Calico-specific configuration.
+	// +optional
+	Calico *CalicoConfig `json:"calico,omitempty"`
+
+	// Cilium holds Cilium-specific configuration.
+	// +optional
+	Cilium *CiliumConfig `json:"cilium,omitempty"`
+
+	// Flannel holds Flannel-specific configuration.
+	// +optional
+	Flannel *FlannelConfig `json:"flannel,omitempty"`
+}
+
+// CalicoConfig defines Calico CNI configuration.
+type CalicoConfig struct {
+	// IPAM is the IP address management mode (CalicoIPAM or HostLocal).
+	// +optional
+	// +kubebuilder:default=CalicoIPAM
+	IPAM string `json:"ipam,omitempty"`
+
+	// MTU is the network MTU (0 = auto-detect).
+	// +optional
+	MTU int `json:"mtu,omitempty"`
+
+	// BGP holds BGP peering configuration.
+	// +optional
+	BGP *CalicoBGPConfig `json:"bgp,omitempty"`
+
+	// Typha holds Typha deployment configuration.
+	// +optional
+	Typha *CalicoTyphaConfig `json:"typha,omitempty"`
+}
+
+// CalicoBGPConfig defines Calico BGP configuration.
+type CalicoBGPConfig struct {
+	// Enabled enables BGP peering.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// PeerIPs is the list of BGP peer IPs.
+	// +optional
+	PeerIPs []string `json:"peerIPs,omitempty"`
+}
+
+// CalicoTyphaConfig defines Calico Typha configuration.
+type CalicoTyphaConfig struct {
+	// Enabled enables Typha deployment.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Replicas is the number of Typha replicas.
+	// +optional
+	Replicas int `json:"replicas,omitempty"`
+}
+
+// CiliumConfig defines Cilium CNI configuration.
+type CiliumConfig struct {
+	// KubeProxyReplacement enables kube-proxy replacement.
+	// +optional
+	// +kubebuilder:default=partial
+	KubeProxyReplacement string `json:"kubeProxyReplacement,omitempty"`
+
+	// RoutingMode is the routing mode (native or tunnel).
+	// +optional
+	// +kubebuilder:default=tunnel
+	RoutingMode string `json:"routingMode,omitempty"`
+
+	// IPv4NativeRoutingCIDR is the native routing CIDR.
+	// +optional
+	IPv4NativeRoutingCIDR string `json:"ipv4NativeRoutingCIDR,omitempty"`
+
+	// Hubble holds Hubble observability configuration.
+	// +optional
+	Hubble *CiliumHubbleConfig `json:"hubble,omitempty"`
+}
+
+// CiliumHubbleConfig defines Cilium Hubble configuration.
+type CiliumHubbleConfig struct {
+	// Enabled enables Hubble observability.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Relay enables Hubble Relay.
+	// +optional
+	Relay bool `json:"relay,omitempty"`
+
+	// UI enables Hubble UI.
+	// +optional
+	UI bool `json:"ui,omitempty"`
+}
+
+// FlannelConfig defines Flannel CNI configuration.
+type FlannelConfig struct {
+	// Backend is the backend type (vxlan, host-gw, wireguard).
+	// +optional
+	// +kubebuilder:default=vxlan
+	Backend string `json:"backend,omitempty"`
+
+	// MTU is the network MTU (0 = auto-detect).
+	// +optional
+	MTU int `json:"mtu,omitempty"`
+}
+
+// CNIAirGapConfig defines air-gapped installation configuration for CNI.
+type CNIAirGapConfig struct {
+	// Enabled indicates whether air-gapped installation is used.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// ManifestSource is the source for manifest files (HTTPServer or LocalPath).
+	// +optional
+	// +kubebuilder:default=HTTPServer
+	ManifestSource string `json:"manifestSource,omitempty"`
+
+	// HTTPServerConfig is the HTTP server configuration.
+	// +optional
+	HTTPServerConfig *HTTPServerConfig `json:"httpServerConfig,omitempty"`
+
+	// LocalPath is the local path for manifest files.
+	// +optional
+	LocalPath string `json:"localPath,omitempty"`
+
+	// ChartArchive is the path to the Helm chart archive (for Helm mode).
+	// +optional
+	ChartArchive string `json:"chartArchive,omitempty"`
+
+	// CNIPluginsArchive is the path to the CNI plugins binary archive.
+	// +optional
+	CNIPluginsArchive string `json:"cniPluginsArchive,omitempty"`
+}
+
+// CSIConfig defines the CSI driver installation configuration.
+type CSIConfig struct {
+	// Enabled indicates whether CSI installation is enabled.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Driver is the CSI driver type (ceph-csi, cinder-csi, local-csi, nfs-csi).
+	// +optional
+	Driver string `json:"driver,omitempty"`
+
+	// Version is the desired CSI driver version.
+	// +optional
+	Version string `json:"version,omitempty"`
+
+	// InstallMode defines how the CSI driver is installed (Manifest or Helm).
+	// +optional
+	// +kubebuilder:default=Helm
+	InstallMode string `json:"installMode,omitempty"`
+
+	// Config holds CSI driver specific configuration.
+	// +optional
+	Config *CSIDriverConfig `json:"config,omitempty"`
+
+	// AirGap defines air-gapped installation configuration for CSI.
+	// +optional
+	AirGap *CSIAirGapConfig `json:"airGap,omitempty"`
+}
+
+// CSIDriverConfig holds CSI driver specific configuration.
+type CSIDriverConfig struct {
+	// CephCsi holds Ceph-CSI configuration.
+	// +optional
+	CephCsi *CephCsiConfig `json:"cephCsi,omitempty"`
+
+	// CinderCsi holds Cinder-CSI configuration.
+	// +optional
+	CinderCsi *CinderCsiConfig `json:"cinderCsi,omitempty"`
+
+	// LocalCsi holds Local-CSI configuration.
+	// +optional
+	LocalCsi *LocalCsiConfig `json:"localCsi,omitempty"`
+
+	// NfsCsi holds NFS-CSI configuration.
+	// +optional
+	NfsCsi *NfsCsiConfig `json:"nfsCsi,omitempty"`
+}
+
+// CephCsiConfig defines Ceph-CSI configuration.
+type CephCsiConfig struct {
+	// ClusterID is the Ceph cluster ID.
+	// +required
+	ClusterID string `json:"clusterID"`
+
+	// Monitors is the list of Ceph monitor endpoints.
+	// +required
+	Monitors []string `json:"monitors"`
+
+	// CephFS holds CephFS configuration.
+	// +optional
+	CephFS *CephFSConfig `json:"cephfs,omitempty"`
+
+	// RBD holds RBD configuration.
+	// +optional
+	RBD *RBDConfig `json:"rbd,omitempty"`
+
+	// StorageClass defines the StorageClass to create.
+	// +optional
+	StorageClass *CSIStorageClass `json:"storageClass,omitempty"`
+}
+
+// CephFSConfig defines CephFS configuration.
+type CephFSConfig struct {
+	// Enabled enables CephFS support.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// KernelMount enables kernel mount.
+	// +optional
+	KernelMount bool `json:"kernelMount,omitempty"`
+
+	// FuseMount enables FUSE mount.
+	// +optional
+	FuseMount bool `json:"fuseMount,omitempty"`
+}
+
+// RBDConfig defines RBD configuration.
+type RBDConfig struct {
+	// Enabled enables RBD support.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Pool is the Ceph RBD pool name.
+	// +optional
+	Pool string `json:"pool,omitempty"`
+}
+
+// CinderCsiConfig defines Cinder-CSI configuration.
+type CinderCsiConfig struct {
+	// OpenstackCloudConfigSecret references the Secret containing cloud-config.
+	// +required
+	OpenstackCloudConfigSecret string `json:"openstackCloudConfigSecret"`
+
+	// StorageClass defines the StorageClass to create.
+	// +optional
+	StorageClass *CSIStorageClass `json:"storageClass,omitempty"`
+}
+
+// LocalCsiConfig defines Local-CSI (hostPath) configuration.
+type LocalCsiConfig struct {
+	// StorageClass defines the StorageClass to create.
+	// +optional
+	StorageClass *CSIStorageClass `json:"storageClass,omitempty"`
+}
+
+// NfsCsiConfig defines NFS-CSI configuration.
+type NfsCsiConfig struct {
+	// Server is the NFS server address.
+	// +required
+	Server string `json:"server"`
+
+	// Share is the NFS export path.
+	// +required
+	Share string `json:"share"`
+
+	// StorageClass defines the StorageClass to create.
+	// +optional
+	StorageClass *CSIStorageClass `json:"storageClass,omitempty"`
+}
+
+// CSIStorageClass defines a StorageClass configuration.
+type CSIStorageClass struct {
+	// Name is the StorageClass name.
+	// +required
+	Name string `json:"name"`
+
+	// ReclaimPolicy is the reclaim policy (Delete or Retain).
+	// +optional
+	// +kubebuilder:default=Delete
+	ReclaimPolicy string `json:"reclaimPolicy,omitempty"`
+
+	// FSType is the filesystem type.
+	// +optional
+	FSType string `json:"fsType,omitempty"`
+
+	// VolumeBindingMode is the volume binding mode.
+	// +optional
+	VolumeBindingMode string `json:"volumeBindingMode,omitempty"`
+
+	// MountOptions is the list of mount options.
+	// +optional
+	MountOptions []string `json:"mountOptions,omitempty"`
+
+	// Parameters is the storage class parameters.
+	// +optional
+	Parameters map[string]string `json:"parameters,omitempty"`
+}
+
+// CSIAirGapConfig defines air-gapped installation configuration for CSI.
+type CSIAirGapConfig struct {
+	// Enabled indicates whether air-gapped installation is used.
+	// +optional
+	Enabled bool `json:"enabled,omitempty"`
+
+	// ManifestSource is the source for manifest files.
+	// +optional
+	ManifestSource string `json:"manifestSource,omitempty"`
+
+	// HTTPServerConfig is the HTTP server configuration.
+	// +optional
+	HTTPServerConfig *HTTPServerConfig `json:"httpServerConfig,omitempty"`
+
+	// LocalPath is the local path for manifest files.
+	// +optional
+	LocalPath string `json:"localPath,omitempty"`
+
+	// ChartArchive is the path to the Helm chart archive.
+	// +optional
+	ChartArchive string `json:"chartArchive,omitempty"`
+}
+
 // PowerManagementConfig holds power management configuration.
 type PowerManagementConfig struct {
 	// Type is the power management protocol type (ipmi, redfish).
@@ -391,6 +751,22 @@ type ComponentVersions struct {
 	// Kubectl is the installed kubectl version.
 	// +optional
 	Kubectl string `json:"kubectl,omitempty"`
+
+	// CNI is the installed CNI plugin version.
+	// +optional
+	CNI string `json:"cni,omitempty"`
+
+	// CNIType is the installed CNI plugin type.
+	// +optional
+	CNIType string `json:"cniType,omitempty"`
+
+	// CSI is the installed CSI driver version.
+	// +optional
+	CSI string `json:"csi,omitempty"`
+
+	// CSIDriver is the installed CSI driver type.
+	// +optional
+	CSIDriver string `json:"csiDriver,omitempty"`
 
 	// OSType is the detected OS type.
 	// +optional
