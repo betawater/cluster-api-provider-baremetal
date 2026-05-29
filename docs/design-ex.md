@@ -3535,6 +3535,1414 @@ SSH 连接成功
 
 ---
 
+
+### 6.16 CNI/CSI 安装与升级设计
+
+#### 6.16.1 问题背景
+
+裸金属集群在 kubeadm init/join 完成后，还需要安装以下核心插件才能正常运行：
+- **CNI (Container Network Interface)**: 负责 Pod 网络通信，如 Calico, Cilium, Flannel
+- **CSI (Container Storage Interface)**: 负责持久化存储供给，如 Ceph-CSI, Cinder-CSI, Local-CSI
+
+CAPBM 需要在组件安装流程中集成 CNI/CSI 的安装和升级能力，支持：
+- 多种 CNI/CSI 插件选择
+- 在线和离线 (air-gap) 两种安装模式
+- 版本管理和滚动升级
+- 配置管理和回滚
+
+#### 6.16.2 架构设计
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    CNI/CSI 安装架构                              │
+│                                                                 │
+│  组件安装完成 (containerd + kubelet)                              │
+│      │                                                          │
+│      ▼                                                          │
+│  ┌──────────────────────────────────────────────────────────┐  │
+│  │ kubeadm init (control-plane) / kubeadm join (worker)     │  │
+│  └────────────────────────┬─────────────────────────────────┘  │
+│                           │                                    │
+│                    kube-apiserver 就绪                          │
+│                    ╱              ╲                            │
+│                   是               │                           │
+│                   │                │                           │
+│                   ▼                ▼                           │
+│  ┌─────────────────────┐ ┌──────────────────────────────────┐ │
+│  │ CNI 安装            │ │ CSI 安装 (可选，可延后)           │ │
+│  │ - 安装 CNI 二进制    │ │ - 部署 CSI Controller            │ │
+│  │ - 部署 CNI 插件      │ │ - 部署 CSI Node DaemonSet        │ │
+│  │ - 验证网络连通性     │ │ - 创建 StorageClass              │ │
+│  └─────────────────────┘ └──────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+**安装时机**:
+| 组件 | 安装时机 | 说明 |
+|------|---------|------|
+| CNI | kubeadm init 后，CoreDNS 启动前 | kubelet 需要 CNI 才能将 Node 标记为 Ready |
+| CSI | 集群初始化完成后（可异步） | 不影响集群基本功能，可按需安装 |
+
+**管理方式**:
+| 方式 | 适用场景 | 优缺点 |
+|------|---------|--------|
+| Manifest (kubectl apply) | 简单部署，无需额外依赖 | 升级需要手动管理版本 |
+| Helm Chart | 复杂配置，支持 values 覆盖 | 需要预装 Helm 或使用 Helm SDK |
+
+CAPBM 采用 **Manifest + Helm 双模式**，用户可通过 `installMode` 选择。
+
+#### 6.16.3 CRD 设计扩展
+
+在 `ComponentInstallConfig` 中新增 CNI 和 CSI 配置段：
+
+```yaml
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: BareMetalMachine
+spec:
+  componentInstall:
+    # ... 现有配置 ...
+    
+    # CNI 网络插件配置
+    cni:
+      enabled: true
+      type: "calico"           # calico | cilium | flannel
+      version: "3.26.1"
+      installMode: "Manifest"  # Manifest | Helm
+      upgradeStrategy: "RollingUpdate"
+      config:
+        podCIDR: "10.244.0.0/16"
+        calico:
+          ipam: "CalicoIPAM"
+          mtu: 0
+          bgp:
+            enabled: true
+            peerIPs: []
+          typha:
+            enabled: false
+            replicas: 1
+      airGap:
+        enabled: false
+        manifestSource: "HTTPServer"
+        httpServerConfig:
+          baseUrl: "https://internal-pkg.example.com/cni"
+        cniPluginsArchive: "/opt/cni-plugins/cni-plugins-linux-amd64-v1.3.0.tgz"
+        
+    # CSI 存储插件配置
+    csi:
+      enabled: false
+      driver: "ceph-csi"       # ceph-csi | cinder-csi | local-csi | nfs-csi
+      version: "3.9.0"
+      installMode: "Helm"
+      config:
+        cephCsi:
+          clusterID: "my-ceph-cluster"
+          monitors:
+            - "10.0.0.10:6789"
+            - "10.0.0.11:6789"
+          rbd:
+            enabled: true
+            pool: "kubernetes"
+          storageClass:
+            name: "ceph-rbd"
+            reclaimPolicy: "Delete"
+            fsType: "ext4"
+      airGap:
+        enabled: false
+        manifestSource: "HTTPServer"
+        httpServerConfig:
+          baseUrl: "https://internal-pkg.example.com/csi"
+        chartArchive: "/opt/charts/ceph-csi.tgz"
+```
+
+**Go 类型定义**:
+
+```go
+// CNIConfig defines the CNI plugin installation configuration.
+type CNIConfig struct {
+	Enabled         bool               `json:"enabled,omitempty"`
+	Type            string             `json:"type,omitempty"`
+	Version         string             `json:"version,omitempty"`
+	InstallMode     string             `json:"installMode,omitempty"`
+	UpgradeStrategy string             `json:"upgradeStrategy,omitempty"`
+	Config          *CNIPluginConfig   `json:"config,omitempty"`
+	AirGap          *CNIAirGapConfig   `json:"airGap,omitempty"`
+}
+
+type CNIPluginConfig struct {
+	PodCIDR string         `json:"podCIDR,omitempty"`
+	Calico  *CalicoConfig  `json:"calico,omitempty"`
+	Cilium  *CiliumConfig  `json:"cilium,omitempty"`
+	Flannel *FlannelConfig `json:"flannel,omitempty"`
+}
+
+type CalicoConfig struct {
+	IPAM  string             `json:"ipam,omitempty"`
+	MTU   int                `json:"mtu,omitempty"`
+	BGP   *CalicoBGPConfig   `json:"bgp,omitempty"`
+	Typha *CalicoTyphaConfig `json:"typha,omitempty"`
+}
+
+type CalicoBGPConfig struct {
+	Enabled bool     `json:"enabled,omitempty"`
+	PeerIPs []string `json:"peerIPs,omitempty"`
+}
+
+type CalicoTyphaConfig struct {
+	Enabled  bool `json:"enabled,omitempty"`
+	Replicas int  `json:"replicas,omitempty"`
+}
+
+type CiliumConfig struct {
+	KubeProxyReplacement  string              `json:"kubeProxyReplacement,omitempty"`
+	RoutingMode           string              `json:"routingMode,omitempty"`
+	IPv4NativeRoutingCIDR string              `json:"ipv4NativeRoutingCIDR,omitempty"`
+	Hubble                *CiliumHubbleConfig `json:"hubble,omitempty"`
+}
+
+type CiliumHubbleConfig struct {
+	Enabled bool `json:"enabled,omitempty"`
+	Relay   bool `json:"relay,omitempty"`
+	UI      bool `json:"ui,omitempty"`
+}
+
+type FlannelConfig struct {
+	Backend string `json:"backend,omitempty"`
+	MTU     int    `json:"mtu,omitempty"`
+}
+
+type CNIAirGapConfig struct {
+	Enabled           bool              `json:"enabled,omitempty"`
+	ManifestSource    string            `json:"manifestSource,omitempty"`
+	HTTPServerConfig  *HTTPServerConfig `json:"httpServerConfig,omitempty"`
+	LocalPath         string            `json:"localPath,omitempty"`
+	ChartArchive      string            `json:"chartArchive,omitempty"`
+	CNIPluginsArchive string            `json:"cniPluginsArchive,omitempty"`
+}
+
+// CSIConfig defines the CSI driver installation configuration.
+type CSIConfig struct {
+	Enabled     bool             `json:"enabled,omitempty"`
+	Driver      string           `json:"driver,omitempty"`
+	Version     string           `json:"version,omitempty"`
+	InstallMode string           `json:"installMode,omitempty"`
+	Config      *CSIDriverConfig `json:"config,omitempty"`
+	AirGap      *CSIAirGapConfig `json:"airGap,omitempty"`
+}
+
+type CSIDriverConfig struct {
+	CephCsi   *CephCsiConfig   `json:"cephCsi,omitempty"`
+	CinderCsi *CinderCsiConfig `json:"cinderCsi,omitempty"`
+	LocalCsi  *LocalCsiConfig  `json:"localCsi,omitempty"`
+	NfsCsi    *NfsCsiConfig    `json:"nfsCsi,omitempty"`
+}
+
+type CephCsiConfig struct {
+	ClusterID    string           `json:"clusterID"`
+	Monitors     []string         `json:"monitors"`
+	CephFS       *CephFSConfig    `json:"cephfs,omitempty"`
+	RBD          *RBDConfig       `json:"rbd,omitempty"`
+	StorageClass *CSIStorageClass `json:"storageClass,omitempty"`
+}
+
+type CephFSConfig struct {
+	Enabled     bool `json:"enabled,omitempty"`
+	KernelMount bool `json:"kernelMount,omitempty"`
+	FuseMount   bool `json:"fuseMount,omitempty"`
+}
+
+type RBDConfig struct {
+	Enabled bool   `json:"enabled,omitempty"`
+	Pool    string `json:"pool,omitempty"`
+}
+
+type CinderCsiConfig struct {
+	OpenstackCloudConfigSecret string           `json:"openstackCloudConfigSecret"`
+	StorageClass               *CSIStorageClass `json:"storageClass,omitempty"`
+}
+
+type LocalCsiConfig struct {
+	StorageClass *CSIStorageClass `json:"storageClass,omitempty"`
+}
+
+type NfsCsiConfig struct {
+	Server       string           `json:"server"`
+	Share        string           `json:"share"`
+	StorageClass *CSIStorageClass `json:"storageClass,omitempty"`
+}
+
+type CSIStorageClass struct {
+	Name              string            `json:"name"`
+	ReclaimPolicy     string            `json:"reclaimPolicy,omitempty"`
+	FSType            string            `json:"fsType,omitempty"`
+	VolumeBindingMode string            `json:"volumeBindingMode,omitempty"`
+	MountOptions      []string          `json:"mountOptions,omitempty"`
+	Parameters        map[string]string `json:"parameters,omitempty"`
+}
+
+type CSIAirGapConfig struct {
+	Enabled          bool              `json:"enabled,omitempty"`
+	ManifestSource   string            `json:"manifestSource,omitempty"`
+	HTTPServerConfig *HTTPServerConfig `json:"httpServerConfig,omitempty"`
+	LocalPath        string            `json:"localPath,omitempty"`
+	ChartArchive     string            `json:"chartArchive,omitempty"`
+}
+```
+
+更新 `ComponentInstallConfig`:
+
+```go
+type ComponentInstallConfig struct {
+	// ... 现有字段 ...
+	CNI CNIConfig `json:"cni,omitempty"`
+	CSI CSIConfig `json:"csi,omitempty"`
+}
+```
+
+#### 6.16.4 CNI 安装流程
+
+##### 6.16.4.1 在线安装流程
+
+```
+kubeadm init 执行完成
+    │
+    ▼
+┌─────────────────────────────────────────────────┐
+│ 1. 检测 CNI 状态                                  │
+│    ├── 检查 /opt/cni/bin 目录                    │
+│    ├── 检查 /etc/cni/net.d 目录                  │
+│    └── 检查 CNI DaemonSet/Deployment 状态        │
+└─────────────────┬───────────────────────────────┘
+                  │
+           是否已安装且版本匹配？
+           ╱              ╲
+          是               否
+          │                │
+          ▼                ▼
+┌──────────────────┐ ┌──────────────────────────┐
+│ 跳过安装         │ │ 2. 安装 CNI 二进制插件    │
+│                  │ │    ├── 下载 CNI plugins   │
+│                  │ │    └── 解压到 /opt/cni/bin│
+└──────────────────┘ └──────────┬───────────────┘
+                                │
+                                ▼
+┌─────────────────────────────────────────────────┐
+│ 3. 部署 CNI 插件                                  │
+│    ├── 渲染 Manifest (替换 PodCIDR 等参数)        │
+│    ├── kubectl apply -f                          │
+│    └── 等待 DaemonSet/Deployment Ready           │
+└─────────────────┬───────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────┐
+│ 4. 验证 CNI 状态                                  │
+│    ├── CNI Pod 全部 Running                      │
+│    ├── Node 状态变为 Ready                       │
+│    └── 跨节点网络连通性测试                       │
+└─────────────────────────────────────────────────┘
+```
+
+##### 6.16.4.2 CNI 在线安装脚本 (Calico 示例)
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+CNI_TYPE="${CNI_TYPE:-calico}"
+CNI_VERSION="${CNI_VERSION:-3.26.1}"
+POD_CIDR="${POD_CIDR:-10.244.0.0/16}"
+CNI_PLUGINS_VERSION="${CNI_PLUGINS_VERSION:-1.3.0}"
+
+echo "=== CNI 安装开始 (type=$CNI_TYPE, version=$CNI_VERSION) ==="
+
+install_cni_plugins() {
+    if [ -d "/opt/cni/bin" ] && [ "$(ls -A /opt/cni/bin 2>/dev/null)" ]; then
+        echo "CNI 二进制插件已安装"
+        return 0
+    fi
+    mkdir -p /opt/cni/bin
+    curl -fsSL "https://github.com/containernetworking/plugins/releases/download/v${CNI_PLUGINS_VERSION}/cni-plugins-linux-amd64-v${CNI_PLUGINS_VERSION}.tgz" | tar -C /opt/cni/bin -xz
+    echo "CNI 二进制插件安装完成"
+}
+
+install_calico() {
+    local manifest_url="https://raw.githubusercontent.com/projectcalico/calico/v${CNI_VERSION}/manifests/calico.yaml"
+    local temp_manifest=$(mktemp)
+    curl -fsSL "$manifest_url" -o "$temp_manifest"
+    sed -i "s|\"192.168.0.0/16\"|\"${POD_CIDR}\"|g" "$temp_manifest"
+    kubectl apply -f "$temp_manifest"
+    rm -f "$temp_manifest"
+    kubectl rollout status daemonset/calico-node -n kube-system --timeout=300s
+    echo "Calico 部署完成"
+}
+
+install_cilium_helm() {
+    helm repo add cilium https://helm.cilium.io/
+    helm repo update
+    helm upgrade --install cilium cilium/cilium \
+        --namespace kube-system --version "v${CNI_VERSION}" \
+        --set ipam.mode=kubernetes \
+        --set kubeProxyReplacement="${CILIUM_KUBE_PROXY_REPLACEMENT:-partial}" \
+        --wait --timeout=300s
+    echo "Cilium 部署完成"
+}
+
+install_flannel() {
+    local manifest_url="https://github.com/flannel-io/flannel/releases/download/v${CNI_VERSION}/kube-flannel.yml"
+    local temp_manifest=$(mktemp)
+    curl -fsSL "$manifest_url" -o "$temp_manifest"
+    sed -i "s|\"10.244.0.0/16\"|\"${POD_CIDR}\"|g" "$temp_manifest"
+    kubectl apply -f "$temp_manifest"
+    rm -f "$temp_manifest"
+    kubectl rollout status daemonset/kube-flannel-ds -n kube-flannel --timeout=300s
+    echo "Flannel 部署完成"
+}
+
+verify_cni() {
+    [ -d "/opt/cni/bin" ] && [ -n "$(ls -A /opt/cni/bin 2>/dev/null)" ] && echo "CNI 二进制: OK" || { echo "ERROR: /opt/cni/bin 为空"; return 1; }
+    [ -d "/etc/cni/net.d" ] && [ -n "$(ls -A /etc/cni/net.d 2>/dev/null)" ] && echo "CNI 配置: OK" || { echo "ERROR: /etc/cni/net.d 为空"; return 1; }
+    local status=$(kubectl get node $(hostname) -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
+    [ "$status" = "True" ] && echo "Node Ready: OK" || echo "WARNING: Node 尚未 Ready"
+    echo "CNI 验证完成"
+}
+
+install_cni_plugins
+case "$CNI_TYPE" in
+    calico)  install_calico ;;
+    cilium)  install_cilium_helm ;;
+    flannel) install_flannel ;;
+    *) echo "ERROR: 不支持的 CNI 类型: $CNI_TYPE"; exit 1 ;;
+esac
+verify_cni
+echo "=== CNI 安装完成 ==="
+```
+
+##### 6.16.4.3 CNI 离线安装流程
+
+```
+管理端准备
+    │
+    ├── 1. 下载 CNI plugins 二进制包
+    │   └── cni-plugins-linux-amd64-v1.3.0.tgz
+    │
+    ├── 2. 下载 CNI Manifest/Helm Chart
+    │   ├── calico.yaml (渲染后的，含正确 PodCIDR)
+    │   └── 或 calico-3.26.1.tgz (Helm Chart)
+    │
+    └── 3. 分发到内网
+        ├── 上传到内网 HTTP 服务器
+        └── 或预置到目标机器 /opt/capbm/cni/
+        
+目标机器安装
+    │
+    ├── 1. 安装 CNI 二进制插件
+    │   └── tar -C /opt/cni/bin -xz /opt/capbm/cni/cni-plugins-*.tgz
+    │
+    ├── 2. 部署 CNI 插件
+    │   ├── Manifest: kubectl apply -f /opt/capbm/cni/calico.yaml
+    │   └── Helm: helm install /opt/capbm/cni/calico-3.26.1.tgz
+    │
+    └── 3. 验证
+```
+
+##### 6.16.4.4 CNI 离线安装脚本
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+CNI_TYPE="${CNI_TYPE:-calico}"
+CNI_VERSION="${CNI_VERSION:-3.26.1}"
+CNI_PLUGINS_ARCHIVE="${CNI_PLUGINS_ARCHIVE:-/opt/capbm/cni/cni-plugins-linux-amd64-v1.3.0.tgz}"
+CNI_MANIFEST_PATH="${CNI_MANIFEST_PATH:-/opt/capbm/cni/calico.yaml}"
+CNI_CHART_ARCHIVE="${CNI_CHART_ARCHIVE:-/opt/capbm/cni/calico-${CNI_VERSION}.tgz}"
+INSTALL_MODE="${INSTALL_MODE:-Manifest}"
+
+echo "=== CNI 离线安装开始 ==="
+
+install_cni_plugins_offline() {
+    [ -d "/opt/cni/bin" ] && [ -n "$(ls -A /opt/cni/bin 2>/dev/null)" ] && { echo "CNI 二进制已安装"; return 0; }
+    [ ! -f "$CNI_PLUGINS_ARCHIVE" ] && { echo "ERROR: CNI 二进制插件包不存在"; return 1; }
+    mkdir -p /opt/cni/bin && tar -C /opt/cni/bin -xzf "$CNI_PLUGINS_ARCHIVE"
+    echo "CNI 二进制离线安装完成"
+}
+
+install_cni_manifest_offline() {
+    [ ! -f "$CNI_MANIFEST_PATH" ] && { echo "ERROR: Manifest 不存在"; return 1; }
+    kubectl apply -f "$CNI_MANIFEST_PATH"
+    case "$CNI_TYPE" in
+        calico)  kubectl rollout status daemonset/calico-node -n kube-system --timeout=300s ;;
+        flannel) kubectl rollout status daemonset/kube-flannel-ds -n kube-flannel --timeout=300s ;;
+    esac
+    echo "CNI 离线部署完成 (Manifest)"
+}
+
+install_cni_helm_offline() {
+    [ ! -f "$CNI_CHART_ARCHIVE" ] && { echo "ERROR: Helm Chart 不存在"; return 1; }
+    helm upgrade --install "$CNI_TYPE" "$CNI_CHART_ARCHIVE" --namespace kube-system --wait --timeout=300s
+    echo "CNI 离线部署完成 (Helm)"
+}
+
+install_cni_plugins_offline
+case "$INSTALL_MODE" in
+    Manifest) install_cni_manifest_offline ;;
+    Helm)     install_cni_helm_offline ;;
+esac
+echo "=== CNI 离线安装完成 ==="
+```
+
+#### 6.16.5 CSI 安装流程
+
+##### 6.16.5.1 在线安装流程
+
+```
+集群初始化完成 (kubeadm init + CNI 就绪)
+    │
+    ▼
+┌─────────────────────────────────────────────────┐
+│ 1. 检测 CSI 状态                                  │
+│    ├── 检查 CSI Controller Deployment            │
+│    ├── 检查 CSI Node DaemonSet                   │
+│    └── 检查 StorageClass                         │
+└─────────────────┬───────────────────────────────┘
+                  │
+           是否已安装且版本匹配？
+           ╱              ╲
+          是               否
+          │                │
+          ▼                ▼
+┌──────────────────┐ ┌──────────────────────────┐
+│ 跳过安装         │ │ 2. 部署 CSI Controller    │
+│                  │ │    ├── 渲染 Manifest/Chart │
+│                  │ │    └── 等待 Deployment Ready│
+└──────────────────┘ └──────────┬───────────────┘
+                                │
+                                ▼
+┌─────────────────────────────────────────────────┐
+│ 3. 部署 CSI Node DaemonSet                       │
+│    └── 等待 DaemonSet Ready                      │
+└─────────────────┬───────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────┐
+│ 4. 创建 StorageClass                             │
+│    └── kubectl apply -f                          │
+└─────────────────┬───────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────┐
+│ 5. 验证 CSI 状态                                 │
+│    ├── CSIDriver 资源存在                        │
+│    ├── Controller/Node Pod Running               │
+│    ├── StorageClass 存在                         │
+│    └── PVC 创建/绑定测试 (可选)                  │
+└─────────────────────────────────────────────────┘
+```
+
+##### 6.16.5.2 CSI 在线安装脚本 (Ceph-CSI 示例)
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+CSI_DRIVER="${CSI_DRIVER:-ceph-csi}"
+CSI_VERSION="${CSI_VERSION:-3.9.0}"
+INSTALL_MODE="${INSTALL_MODE:-Helm}"
+CEPH_CLUSTER_ID="${CEPH_CLUSTER_ID:-my-ceph-cluster}"
+CEPH_MONITORS="${CEPH_MONITORS:-10.0.0.10:6789,10.0.0.11:6789}"
+CEPH_RBD_POOL="${CEPH_RBD_POOL:-kubernetes}"
+SC_NAME="${SC_NAME:-ceph-rbd}"
+
+echo "=== CSI 安装开始 (driver=$CSI_DRIVER, version=$CSI_VERSION) ==="
+
+install_ceph_csi_helm() {
+    helm repo add ceph-csi https://ceph.github.io/csi-charts
+    helm repo update
+    local monitors_json="["
+    local first=true
+    IFS=',' read -ra MON_ARRAY <<< "$CEPH_MONITORS"
+    for mon in "${MON_ARRAY[@]}"; do
+        $first && { monitors_json="${monitors_json}\"${mon}\""; first=false; } || monitors_json="${monitors_json},\"${mon}\""
+    done
+    monitors_json="${monitors_json}]"
+    helm upgrade --install ceph-csi ceph-csi/ceph-csi \
+        --namespace ceph-csi --create-namespace --version "v${CSI_VERSION}" \
+        --set "csiConfig[0].clusterID=${CEPH_CLUSTER_ID}" \
+        --set "csiConfig[0].monitors=${monitors_json}" \
+        --set "storageClass.create=true" \
+        --set "storageClass.name=${SC_NAME}" \
+        --set "storageClass.pool=${CEPH_RBD_POOL}" \
+        --wait --timeout=300s
+    echo "Ceph-CSI 部署完成"
+}
+
+install_ceph_csi_manifest() {
+    kubectl create namespace ceph-csi --dry-run=client -o yaml | kubectl apply -f -
+    local base="https://raw.githubusercontent.com/ceph/ceph-csi/v${CSI_VERSION}/deploy/cephcsi/kubernetes"
+    for f in csi-config-map.yaml csi-rbdplugin.yaml csi-rbdplugin-provisioner.yaml; do
+        curl -fsSL "${base}/${f}" | kubectl apply -n ceph-csi -f -
+    done
+    cat <<EOF | kubectl apply -f -
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: ${SC_NAME}
+provisioner: rbd.csi.ceph.com
+parameters:
+  clusterID: ${CEPH_CLUSTER_ID}
+  pool: ${CEPH_RBD_POOL}
+  imageFeatures: layering
+  csi.storage.k8s.io/provisioner-secret-name: csi-rbd-secret
+  csi.storage.k8s.io/provisioner-secret-namespace: ceph-csi
+  csi.storage.k8s.io/controller-expand-secret-name: csi-rbd-secret
+  csi.storage.k8s.io/controller-expand-secret-namespace: ceph-csi
+  csi.storage.k8s.io/node-stage-secret-name: csi-rbd-secret
+  csi.storage.k8s.io/node-stage-secret-namespace: ceph-csi
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
+allowVolumeExpansion: true
+EOF
+    kubectl rollout status deployment/ceph-csi-rbdplugin-provisioner -n ceph-csi --timeout=300s
+    echo "Ceph-CSI 部署完成"
+}
+
+install_local_csi() {
+    kubectl apply -f "https://raw.githubusercontent.com/rancher/local-path-provisioner/v${CSI_VERSION}/deploy/local-path-storage.yaml"
+    kubectl rollout status deployment/local-path-provisioner -n local-path-storage --timeout=300s
+    echo "Local-CSI 部署完成"
+}
+
+verify_csi() {
+    kubectl get storageclass "$SC_NAME" &>/dev/null && echo "StorageClass ($SC_NAME): OK" || { echo "ERROR: StorageClass 不存在"; return 1; }
+    kubectl get csidriver 2>/dev/null | grep -q "$CSI_DRIVER" && echo "CSIDriver: OK" || echo "WARNING: CSIDriver 尚未注册"
+    echo "CSI 验证完成"
+}
+
+case "$CSI_DRIVER" in
+    ceph-csi)
+        [ "$INSTALL_MODE" = "Helm" ] && install_ceph_csi_helm || install_ceph_csi_manifest ;;
+    local-csi) install_local_csi ;;
+    *) echo "ERROR: 不支持的 CSI 类型: $CSI_DRIVER"; exit 1 ;;
+esac
+verify_csi
+echo "=== CSI 安装完成 ==="
+```
+
+##### 6.16.5.3 CSI 离线安装流程
+
+```
+管理端准备
+    │
+    ├── 1. 下载 CSI Helm Chart / Manifest
+    │   └── ceph-csi-3.9.0.tgz
+    │
+    ├── 2. 准备 CSI 镜像列表并打包
+    │   ├── quay.io/cephcsi/cephcsi:v3.9.0
+    │   ├── registry.k8s.io/sig-storage/csi-provisioner:v3.6.0
+    │   ├── registry.k8s.io/sig-storage/csi-attacher:v4.4.0
+    │   └── 等...
+    │
+    └── 3. 分发到内网
+        
+目标机器安装
+    │
+    ├── 1. 加载 CSI 镜像到 containerd
+    │   └── ctr -n k8s.io images import csi-images.tar
+    │
+    ├── 2. 部署 CSI (Helm/Manifest 从本地读取)
+    │
+    └── 3. 验证
+```
+
+##### 6.16.5.4 CSI 离线安装脚本
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+CSI_DRIVER="${CSI_DRIVER:-ceph-csi}"
+CSI_VERSION="${CSI_VERSION:-3.9.0}"
+INSTALL_MODE="${INSTALL_MODE:-Helm}"
+CSI_CHART_ARCHIVE="${CSI_CHART_ARCHIVE:-/opt/capbm/csi/ceph-csi-${CSI_VERSION}.tgz}"
+CSI_IMAGES_ARCHIVE="${CSI_IMAGES_ARCHIVE:-/opt/capbm/csi/ceph-csi-images.tar}"
+
+echo "=== CSI 离线安装开始 ==="
+
+load_csi_images() {
+    [ ! -f "$CSI_IMAGES_ARCHIVE" ] && { echo "ERROR: CSI 镜像包不存在"; return 1; }
+    ctr -n k8s.io images import "$CSI_IMAGES_ARCHIVE"
+    echo "CSI 镜像加载完成"
+}
+
+install_csi_helm_offline() {
+    [ ! -f "$CSI_CHART_ARCHIVE" ] && { echo "ERROR: Helm Chart 不存在"; return 1; }
+    helm upgrade --install "$CSI_DRIVER" "$CSI_CHART_ARCHIVE" \
+        --namespace "${CSI_DRIVER}" --create-namespace \
+        --set "csiConfig[0].clusterID=${CEPH_CLUSTER_ID}" \
+        --set "csiConfig[0].monitors=${CEPH_MONITORS}" \
+        --set "storageClass.create=true" \
+        --set "storageClass.name=${SC_NAME}" \
+        --wait --timeout=300s
+    echo "CSI 离线部署完成 (Helm)"
+}
+
+install_csi_manifest_offline() {
+    local manifest_path="${CSI_MANIFEST_PATH:-/opt/capbm/csi/${CSI_DRIVER}.yaml}"
+    [ ! -f "$manifest_path" ] && { echo "ERROR: Manifest 不存在"; return 1; }
+    kubectl create namespace "${CSI_DRIVER}" --dry-run=client -o yaml | kubectl apply -f -
+    kubectl apply -n "${CSI_DRIVER}" -f "$manifest_path"
+    echo "CSI 离线部署完成 (Manifest)"
+}
+
+verify_csi() {
+    kubectl get storageclass "$SC_NAME" &>/dev/null && echo "StorageClass: OK" || { echo "ERROR: StorageClass 不存在"; return 1; }
+    echo "CSI 验证完成"
+}
+
+load_csi_images
+case "$INSTALL_MODE" in
+    Helm)     install_csi_helm_offline ;;
+    Manifest) install_csi_manifest_offline ;;
+esac
+verify_csi
+echo "=== CSI 离线安装完成 ==="
+```
+
+#### 6.16.6 CNI/CSI 升级流程
+
+##### 6.16.6.1 升级触发条件
+
+| 触发方式 | 说明 |
+|---------|------|
+| 版本变更 | `cni.version` 或 `csi.version` 字段变化 |
+| 配置变更 | `cni.config` 或 `csi.config` 字段变化 |
+| 手动触发 | 通过 Annotation 或 Condition 手动触发 |
+
+##### 6.16.6.2 CNI 升级流程
+
+```
+检测到 CNI 版本/配置变更
+    │
+    ▼
+┌─────────────────────────────────────────────────┐
+│ 1. 备份当前配置                                   │
+│    ├── 导出当前 Manifest/Helm values             │
+│    └── 保存到 /tmp/.capbm_cni_backup/           │
+└─────────────────┬───────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────┐
+│ 2. 执行升级                                       │
+│    ├── Manifest: 下载新 Manifest → kubectl apply │
+│    └── Helm: helm upgrade (自动滚动更新)          │
+└─────────────────┬───────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────┐
+│ 3. 验证升级                                       │
+│    ├── CNI Pod 全部 Running (新版本镜像)          │
+│    ├── Node 保持 Ready                           │
+│    └── 跨节点网络连通性测试                       │
+└─────────────────┬───────────────────────────────┘
+                  │
+            验证通过？
+            ╱              ╲
+           是               否
+           │                │
+           ▼                ▼
+┌──────────────────┐ ┌──────────────────────────┐
+│ 升级成功         │ │ 4. 回滚                   │
+│                  │ │    ├── 恢复备份的 Manifest │
+│                  │ │    └── 或 helm rollback   │
+└──────────────────┘ └──────────────────────────┘
+```
+
+##### 6.16.6.3 CSI 升级流程
+
+```
+检测到 CSI 版本/配置变更
+    │
+    ▼
+┌─────────────────────────────────────────────────┐
+│ 1. 备份当前配置 + PVC/PV 状态快照                │
+└─────────────────┬───────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────┐
+│ 2. 执行升级                                       │
+│    ├── 升级 CSI Controller (滚动更新)            │
+│    ├── 升级 CSI Node DaemonSet (逐节点)          │
+│    └── 更新 StorageClass (如有变更)              │
+└─────────────────┬───────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────┐
+│ 3. 验证升级                                       │
+│    ├── Controller/Node Pod Running               │
+│    ├── 已有 PVC/PV 状态正常                      │
+│    └── 创建测试 PVC 验证供给能力                  │
+└─────────────────────────────────────────────────┘
+```
+
+##### 6.16.6.4 升级脚本 (CNI 示例)
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+CNI_TYPE="${CNI_TYPE:-calico}"
+CURRENT_VERSION="${CURRENT_VERSION:-}"
+TARGET_VERSION="${TARGET_VERSION:-3.26.1}"
+POD_CIDR="${POD_CIDR:-10.244.0.0/16}"
+BACKUP_DIR="/tmp/.capbm_cni_backup/$(date +%Y%m%d%H%M%S)"
+
+echo "=== CNI 升级开始 ($CURRENT_VERSION -> $TARGET_VERSION) ==="
+
+backup_current_config() {
+    mkdir -p "$BACKUP_DIR"
+    kubectl get daemonset/calico-node -n kube-system -o yaml > "$BACKUP_DIR/calico-node.yaml" 2>/dev/null || true
+    kubectl get deployment/calico-kube-controllers -n kube-system -o yaml > "$BACKUP_DIR/calico-kube-controllers.yaml" 2>/dev/null || true
+    helm get values calico -n kube-system > "$BACKUP_DIR/calico-values.yaml" 2>/dev/null || true
+    echo "配置已备份到: $BACKUP_DIR"
+}
+
+rollback_cni() {
+    echo "=== 开始回滚 CNI ==="
+    [ -f "$BACKUP_DIR/calico-node.yaml" ] && kubectl apply -f "$BACKUP_DIR/calico-node.yaml"
+    [ -f "$BACKUP_DIR/calico-kube-controllers.yaml" ] && kubectl apply -f "$BACKUP_DIR/calico-kube-controllers.yaml"
+    helm rollback calico -n kube-system 2>/dev/null || true
+    echo "回滚完成"
+}
+
+upgrade_cni() {
+    case "$CNI_TYPE" in
+        calico)
+            local url="https://raw.githubusercontent.com/projectcalico/calico/v${TARGET_VERSION}/manifests/calico.yaml"
+            local tmp=$(mktemp)
+            curl -fsSL "$url" -o "$tmp"
+            sed -i "s|\"192.168.0.0/16\"|\"${POD_CIDR}\"|g" "$tmp"
+            kubectl apply -f "$tmp" && rm -f "$tmp"
+            kubectl rollout status daemonset/calico-node -n kube-system --timeout=300s
+            ;;
+        cilium)
+            helm upgrade cilium cilium/cilium --namespace kube-system --version "v${TARGET_VERSION}" --reuse-values --wait --timeout=300s
+            ;;
+        flannel)
+            local url="https://github.com/flannel-io/flannel/releases/download/v${TARGET_VERSION}/kube-flannel.yml"
+            local tmp=$(mktemp)
+            curl -fsSL "$url" -o "$tmp"
+            sed -i "s|\"10.244.0.0/16\"|\"${POD_CIDR}\"|g" "$tmp"
+            kubectl apply -f "$tmp" && rm -f "$tmp"
+            kubectl rollout status daemonset/kube-flannel-ds -n kube-flannel --timeout=300s
+            ;;
+    esac
+    echo "CNI 升级完成"
+}
+
+verify_upgrade() {
+    local not_ready=$(kubectl get pods -n kube-system -l k8s-app=calico-node --field-selector=status.phase!=Running 2>/dev/null | wc -l)
+    [ "$not_ready" -gt 0 ] && { echo "ERROR: $not_ready 个 CNI Pod 未 Running"; return 1; }
+    not_ready=$(kubectl get nodes --field-selector=status.conditions[?(@.type=="Ready")].status!=True 2>/dev/null | wc -l)
+    [ "$not_ready" -gt 0 ] && { echo "ERROR: $not_ready 个 Node 未 Ready"; return 1; }
+    echo "CNI 升级验证通过"
+}
+
+backup_current_config
+if upgrade_cni; then
+    if verify_upgrade; then
+        echo "=== CNI 升级成功 ==="
+    else
+        echo "ERROR: 验证失败，执行回滚"; rollback_cni; exit 1
+    fi
+else
+    echo "ERROR: 升级失败，执行回滚"; rollback_cni; exit 1
+fi
+```
+
+#### 6.16.7 支持的 CNI/CSI 矩阵
+
+| 类型 | 插件 | 最低版本 | 安装模式 | 离线支持 | 说明 |
+|------|------|---------|---------|---------|------|
+| CNI | Calico | 3.26+ | Manifest | 是 | 默认推荐，BGP 模式适合裸金属 |
+| CNI | Cilium | 1.14+ | Helm | 是 | eBPF 高性能网络，支持 kube-proxy 替换 |
+| CNI | Flannel | 0.23+ | Manifest | 是 | 简单轻量，适合小规模集群 |
+| CSI | Ceph-CSI | 3.9+ | Helm/Manifest | 是 | 企业级分布式存储 |
+| CSI | Cinder-CSI | 1.28+ | Helm/Manifest | 是 | OpenStack 环境 |
+| CSI | Local-CSI | - | Manifest | 是 | hostPath 本地存储，开发测试 |
+| CSI | NFS-CSI | 4.5+ | Manifest | 是 | 实验性支持 |
+
+#### 6.16.8 ClusterClass 变量和 Patches
+
+在 ClusterClass 中新增 CNI/CSI 变量：
+
+```yaml
+  variables:
+  - name: cni
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          enabled:
+            type: boolean
+            default: true
+          type:
+            type: string
+            default: "calico"
+            enum: ["calico", "cilium", "flannel"]
+          version:
+            type: string
+          installMode:
+            type: string
+            default: "Manifest"
+            enum: ["Manifest", "Helm"]
+          config:
+            type: object
+            properties:
+              podCIDR:
+                type: string
+              calico:
+                type: object
+                properties:
+                  ipam:
+                    type: string
+                    default: "CalicoIPAM"
+                  mtu:
+                    type: integer
+                    default: 0
+                  bgp:
+                    type: object
+                    properties:
+                      enabled:
+                        type: boolean
+                        default: true
+                      peerIPs:
+                        type: array
+                        items:
+                          type: string
+                  typha:
+                    type: object
+                    properties:
+                      enabled:
+                        type: boolean
+                        default: false
+                      replicas:
+                        type: integer
+                        default: 1
+              cilium:
+                type: object
+                properties:
+                  kubeProxyReplacement:
+                    type: string
+                    default: "partial"
+                  routingMode:
+                    type: string
+                    default: "tunnel"
+                  hubble:
+                    type: object
+                    properties:
+                      enabled:
+                        type: boolean
+                        default: false
+              flannel:
+                type: object
+                properties:
+                  backend:
+                    type: string
+                    default: "vxlan"
+                  mtu:
+                    type: integer
+                    default: 0
+          airGap:
+            type: object
+            properties:
+              enabled:
+                type: boolean
+                default: false
+              manifestSource:
+                type: string
+                default: "HTTPServer"
+              httpServerConfig:
+                type: object
+                properties:
+                  baseUrl:
+                    type: string
+              cniPluginsArchive:
+                type: string
+
+  - name: csi
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          enabled:
+            type: boolean
+            default: false
+          driver:
+            type: string
+            enum: ["ceph-csi", "cinder-csi", "local-csi", "nfs-csi"]
+          version:
+            type: string
+          installMode:
+            type: string
+            default: "Helm"
+            enum: ["Manifest", "Helm"]
+          config:
+            type: object
+            properties:
+              cephCsi:
+                type: object
+                properties:
+                  clusterID:
+                    type: string
+                  monitors:
+                    type: array
+                    items:
+                      type: string
+                  rbd:
+                    type: object
+                    properties:
+                      enabled:
+                        type: boolean
+                      pool:
+                        type: string
+                  storageClass:
+                    type: object
+                    properties:
+                      name:
+                        type: string
+                        default: "ceph-rbd"
+                      reclaimPolicy:
+                        type: string
+                        default: "Delete"
+                      fsType:
+                        type: string
+                        default: "ext4"
+              localCsi:
+                type: object
+                properties:
+                  storageClass:
+                    type: object
+                    properties:
+                      name:
+                        type: string
+                        default: "local-path"
+              nfsCsi:
+                type: object
+                properties:
+                  server:
+                    type: string
+                  share:
+                    type: string
+                  storageClass:
+                    type: object
+                    properties:
+                      name:
+                        type: string
+          airGap:
+            type: object
+            properties:
+              enabled:
+                type: boolean
+                default: false
+              manifestSource:
+                type: string
+                default: "HTTPServer"
+              httpServerConfig:
+                type: object
+                properties:
+                  baseUrl:
+                    type: string
+              chartArchive:
+                type: string
+```
+
+Patch 定义：
+
+```yaml
+  patches:
+  - name: cni
+    definitions:
+    - selector:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        kind: BareMetalMachineTemplate
+        matchResources:
+          controlPlane: true
+      jsonPatches:
+      - op: add
+        path: /spec/template/spec/componentInstall/cni
+        valueFrom:
+          variable: cni
+    - selector:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        kind: BareMetalMachineTemplate
+        matchResources:
+          machineDeploymentClass:
+            names:
+            - default-worker
+      jsonPatches:
+      - op: add
+        path: /spec/template/spec/componentInstall/cni
+        valueFrom:
+          variable: cni
+
+  - name: csi
+    definitions:
+    - selector:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        kind: BareMetalMachineTemplate
+        matchResources:
+          controlPlane: true
+      jsonPatches:
+      - op: add
+        path: /spec/template/spec/componentInstall/csi
+        valueFrom:
+          variable: csi
+```
+
+#### 6.16.9 Controller 集成
+
+在 `BareMetalMachine Controller` 的调谐流程中新增 CNI/CSI 安装步骤：
+
+```go
+func (r *BareMetalMachineReconciler) reconcileNormal(ctx context.Context, bmMachine *infrav1.BareMetalMachine, machine *clusterv1.Machine) (ctrl.Result, error) {
+	// ... 现有步骤 1-6 (分配机器、SSH、预检、组件安装) ...
+
+	// 7. 安装 CNI (仅 control-plane 首个节点执行)
+	if bmMachine.Spec.ComponentInstall != nil && bmMachine.Spec.ComponentInstall.CNI.Enabled {
+		if r.isFirstControlPlaneNode(ctx, bmMachine) {
+			cniResult, err := r.installCNI(ctx, sshConn, bmMachine, machine)
+			if err != nil {
+				markConditionFalse(bmMachine, infrav1.CNIInstalledCondition, infrav1.CNIInstallFailedReason, clusterv1.ConditionSeverityError, err.Error())
+				return ctrl.Result{RequeueAfter: 60 * time.Second}, r.Status().Update(ctx, bmMachine)
+			}
+			if !cniResult.Completed {
+				log.Info("CNI installation in progress", "progress", cniResult.Progress)
+				return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+			}
+			if !cniResult.Success {
+				markConditionFalse(bmMachine, infrav1.CNIInstalledCondition, infrav1.CNIInstallFailedReason, clusterv1.ConditionSeverityError, cniResult.Error)
+				return ctrl.Result{RequeueAfter: 60 * time.Second}, r.Status().Update(ctx, bmMachine)
+			}
+			markConditionTrue(bmMachine, infrav1.CNIInstalledCondition)
+		}
+	}
+
+	// 8. 安装 CSI (仅 control-plane 首个节点执行，可选)
+	if bmMachine.Spec.ComponentInstall != nil && bmMachine.Spec.ComponentInstall.CSI.Enabled {
+		if r.isFirstControlPlaneNode(ctx, bmMachine) {
+			csiResult, err := r.installCSI(ctx, sshConn, bmMachine, machine)
+			if err != nil {
+				markConditionFalse(bmMachine, infrav1.CSIInstalledCondition, infrav1.CSIInstallFailedReason, clusterv1.ConditionSeverityError, err.Error())
+				return ctrl.Result{RequeueAfter: 60 * time.Second}, r.Status().Update(ctx, bmMachine)
+			}
+			if !csiResult.Completed {
+				log.Info("CSI installation in progress", "progress", csiResult.Progress)
+				return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+			}
+			if !csiResult.Success {
+				markConditionFalse(bmMachine, infrav1.CSIInstalledCondition, infrav1.CSIInstallFailedReason, clusterv1.ConditionSeverityError, csiResult.Error)
+				return ctrl.Result{RequeueAfter: 60 * time.Second}, r.Status().Update(ctx, bmMachine)
+			}
+			markConditionTrue(bmMachine, infrav1.CSIInstalledCondition)
+		}
+	}
+
+	// ... 后续步骤 (设置 ProviderID、更新状态) ...
+}
+
+// isFirstControlPlaneNode 判断是否为首个 control-plane 节点
+func (r *BareMetalMachineReconciler) isFirstControlPlaneNode(ctx context.Context, bmMachine *infrav1.BareMetalMachine) bool {
+	if bmMachine.Spec.Role != "control-plane" {
+		return false
+	}
+	clusterName := bmMachine.Labels[clusterv1.ClusterNameLabel]
+	var bmMachineList infrav1.BareMetalMachineList
+	if err := r.List(ctx, &bmMachineList, client.InNamespace(bmMachine.Namespace), client.MatchingLabels{clusterv1.ClusterNameLabel: clusterName}); err != nil {
+		return false
+	}
+	for _, m := range bmMachineList.Items {
+		if m.Spec.Role == "control-plane" && m.Status.Ready && m.Name != bmMachine.Name {
+			return false
+		}
+	}
+	return true
+}
+
+// installCNI 安装 CNI 插件
+func (r *BareMetalMachineReconciler) installCNI(ctx context.Context, sshConn *ssh.SSHConnection, bmMachine *infrav1.BareMetalMachine, machine *clusterv1.Machine) (*installer.CNIInstallResult, error) {
+	cniConfig := bmMachine.Spec.ComponentInstall.CNI
+	params := installer.CNIParams{
+		Type:        cniConfig.Type,
+		Version:     cniConfig.Version,
+		InstallMode: cniConfig.InstallMode,
+		PodCIDR:     cniConfig.Config.PodCIDR,
+		AirGap:      cniConfig.AirGap != nil && cniConfig.AirGap.Enabled,
+	}
+	if cniConfig.Config.Calico != nil {
+		params.Calico = &installer.CalicoParams{
+			IPAM: cniConfig.Config.Calico.IPAM,
+			MTU:  cniConfig.Config.Calico.MTU,
+		}
+	}
+	inst := installer.NewCNI(sshConn, params)
+	return inst.Install(ctx)
+}
+
+// installCSI 安装 CSI 驱动
+func (r *BareMetalMachineReconciler) installCSI(ctx context.Context, sshConn *ssh.SSHConnection, bmMachine *infrav1.BareMetalMachine, machine *clusterv1.Machine) (*installer.CSIInstallResult, error) {
+	csiConfig := bmMachine.Spec.ComponentInstall.CSI
+	params := installer.CSIParams{
+		Driver:      csiConfig.Driver,
+		Version:     csiConfig.Version,
+		InstallMode: csiConfig.InstallMode,
+		AirGap:      csiConfig.AirGap != nil && csiConfig.AirGap.Enabled,
+	}
+	if csiConfig.Config.CephCsi != nil {
+		params.CephCsi = &installer.CephCsiParams{
+			ClusterID: csiConfig.Config.CephCsi.ClusterID,
+			Monitors:  csiConfig.Config.CephCsi.Monitors,
+			Pool:      csiConfig.Config.CephCsi.RBD.Pool,
+		}
+	}
+	inst := installer.NewCSI(sshConn, params)
+	return inst.Install(ctx)
+}
+```
+
+新增 Conditions:
+
+```go
+const (
+	CNIInstalledCondition clusterv1.ConditionType = "CNIInstalled"
+	CNIInstallFailedReason                       = "CNIInstallFailed"
+	CSIInstalledCondition clusterv1.ConditionType = "CSIInstalled"
+	CSIInstallFailedReason                       = "CSIInstallFailed"
+)
+```
+
+#### 6.16.10 用户使用示例
+
+##### 6.16.10.1 标准集群 (Calico CNI + Local-CSI)
+
+```yaml
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+spec:
+  topology:
+    classRef:
+      name: baremetal-clusterclass-v0.1.0
+    version: v1.31.0
+    controlPlane:
+      replicas: 3
+    workers:
+      machineDeployments:
+      - class: default-worker
+        name: md-0
+        replicas: 2
+    variables:
+    - name: cni
+      value:
+        enabled: true
+        type: "calico"
+        version: "3.26.1"
+        config:
+          calico:
+            ipam: "CalicoIPAM"
+            bgp:
+              enabled: true
+            typha:
+              enabled: true
+              replicas: 1
+    - name: csi
+      value:
+        enabled: true
+        driver: "local-csi"
+        config:
+          localCsi:
+            storageClass:
+              name: "local-path"
+              reclaimPolicy: "Delete"
+              volumeBindingMode: "WaitForFirstConsumer"
+```
+
+##### 6.16.10.2 高性能集群 (Cilium CNI + Ceph-CSI)
+
+```yaml
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+spec:
+  topology:
+    variables:
+    - name: cni
+      value:
+        enabled: true
+        type: "cilium"
+        version: "1.15.0"
+        installMode: "Helm"
+        config:
+          cilium:
+            kubeProxyReplacement: "strict"
+            routingMode: "native"
+            ipv4NativeRoutingCIDR: "10.0.0.0/8"
+            hubble:
+              enabled: true
+              relay: true
+              ui: true
+    - name: csi
+      value:
+        enabled: true
+        driver: "ceph-csi"
+        version: "3.9.0"
+        installMode: "Helm"
+        config:
+          cephCsi:
+            clusterID: "prod-ceph"
+            monitors:
+              - "10.0.0.10:6789"
+              - "10.0.0.11:6789"
+              - "10.0.0.12:6789"
+            rbd:
+              enabled: true
+              pool: "kubernetes-ssd"
+            cephfs:
+              enabled: true
+            storageClass:
+              name: "ceph-rbd-ssd"
+              reclaimPolicy: "Delete"
+              fsType: "ext4"
+```
+
+##### 6.16.10.3 离线环境集群
+
+```yaml
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+spec:
+  topology:
+    variables:
+    - name: cni
+      value:
+        enabled: true
+        type: "calico"
+        version: "3.26.1"
+        airGap:
+          enabled: true
+          manifestSource: "HTTPServer"
+          httpServerConfig:
+            baseUrl: "https://internal-pkg.example.com/cni"
+          cniPluginsArchive: "/opt/capbm/cni/cni-plugins-linux-amd64-v1.3.0.tgz"
+    - name: csi
+      value:
+        enabled: true
+        driver: "ceph-csi"
+        version: "3.9.0"
+        airGap:
+          enabled: true
+          manifestSource: "HTTPServer"
+          httpServerConfig:
+            baseUrl: "https://internal-pkg.example.com/csi"
+          chartArchive: "/opt/capbm/csi/ceph-csi-3.9.0.tgz"
+```
+
+##### 6.16.10.4 CNI 升级示例
+
+```yaml
+# 升级前
+- name: cni
+  value:
+    type: "calico"
+    version: "3.26.1"
+
+# 升级后 (修改 version 即可，自动触发滚动升级)
+- name: cni
+  value:
+    type: "calico"
+    version: "3.27.0"
+```
+
+#### 6.16.11 CNI/CSI 安装与完整安装流程集成
+
+更新后的完整安装流程（包含 CNI/CSI）:
+
+```
+SSH 连接成功
+    │
+    ▼
+┌─────────────────────────────────────────┐
+│ 1. 环境准备                              │
+│    ├── 检测 OS 类型和版本                │
+│    ├── 检测包管理器                      │
+│    ├── 检测防火墙工具                    │
+│    └── 检测 SELinux 状态                │
+└─────────────────┬───────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────┐
+│ 2. 网络预检                              │
+│    ├── 端口可用性检查                    │
+│    ├── 网络连通性检查                    │
+│    ├── MTU 检查                         │
+│    └── 桥接流量检查                      │
+└─────────────────┬───────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────┐
+│ 3. 前置配置                              │
+│    ├── 配置防火墙规则                    │
+│    ├── 配置 SELinux 策略                │
+│    ├── 禁用 swap                        │
+│    └── 配置内核参数                      │
+└─────────────────┬───────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────┐
+│ 4. 组件安装                              │
+│    ├── 安装容器运行时 (containerd 等)    │
+│    └── 安装 Kubernetes 组件              │
+│        ├── kubeadm                      │
+│        ├── kubelet                      │
+│        └── kubectl                      │
+└─────────────────┬───────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────┐
+│ 5. kubeadm init/join                     │
+│    └── 由 Kubeadm Bootstrap Provider 执行│
+└─────────────────┬───────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────┐
+│ 6. CNI 安装 (仅首个 control-plane)       │
+│    ├── 安装 CNI 二进制插件               │
+│    ├── 部署 CNI 插件 (Calico/Cilium 等)  │
+│    └── 验证网络连通性                    │
+└─────────────────┬───────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────┐
+│ 7. CSI 安装 (可选，仅首个 control-plane)  │
+│    ├── 部署 CSI Controller              │
+│    ├── 部署 CSI Node DaemonSet          │
+│    ├── 创建 StorageClass                │
+│    └── 验证存储供给能力                  │
+└─────────────────┬───────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────┐
+│ 8. 安装验证                              │
+│    ├── 组件版本验证                      │
+│    ├── CNI/CSI 状态检查                  │
+│    └── Node Ready 确认                   │
+└─────────────────┬───────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────┐
+│ 9. 清理                                  │
+│    ├── 删除临时文件                      │
+│    └── 记录安装结果                      │
+└─────────────────────────────────────────┘
+```
+
+
 ## 七、SSH 连接管理 (保持不变)
 
 ### 7.1 SSH Manager 设计
@@ -3713,6 +5121,30 @@ cluster-api-provider-baremetal/
 │   │   └── templates/
 │   │       ├── containerd.service.tmpl          # systemd 模板
 │   │       └── kubelet.service.tmpl
+│   ├── cni/                                      # 新增：CNI 安装模块
+│   │   ├── cni.go                               # CNI 安装入口
+│   │   ├── calico.go                            # Calico 安装逻辑
+│   │   ├── cilium.go                            # Cilium 安装逻辑
+│   │   ├── flannel.go                           # Flannel 安装逻辑
+│   │   ├── verify.go                            # CNI 状态验证
+│   │   └── scripts/
+│   │       ├── install_calico.sh                # Calico 在线安装
+│   │       ├── install_cilium.sh                # Cilium 在线安装
+│   │       ├── install_flannel.sh               # Flannel 在线安装
+│   │       ├── install_cni_offline.sh           # CNI 离线安装
+│   │       └── upgrade_cni.sh                   # CNI 升级/回滚
+│   ├── csi/                                      # 新增：CSI 安装模块
+│   │   ├── csi.go                               # CSI 安装入口
+│   │   ├── ceph_csi.go                          # Ceph-CSI 安装逻辑
+│   │   ├── cinder_csi.go                        # Cinder-CSI 安装逻辑
+│   │   ├── local_csi.go                         # Local-CSI 安装逻辑
+│   │   ├── nfs_csi.go                           # NFS-CSI 安装逻辑
+│   │   ├── verify.go                            # CSI 状态验证
+│   │   └── scripts/
+│   │       ├── install_ceph_csi.sh              # Ceph-CSI 在线安装
+│   │       ├── install_local_csi.sh             # Local-CSI 在线安装
+│   │       ├── install_csi_offline.sh           # CSI 离线安装
+│   │       └── upgrade_csi.sh                   # CSI 升级/回滚
 │   ├── network/                                  # 新增：网络配置模块
 │   │   ├── firewall.go                          # 防火墙配置
 │   │   ├── selinux.go                           # SELinux 配置
@@ -3746,7 +5178,9 @@ cluster-api-provider-baremetal/
 │       └── baremetal-clusterclass-v0.1.0.yaml
 ├── hack/
 │   ├── prepare-offline-packages.sh              # 离线包准备脚本
-│   └── preload-images.sh                        # 镜像预加载脚本
+│   ├── preload-images.sh                        # 镜像预加载脚本
+│   ├── prepare-cni-offline.sh                   # CNI 离线包准备
+│   └── prepare-csi-offline.sh                   # CSI 离线包准备
 ├── go.mod
 └── go.sum
 ```
