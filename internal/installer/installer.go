@@ -27,28 +27,11 @@ import (
 )
 
 type Installer struct {
-	sshConn  *sshclient.SSHConnection
-	config   *infrav1.ComponentInstallConfig
-	k8sVersion string
-	role     string
-}
-
-type InstallResult struct {
-	Completed       bool              `json:"completed"`
-	Success         bool              `json:"success"`
-	Progress        string            `json:"progress"`
-	ComponentVersions ComponentVersions `json:"componentVersions,omitempty"`
-	Error           string            `json:"error,omitempty"`
-	RetryCount      int               `json:"retryCount,omitempty"`
-}
-
-type ComponentVersions struct {
-	ContainerRuntime string `json:"containerRuntime,omitempty"`
-	Kubeadm          string `json:"kubeadm,omitempty"`
-	Kubelet          string `json:"kubelet,omitempty"`
-	Kubectl          string `json:"kubectl,omitempty"`
-	OSType           string `json:"osType,omitempty"`
-	OSVersion        string `json:"osVersion,omitempty"`
+	sshConn      *sshclient.SSHConnection
+	config       *infrav1.ComponentInstallConfig
+	releaseImage *infrav1.ReleaseImage
+	k8sVersion   string
+	role         string
 }
 
 func New(sshConn *sshclient.SSHConnection, config *infrav1.ComponentInstallConfig, k8sVersion string, role string) *Installer {
@@ -58,6 +41,40 @@ func New(sshConn *sshclient.SSHConnection, config *infrav1.ComponentInstallConfi
 		k8sVersion: k8sVersion,
 		role:       role,
 	}
+}
+
+// NewWithReleaseImage creates an Installer driven by a ReleaseImage.
+// Component versions are sourced from releaseImage.Spec.Components.
+func NewWithReleaseImage(sshConn *sshclient.SSHConnection, releaseImage *infrav1.ReleaseImage, config *infrav1.ComponentInstallConfig, role string) *Installer {
+	k8sVersion := ""
+	if ver, ok := releaseImage.Spec.Components.Kubernetes["kubelet"]; ok {
+		k8sVersion = strings.TrimPrefix(ver, "v")
+	}
+	return &Installer{
+		sshConn:      sshConn,
+		config:       config,
+		releaseImage: releaseImage,
+		k8sVersion:   k8sVersion,
+		role:         role,
+	}
+}
+
+type InstallResult struct {
+	Completed         bool              `json:"completed"`
+	Success           bool              `json:"success"`
+	Progress          string            `json:"progress"`
+	ComponentVersions ComponentVersions `json:"componentVersions,omitempty"`
+	Error             string            `json:"error,omitempty"`
+	RetryCount        int               `json:"retryCount,omitempty"`
+}
+
+type ComponentVersions struct {
+	ContainerRuntime string `json:"containerRuntime,omitempty"`
+	Kubeadm          string `json:"kubeadm,omitempty"`
+	Kubelet          string `json:"kubelet,omitempty"`
+	Kubectl          string `json:"kubectl,omitempty"`
+	OSType           string `json:"osType,omitempty"`
+	OSVersion        string `json:"osVersion,omitempty"`
 }
 
 func (i *Installer) Install(ctx context.Context) (*InstallResult, error) {
@@ -160,9 +177,9 @@ func (i *Installer) executeInstall(ctx context.Context, osInfo *OSInfo, attempt 
 	versions.OSVersion = osInfo.Version
 
 	return &InstallResult{
-		Completed:       true,
-		Success:         true,
-		Progress:        "Installation completed successfully",
+		Completed:         true,
+		Success:           true,
+		Progress:          "Installation completed successfully",
 		ComponentVersions: *versions,
 	}, nil
 }

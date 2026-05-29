@@ -34,6 +34,7 @@ import (
 	infrav1 "github.com/BetaWater/cluster-api-provider-baremetal/api/v1beta1"
 	"github.com/BetaWater/cluster-api-provider-baremetal/internal/controllers"
 	"github.com/BetaWater/cluster-api-provider-baremetal/internal/ssh"
+	"github.com/BetaWater/cluster-api-provider-baremetal/internal/upgrader"
 )
 
 var (
@@ -113,6 +114,7 @@ func main() {
 		Client: mgr.GetClient(),
 		Log:    ctrl.Log.WithName("controllers").WithName("ClusterVersion"),
 		Scheme: mgr.GetScheme(),
+		Puller: upgrader.NewOCIPuller("/tmp/capbm-upgrade"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "ClusterVersion")
 		os.Exit(1)

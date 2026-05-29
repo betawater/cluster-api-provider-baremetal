@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/go-logr/logr"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -82,8 +83,18 @@ func (r *ClusterVersionReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	if err := r.validateUpgrade(ctx, cv); err != nil {
 		setCVCondition(cv, infrav1.UpgradeFailing, metav1.ConditionTrue, infrav1.ValidationFailedReason, err.Error())
+		setCVCondition(cv, infrav1.UpgradeUpgradeable, metav1.ConditionFalse, infrav1.ValidationFailedReason, err.Error())
 		return ctrl.Result{RequeueAfter: 60 * time.Second}, nil
 	}
+
+	// Pre-upgrade health check
+	if err := r.preUpgradeHealthCheck(ctx, cv); err != nil {
+		setCVCondition(cv, infrav1.UpgradeFailing, metav1.ConditionTrue, "PreUpgradeHealthCheckFailed", err.Error())
+		setCVCondition(cv, infrav1.UpgradeUpgradeable, metav1.ConditionFalse, "PreUpgradeHealthCheckFailed", err.Error())
+		return ctrl.Result{RequeueAfter: 60 * time.Second}, nil
+	}
+
+	setCVCondition(cv, infrav1.UpgradeUpgradeable, metav1.ConditionTrue, infrav1.UpgradeUpgradeableReason, "All preconditions passed")
 
 	releaseImage, err := r.fetchReleaseImage(ctx, cv)
 	if err != nil {
@@ -202,7 +213,7 @@ func (r *ClusterVersionReconciler) computeAvailableUpdates(ctx context.Context, 
 	if r.Puller == nil {
 		return
 	}
-	executor := upgrader.NewGraphExecutor(r.Client, r.Puller)
+	executor := upgrader.NewGraphExecutor(r.Client, r.Puller, nil)
 	updates, err := executor.ComputeAvailableUpdates(ctx, cv)
 	if err != nil {
 		return
@@ -215,8 +226,29 @@ func (r *ClusterVersionReconciler) validateUpgrade(ctx context.Context, cv *infr
 	if r.Puller == nil {
 		return nil
 	}
-	executor := upgrader.NewGraphExecutor(r.Client, r.Puller)
+	executor := upgrader.NewGraphExecutor(r.Client, r.Puller, nil)
 	return executor.ValidateUpgradePath(ctx, cv)
+}
+
+func (r *ClusterVersionReconciler) preUpgradeHealthCheck(ctx context.Context, cv *infrav1.ClusterVersion) error {
+	// Check that all nodes are Ready before starting upgrade
+	nodeList := &corev1.NodeList{}
+	if err := r.Client.List(ctx, nodeList); err != nil {
+		return fmt.Errorf("failed to list nodes for health check: %w", err)
+	}
+	for _, node := range nodeList.Items {
+		ready := false
+		for _, cond := range node.Status.Conditions {
+			if cond.Type == corev1.NodeReady && cond.Status == corev1.ConditionTrue {
+				ready = true
+				break
+			}
+		}
+		if !ready {
+			return fmt.Errorf("node %s is not Ready, cannot proceed with upgrade", node.Name)
+		}
+	}
+	return nil
 }
 
 func (r *ClusterVersionReconciler) fetchReleaseImage(ctx context.Context, cv *infrav1.ClusterVersion) (*infrav1.ReleaseImage, error) {
@@ -278,8 +310,64 @@ func (r *ClusterVersionReconciler) executeUpgrade(ctx context.Context, cv *infra
 	if r.Puller == nil {
 		return nil
 	}
-	executor := upgrader.NewGraphExecutor(r.Client, r.Puller)
+
+	// Initialize ComponentStatus from ReleaseImage components
+	cv.Status.ComponentStatus = r.initComponentStatus(releaseImage)
+
+	executor := upgrader.NewGraphExecutor(r.Client, r.Puller, nil)
 	return executor.ExecuteUpgradeGraph(ctx, cv, releaseImage)
+}
+
+func (r *ClusterVersionReconciler) initComponentStatus(releaseImage *infrav1.ReleaseImage) []infrav1.ComponentStatus {
+	var status []infrav1.ComponentStatus
+
+	// Add containerd
+	if releaseImage.Spec.Components.Containerd != "" {
+		status = append(status, infrav1.ComponentStatus{
+			Name:          "containerd",
+			Version:       releaseImage.Spec.Components.Containerd,
+			TargetVersion: releaseImage.Spec.Components.Containerd,
+			Phase:         "Pending",
+		})
+	}
+
+	// Add kubernetes components
+	for name, ver := range releaseImage.Spec.Components.Kubernetes {
+		status = append(status, infrav1.ComponentStatus{
+			Name:          name,
+			Version:       ver,
+			TargetVersion: ver,
+			Phase:         "Pending",
+		})
+	}
+
+	// Add CNI/CSI components
+	if releaseImage.Spec.Components.Calico != "" {
+		status = append(status, infrav1.ComponentStatus{
+			Name:          "calico",
+			Version:       releaseImage.Spec.Components.Calico,
+			TargetVersion: releaseImage.Spec.Components.Calico,
+			Phase:         "Pending",
+		})
+	}
+	if releaseImage.Spec.Components.Cilium != "" {
+		status = append(status, infrav1.ComponentStatus{
+			Name:          "cilium",
+			Version:       releaseImage.Spec.Components.Cilium,
+			TargetVersion: releaseImage.Spec.Components.Cilium,
+			Phase:         "Pending",
+		})
+	}
+	if releaseImage.Spec.Components.CephCsi != "" {
+		status = append(status, infrav1.ComponentStatus{
+			Name:          "ceph-csi",
+			Version:       releaseImage.Spec.Components.CephCsi,
+			TargetVersion: releaseImage.Spec.Components.CephCsi,
+			Phase:         "Pending",
+		})
+	}
+
+	return status
 }
 
 func setCVCondition(cv *infrav1.ClusterVersion, condType clusterv1.ConditionType, status metav1.ConditionStatus, reason, message string) {

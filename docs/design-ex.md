@@ -4945,6 +4945,14 @@ SSH 连接成功
 ---
 
 > **集群升级设计 (CVO 机制)** 已移至独立文档: [cluster-upgrade-cvo.md](cluster-upgrade-cvo.md)
+> 
+> 最新方案包含:
+> - 四个核心 CRD: ClusterVersion / ReleaseImage / UpgradePath / ReleaseCatalog
+> - 基于 ReleaseImage 的组件版本管理 (kubeadm/kubelet/kubectl/containerd/CNI/CSI)
+> - 纯内存版本检测 (DiffComponents 对比 currentRI vs targetRI，不使用 shell 命令)
+> - 升级依赖图 (DAG) 驱动的安装/升级流程
+> - OCI 镜像拉取 + 默认值兜底机制
+> - 完整 Controller 调和逻辑 + Installer 重构方案
 
 ## 八、SSH 连接管理 (保持不变)
 

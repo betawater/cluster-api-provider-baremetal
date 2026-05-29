@@ -91,6 +91,11 @@ type BareMetalMachineSpec struct {
 	// +optional
 	Role string `json:"role,omitempty"`
 
+	// ReleaseImageRef references the ReleaseImage for component versions.
+	// When set, component versions are sourced from the ReleaseImage.
+	// +optional
+	ReleaseImageRef *corev1.LocalObjectReference `json:"releaseImageRef,omitempty"`
+
 	// ComponentInstall holds configuration for automatic component installation.
 	// +optional
 	ComponentInstall *ComponentInstallConfig `json:"componentInstall,omitempty"`

@@ -46,6 +46,35 @@ func New(sshConn *sshclient.SSHConnection, config infrav1.CNIConfig, podCIDR str
 	}
 }
 
+// NewFromReleaseImage creates a CNI Installer with versions sourced from a ReleaseImage.
+func NewFromReleaseImage(sshConn *sshclient.SSHConnection, releaseImage *infrav1.ReleaseImage, config infrav1.CNIConfig, podCIDR string) *Installer {
+	// Derive CNI type and version from ReleaseImage components
+	if config.Type == "" {
+		if releaseImage.Spec.Components.Calico != "" {
+			config.Type = "calico"
+			config.Version = releaseImage.Spec.Components.Calico
+		} else if releaseImage.Spec.Components.Cilium != "" {
+			config.Type = "cilium"
+			config.Version = releaseImage.Spec.Components.Cilium
+		}
+	}
+	if config.Version == "" && config.Type != "" {
+		switch config.Type {
+		case "calico":
+			config.Version = releaseImage.Spec.Components.Calico
+		case "cilium":
+			config.Version = releaseImage.Spec.Components.Cilium
+		case "flannel":
+			config.Version = releaseImage.Spec.Components.Kubernetes["flannel"]
+		}
+	}
+	return &Installer{
+		sshConn: sshConn,
+		config:  config,
+		podCIDR: podCIDR,
+	}
+}
+
 func (i *Installer) Install(ctx context.Context) (*InstallResult, error) {
 	if !i.config.Enabled {
 		return &InstallResult{Completed: true, Success: true, Error: "CNI installation disabled"}, nil

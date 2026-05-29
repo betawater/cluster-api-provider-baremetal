@@ -44,6 +44,26 @@ func New(sshConn *sshclient.SSHConnection, config infrav1.CSIConfig) *Installer 
 	}
 }
 
+// NewFromReleaseImage creates a CSI Installer with versions sourced from a ReleaseImage.
+func NewFromReleaseImage(sshConn *sshclient.SSHConnection, releaseImage *infrav1.ReleaseImage, config infrav1.CSIConfig) *Installer {
+	if config.Driver == "" {
+		if releaseImage.Spec.Components.CephCsi != "" {
+			config.Driver = "ceph-csi"
+			config.Version = releaseImage.Spec.Components.CephCsi
+		}
+	}
+	if config.Version == "" && config.Driver != "" {
+		switch config.Driver {
+		case "ceph-csi":
+			config.Version = releaseImage.Spec.Components.CephCsi
+		}
+	}
+	return &Installer{
+		sshConn: sshConn,
+		config:  config,
+	}
+}
+
 func (i *Installer) Install(ctx context.Context) (*InstallResult, error) {
 	if !i.config.Enabled {
 		return &InstallResult{Completed: true, Success: true, Error: "CSI installation disabled"}, nil

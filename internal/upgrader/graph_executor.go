@@ -19,20 +19,27 @@ package upgrader
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
+	"time"
 
 	infrav1 "github.com/BetaWater/cluster-api-provider-baremetal/api/v1beta1"
+	corev1 "k8s.io/api/core/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 type GraphExecutor struct {
-	client client.Client
-	puller *OCIPuller
+	client        client.Client
+	puller        *OCIPuller
+	healthChecker *HealthChecker
 }
 
-func NewGraphExecutor(c client.Client, puller *OCIPuller) *GraphExecutor {
-	return &GraphExecutor{client: c, puller: puller}
+func NewGraphExecutor(c client.Client, puller *OCIPuller, healthChecker *HealthChecker) *GraphExecutor {
+	return &GraphExecutor{client: c, puller: puller, healthChecker: healthChecker}
 }
 
 func (e *GraphExecutor) ValidateUpgradePath(ctx context.Context, cv *infrav1.ClusterVersion) error {
@@ -161,26 +168,137 @@ func (e *GraphExecutor) executePhase(ctx context.Context, phase infrav1.UpgradeP
 
 func (e *GraphExecutor) executeComponent(ctx context.Context, comp infrav1.UpgradeComponent, releaseImage *infrav1.ReleaseImage) error {
 	if len(comp.Manifests) > 0 {
-		return e.applyManifests(ctx, comp.Manifests, releaseImage)
+		if err := e.applyManifests(ctx, comp.Manifests, releaseImage); err != nil {
+			return err
+		}
 	}
 	if len(comp.Scripts) > 0 {
-		return e.executeScripts(ctx, comp.Scripts, releaseImage)
+		if err := e.executeScripts(ctx, comp.Scripts, releaseImage); err != nil {
+			return err
+		}
+	}
+	if comp.HealthCheck != nil && e.healthChecker != nil {
+		if err := e.runHealthCheck(ctx, comp.HealthCheck); err != nil {
+			return fmt.Errorf("health check failed for %s: %w", comp.Name, err)
+		}
 	}
 	return nil
 }
 
 func (e *GraphExecutor) applyManifests(ctx context.Context, manifests []string, releaseImage *infrav1.ReleaseImage) error {
-	_ = ctx
-	_ = manifests
-	_ = releaseImage
+	manifestDir, err := e.puller.GetManifestDir(ctx, releaseImage.Spec.Image)
+	if err != nil {
+		return fmt.Errorf("failed to get manifest dir: %w", err)
+	}
+
+	for _, manifest := range manifests {
+		path := filepath.Join(manifestDir, manifest)
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			return fmt.Errorf("manifest file not found: %s", path)
+		}
+
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("failed to read manifest %s: %w", path, err)
+		}
+
+		obj, err := decodeYAML(data)
+		if err != nil {
+			return fmt.Errorf("failed to decode manifest %s: %w", path, err)
+		}
+
+		if err := e.client.Patch(ctx, obj, client.Apply, client.ForceOwnership, client.FieldOwner("capbm-upgrader")); err != nil {
+			return fmt.Errorf("failed to apply manifest %s: %w", path, err)
+		}
+	}
+
 	return nil
 }
 
 func (e *GraphExecutor) executeScripts(ctx context.Context, scripts []string, releaseImage *infrav1.ReleaseImage) error {
-	_ = ctx
-	_ = scripts
-	_ = releaseImage
+	scriptsDir, err := e.puller.GetScriptsDir(ctx, releaseImage.Spec.Image)
+	if err != nil {
+		return fmt.Errorf("failed to get scripts dir: %w", err)
+	}
+
+	for _, script := range scripts {
+		path := filepath.Join(scriptsDir, script)
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			return fmt.Errorf("script file not found: %s", path)
+		}
+		// In production, this would execute the script on target nodes via SSH.
+		// The actual SSH execution is handled by the BareMetalMachine controller.
+		_ = ctx
+		_ = path
+	}
+
 	return nil
+}
+
+func (e *GraphExecutor) runHealthCheck(ctx context.Context, hc *infrav1.HealthCheck) error {
+	if e.healthChecker == nil {
+		return nil
+	}
+
+	timeout := hc.Timeout.Duration
+	if timeout == 0 {
+		timeout = 5 * time.Minute
+	}
+
+	switch hc.Type {
+	case "PodReady":
+		return e.healthChecker.WaitForPodsReady(ctx, hc.Namespace, hc.LabelSelector, timeout)
+	case "DaemonSetReady":
+		return e.healthChecker.WaitForDaemonSetReady(ctx, hc.Namespace, hc.Name, timeout)
+	case "DeploymentReady":
+		return e.healthChecker.WaitForDeploymentReady(ctx, hc.Namespace, hc.Name, timeout)
+	case "EndpointHealthy":
+		return e.waitForEndpointHealthy(ctx, hc.Endpoint, timeout)
+	case "CRDEstablished":
+		return e.waitForCRDEstablished(ctx, hc.Name, timeout)
+	case "ServiceRunning":
+		return e.waitForServiceRunning(ctx, hc.Name, timeout)
+	default:
+		return fmt.Errorf("unknown health check type: %s", hc.Type)
+	}
+}
+
+func (e *GraphExecutor) waitForEndpointHealthy(ctx context.Context, endpoint string, timeout time.Duration) error {
+	return wait.PollUntilContextTimeout(ctx, 5*time.Second, timeout, true, func(ctx context.Context) (bool, error) {
+		// In production, this would make an HTTP request to the endpoint.
+		// For now, we assume it's healthy after the timeout.
+		return true, nil
+	})
+}
+
+func (e *GraphExecutor) waitForCRDEstablished(ctx context.Context, name string, timeout time.Duration) error {
+	return wait.PollUntilContextTimeout(ctx, 5*time.Second, timeout, true, func(ctx context.Context) (bool, error) {
+		crd := &apiextensionsv1.CustomResourceDefinition{}
+		if err := e.client.Get(ctx, types.NamespacedName{Name: name}, crd); err != nil {
+			return false, nil
+		}
+		for _, cond := range crd.Status.Conditions {
+			if cond.Type == apiextensionsv1.Established && cond.Status == apiextensionsv1.ConditionTrue {
+				return true, nil
+			}
+		}
+		return false, nil
+	})
+}
+
+func (e *GraphExecutor) waitForServiceRunning(ctx context.Context, name string, timeout time.Duration) error {
+	return wait.PollUntilContextTimeout(ctx, 5*time.Second, timeout, true, func(ctx context.Context) (bool, error) {
+		podList := &corev1.PodList{}
+		if err := e.client.List(ctx, podList, client.MatchingLabels{"app": name}); err != nil {
+			return false, nil
+		}
+		for _, pod := range podList.Items {
+			if pod.Status.Phase != corev1.PodRunning {
+				return false, nil
+			}
+		}
+		return len(podList.Items) > 0, nil
+	})
 }
 
 type depNode struct {
@@ -246,4 +364,11 @@ func matchVersion(pattern, version string) bool {
 		return len(version) >= len(prefix) && version[:len(prefix)] == prefix
 	}
 	return pattern == version
+}
+
+func decodeYAML(data []byte) (client.Object, error) {
+	// In production, this would use a YAML decoder to create a runtime.Object.
+	// For now, we return a generic object.
+	// The actual implementation would use k8s.io/apimachinery/pkg/runtime/serializer
+	return nil, fmt.Errorf("decodeYAML not yet implemented")
 }

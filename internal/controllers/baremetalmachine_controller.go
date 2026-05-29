@@ -511,6 +511,18 @@ func (r *BareMetalMachineReconciler) installComponents(ctx context.Context, bmMa
 		role = "worker"
 	}
 
+	// Try to install via ReleaseImage if ReleaseImageRef is set
+	if bmMachine.Spec.ReleaseImageRef != nil {
+		releaseImage := &infrav1.ReleaseImage{}
+		if err := r.Get(ctx, types.NamespacedName{Name: bmMachine.Spec.ReleaseImageRef.Name}, releaseImage); err != nil {
+			log.Error(err, "Failed to get ReleaseImage, falling back to legacy install", "releaseImageRef", bmMachine.Spec.ReleaseImageRef.Name)
+		} else {
+			inst := installer.NewWithReleaseImage(sshConn, releaseImage, config, role)
+			return inst.Install(ctx)
+		}
+	}
+
+	// Fallback to legacy install with explicit k8sVersion
 	inst := installer.New(sshConn, config, k8sVersion, role)
 	return inst.Install(ctx)
 }
@@ -562,6 +574,16 @@ func (r *BareMetalMachineReconciler) installCNI(ctx context.Context, bmMachine *
 		podCIDR = cniConfig.Config.PodCIDR
 	}
 
+	// Try to use ReleaseImage if available
+	if bmMachine.Spec.ReleaseImageRef != nil {
+		releaseImage := &infrav1.ReleaseImage{}
+		if err := r.Get(ctx, types.NamespacedName{Name: bmMachine.Spec.ReleaseImageRef.Name}, releaseImage); err == nil {
+			inst := cni.NewFromReleaseImage(sshConn, releaseImage, cniConfig, podCIDR)
+			return inst.Install(ctx)
+		}
+		log.Info("Failed to get ReleaseImage for CNI, falling back to legacy install", "releaseImageRef", bmMachine.Spec.ReleaseImageRef.Name)
+	}
+
 	inst := cni.New(sshConn, cniConfig, podCIDR)
 	return inst.Install(ctx)
 }
@@ -577,6 +599,16 @@ func (r *BareMetalMachineReconciler) installCSI(ctx context.Context, bmMachine *
 	if !csiConfig.Enabled {
 		log.Info("CSI installation disabled")
 		return &csi.InstallResult{Completed: true, Success: true}, nil
+	}
+
+	// Try to use ReleaseImage if available
+	if bmMachine.Spec.ReleaseImageRef != nil {
+		releaseImage := &infrav1.ReleaseImage{}
+		if err := r.Get(ctx, types.NamespacedName{Name: bmMachine.Spec.ReleaseImageRef.Name}, releaseImage); err == nil {
+			inst := csi.NewFromReleaseImage(sshConn, releaseImage, csiConfig)
+			return inst.Install(ctx)
+		}
+		log.Info("Failed to get ReleaseImage for CSI, falling back to legacy install", "releaseImageRef", bmMachine.Spec.ReleaseImageRef.Name)
 	}
 
 	inst := csi.New(sshConn, csiConfig)
