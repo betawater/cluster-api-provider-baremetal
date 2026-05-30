@@ -16,7 +16,10 @@ limitations under the License.
 
 package v1beta1
 
-import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+import (
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
 
 type ReleaseImage struct {
 	metav1.TypeMeta   `json:",inline"`
@@ -34,6 +37,7 @@ type ReleaseImageSpec struct {
 	Channels         []string                 `json:"channels,omitempty"`
 	PreviousVersions []string                 `json:"previousVersions,omitempty"`
 	Components       ReleaseComponentVersions `json:"components"`
+	Addons           []AddonDefinition        `json:"addons,omitempty"`
 	UpgradeGraph     []UpgradePhase           `json:"upgradeGraph"`
 	ContentHash      string                   `json:"contentHash,omitempty"`
 }
@@ -182,6 +186,109 @@ type ImageMetadata struct {
 	// Images is the list of image tar files.
 	Images []string `json:"images"`
 }
+
+// AddonDefinition defines an addon included in a release.
+type AddonDefinition struct {
+	// Name is the addon name.
+	Name string `json:"name"`
+
+	// Type is the addon type (manifest/helm).
+	Type AddonType `json:"type"`
+
+	// Version is the addon version.
+	Version string `json:"version"`
+
+	// ContentPath is the path to the addon content in the release image.
+	// For manifest type: path to YAML file
+	// For helm type: path to chart tarball
+	ContentPath string `json:"contentPath"`
+
+	// Namespace is the default namespace for the addon.
+	Namespace string `json:"namespace,omitempty"`
+
+	// Variables defines the variables supported by this addon.
+	Variables []AddonVariable `json:"variables,omitempty"`
+
+	// DefaultValues are the default values for the addon.
+	// For Helm: helm values
+	// For Manifest: variable substitutions
+	DefaultValues map[string]apiextensionsv1.JSON `json:"defaultValues,omitempty"`
+
+	// Dependencies lists other addons that must be installed first.
+	Dependencies []string `json:"dependencies,omitempty"`
+
+	// HealthCheck defines health check configuration.
+	HealthCheck *AddonHealthCheck `json:"healthCheck,omitempty"`
+}
+
+// AddonType represents the type of addon.
+type AddonType string
+
+const (
+	AddonTypeManifest AddonType = "manifest"
+	AddonTypeHelm     AddonType = "helm"
+)
+
+// AddonVariable defines a variable that can be customized.
+type AddonVariable struct {
+	// Name is the variable name.
+	Name string `json:"name"`
+
+	// Type is the variable type (string/number/boolean/object).
+	Type VariableType `json:"type"`
+
+	// Description is the variable description.
+	Description string `json:"description,omitempty"`
+
+	// Required indicates if the variable is required.
+	Required bool `json:"required,omitempty"`
+
+	// Default is the default value.
+	Default *apiextensionsv1.JSON `json:"default,omitempty"`
+
+	// Enum lists allowed values.
+	Enum []apiextensionsv1.JSON `json:"enum,omitempty"`
+
+	// Path is the JSON path in the manifest where this variable is used.
+	// For Helm: not needed (uses values.yaml)
+	// For Manifest: e.g., ".spec.replicas" or ".metadata.namespace"
+	Path string `json:"path,omitempty"`
+}
+
+// VariableType represents the type of a variable.
+type VariableType string
+
+const (
+	VariableTypeString  VariableType = "string"
+	VariableTypeNumber  VariableType = "number"
+	VariableTypeBoolean VariableType = "boolean"
+	VariableTypeObject  VariableType = "object"
+)
+
+// AddonHealthCheck defines health check configuration for an addon.
+type AddonHealthCheck struct {
+	// Type is the health check type.
+	Type HealthCheckType `json:"type"`
+
+	// Namespace is the namespace to check.
+	Namespace string `json:"namespace,omitempty"`
+
+	// Name is the resource name to check.
+	Name string `json:"name,omitempty"`
+
+	// Selector is the label selector for resources to check.
+	Selector *metav1.LabelSelector `json:"selector,omitempty"`
+}
+
+// HealthCheckType represents the type of health check.
+type HealthCheckType string
+
+const (
+	HealthCheckTypeDeploymentReady HealthCheckType = "DeploymentReady"
+	HealthCheckTypeDaemonSetReady  HealthCheckType = "DaemonSetReady"
+	HealthCheckTypeCRDEstablished  HealthCheckType = "CRDEstablished"
+	HealthCheckTypeEndpointHealthy HealthCheckType = "EndpointHealthy"
+)
 
 type UpgradePhase struct {
 	Name          string             `json:"name"`
