@@ -55,6 +55,7 @@ type ImageRegistryConfig struct {
 	Repository string `json:"repository,omitempty"`
 
 	// CredentialsSecret is the secret name containing registry credentials.
+	// Secret type: Opaque with keys: username, password
 	// +optional
 	CredentialsSecret string `json:"credentialsSecret,omitempty"`
 
@@ -66,6 +67,10 @@ type ImageRegistryConfig struct {
 	// Full image: {registry}/{repository}/{imagePrefix}/{component}:{version}
 	// +optional
 	ImagePrefix string `json:"imagePrefix,omitempty"`
+
+	// CAConfigMap is the ConfigMap name containing the registry CA certificate.
+	// +optional
+	CAConfigMap string `json:"caConfigMap,omitempty"`
 }
 
 // ReleaseComponentVersions defines all component versions with installation metadata.

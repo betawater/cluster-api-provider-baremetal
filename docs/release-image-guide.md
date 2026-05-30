@@ -1012,11 +1012,15 @@ spec:
 ### 15.3 创建镜像仓库凭证
 
 ```bash
-# 创建 Docker Registry 凭证 Secret
-kubectl create secret docker-registry registry-credentials \
-  --docker-server=registry.example.com \
-  --docker-username=admin \
-  --docker-password=password \
+# 创建镜像仓库凭证 Secret (Opaque 类型，包含 username 和 password)
+kubectl create secret generic registry-credentials \
+  --from-literal=username=admin \
+  --from-literal=password=password \
+  -n capbm-system
+
+# 如果需要 CA 证书，创建 ConfigMap
+kubectl create configmap registry-ca \
+  --from-file=ca.crt=/path/to/ca.crt \
   -n capbm-system
 ```
 
@@ -1026,7 +1030,7 @@ kubectl create secret docker-registry registry-credentials \
 # 1. 创建 ReleaseImage 资源
 kubectl apply -f releaseimage-v1.31.0.yaml
 
-# 2. 自动触发镜像导入 Job
+# 2. 自动触发镜像导入 Job (使用 containerd/ctr)
 kubectl get jobs -n capbm-system -l capbm.capbm.io/type=image-import
 
 # 3. 查看导入进度
@@ -1048,14 +1052,51 @@ registry.example.com/capbm/release/calico/node:v3.27.0
 registry.example.com/capbm/release/cilium/cilium:v1.15.0
 ```
 
-### 15.6 节点配置 containerd Registry Mirrors
+### 15.6 节点配置 containerd Registry 认证
 
-```yaml
-# containerd 配置 (/etc/containerd/config.toml)
-[plugins."io.containerd.grpc.v1.cri".registry]
-  [plugins."io.containerd.grpc.v1.cri".registry.mirrors]
-    [plugins."io.containerd.grpc.v1.cri".registry.mirrors."registry.example.com"]
-      endpoint = ["https://registry.example.com"]
+#### 15.6.1 使用 hosts.toml 配置认证
+
+containerd 使用 `hosts.d` 目录配置 registry 认证：
+
+```bash
+# 创建 hosts.d 目录
+mkdir -p /etc/containerd/hosts.d/registry.example.com
+
+# 生成 hosts.toml
+cat > /etc/containerd/hosts.d/registry.example.com/hosts.toml << EOF
+server = "https://registry.example.com"
+
+[host."https://registry.example.com"]
+  capabilities = ["pull", "resolve"]
+
+[host."https://registry.example.com".header]
+  Authorization = "Basic YWRtaW46cGFzc3dvcmQ="
+EOF
+
+# 如果需要 CA 证书
+mkdir -p /etc/containerd/certs.d/registry.example.com
+cp /path/to/ca.crt /etc/containerd/certs.d/registry.example.com/ca.crt
+
+# 重启 containerd
+systemctl restart containerd
+```
+
+#### 15.6.2 完整 containerd 配置示例
+
+```toml
+# /etc/containerd/config.toml
+
+version = 2
+
+[plugins."io.containerd.grpc.v1.cri"]
+  sandbox_image = "registry.example.com/capbm/release/kubernetes/pause:v1.31.0"
+  
+  [plugins."io.containerd.grpc.v1.cri".registry]
+    config_path = "/etc/containerd/hosts.d"
+    
+    [plugins."io.containerd.grpc.v1.cri".registry.mirrors]
+      [plugins."io.containerd.grpc.v1.cri".registry.mirrors."registry.example.com"]
+        endpoint = ["https://registry.example.com"]
 ```
 
 ### 15.7 查看导入状态
@@ -1076,6 +1117,8 @@ kubectl describe job -n capbm-system import-images-v1.31.0
 | 故障场景 | 处理方式 |
 |---------|---------|
 | 镜像仓库不可达 | Job 自动重试 (backoffLimit: 3) |
-| 认证失败 | 检查 Secret 配置 |
+| 认证失败 | 检查 Secret 配置 (username/password) |
 | 网络超时 | Job 自动重试 |
+| containerd socket 不可用 | 检查 /run/containerd/containerd.sock |
 | 磁盘空间不足 | 清理节点磁盘空间 |
+| TLS 证书错误 | 配置 CA 证书或设置 insecureSkipVerify |

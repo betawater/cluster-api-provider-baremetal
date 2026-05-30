@@ -42,11 +42,17 @@ const (
 
 	// ImageImporterServiceAccount is the service account for image import.
 	ImageImporterServiceAccount = "capbm-image-importer"
-	// ImageImporterImage is the default image importer image.
-	ImageImporterImage = "docker:24.0-dind"
+	// ImageImporterImage is the default image importer image (contains ctr command).
+	ImageImporterImage = "registry.k8s.io/cri-tools:latest"
+	// ContainerdNamespace is the containerd namespace for Kubernetes.
+	ContainerdNamespace = "k8s.io"
+	// ContainerdSocketPath is the path to the containerd socket.
+	ContainerdSocketPath = "/run/containerd/containerd.sock"
+	// HostsDirPath is the path to containerd hosts.d directory.
+	HostsDirPath = "/etc/containerd/hosts.d"
 )
 
-// Importer imports images from ReleaseImage to target registry.
+// Importer imports images from ReleaseImage to target registry using containerd (ctr).
 type Importer struct {
 	client        client.Client
 	releaseServer string
@@ -90,7 +96,7 @@ func (i *Importer) ImportImages(ctx context.Context, releaseImage *infrav1.Relea
 	return i.client.Create(ctx, newJob)
 }
 
-// buildImportJob builds an image import Job.
+// buildImportJob builds an image import Job using containerd (ctr).
 func (i *Importer) buildImportJob(releaseImage *infrav1.ReleaseImage) *batchv1.Job {
 	registryConfig := releaseImage.Spec.ImageRegistry
 
@@ -182,6 +188,60 @@ func (i *Importer) buildImportJob(releaseImage *infrav1.ReleaseImage) *batchv1.J
 		})
 	}
 
+	// Volume mounts for containerd socket and hosts.d
+	volumeMounts := []corev1.VolumeMount{
+		{
+			Name:      "containerd-socket",
+			MountPath: ContainerdSocketPath,
+		},
+		{
+			Name:      "hosts-dir",
+			MountPath: HostsDirPath,
+		},
+	}
+
+	// Add CA certificate volume if configured
+	if registryConfig.CAConfigMap != "" {
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name:      "registry-ca",
+			MountPath: "/etc/containerd/certs.d",
+			ReadOnly:  true,
+		})
+	}
+
+	// Volumes
+	volumes := []corev1.Volume{
+		{
+			Name: "containerd-socket",
+			VolumeSource: corev1.VolumeSource{
+				HostPath: &corev1.HostPathVolumeSource{
+					Path: ContainerdSocketPath,
+					Type: ptr.To(corev1.HostPathSocket),
+				},
+			},
+		},
+		{
+			Name: "hosts-dir",
+			VolumeSource: corev1.VolumeSource{
+				EmptyDir: &corev1.EmptyDirVolumeSource{},
+			},
+		},
+	}
+
+	// Add CA certificate volume if configured
+	if registryConfig.CAConfigMap != "" {
+		volumes = append(volumes, corev1.Volume{
+			Name: "registry-ca",
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: registryConfig.CAConfigMap,
+					},
+				},
+			},
+		})
+	}
+
 	return &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("import-images-%s", releaseImage.Spec.Version),
@@ -206,8 +266,10 @@ func (i *Importer) buildImportJob(releaseImage *infrav1.ReleaseImage) *batchv1.J
 							SecurityContext: &corev1.SecurityContext{
 								Privileged: ptr.To(true),
 							},
+							VolumeMounts: volumeMounts,
 						},
 					},
+					Volumes:       volumes,
 					RestartPolicy: corev1.RestartPolicyNever,
 				},
 			},
@@ -215,7 +277,7 @@ func (i *Importer) buildImportJob(releaseImage *infrav1.ReleaseImage) *batchv1.J
 	}
 }
 
-// buildImportScript builds the image import script.
+// buildImportScript builds the image import script using containerd (ctr).
 func (i *Importer) buildImportScript() string {
 	return `#!/bin/sh
 set -euo pipefail
@@ -229,18 +291,39 @@ REGISTRY_PASSWORD="${REGISTRY_PASSWORD:-}"
 INSECURE="${INSECURE:-false}"
 COMPONENTS="${COMPONENTS}"
 IMAGE_LISTS="${IMAGE_LISTS}"
+CONTAINERD_NS="k8s.io"
+HOSTS_DIR="/etc/containerd/hosts.d"
 
 echo "=== Starting image import to $REGISTRY/$REPOSITORY ==="
 
-# Login to registry
+# Configure containerd hosts.d for registry authentication
+mkdir -p "${HOSTS_DIR}/${REGISTRY}"
+
+# Generate hosts.toml
+cat > "${HOSTS_DIR}/${REGISTRY}/hosts.toml" << EOF
+server = "https://${REGISTRY}"
+
+[host."https://${REGISTRY}"]
+  capabilities = ["pull", "resolve", "push"]
+EOF
+
+# Add authentication if credentials provided
 if [ -n "$REGISTRY_USER" ] && [ -n "$REGISTRY_PASSWORD" ]; then
-  echo "$REGISTRY_PASSWORD" | docker login "$REGISTRY" -u "$REGISTRY_USER" --password-stdin
+  AUTH=$(echo -n "${REGISTRY_USER}:${REGISTRY_PASSWORD}" | base64)
+  cat >> "${HOSTS_DIR}/${REGISTRY}/hosts.toml" << EOF
+
+[host."https://${REGISTRY}".header]
+  Authorization = "Basic ${AUTH}"
+EOF
 fi
 
+# Add insecure skip verify if enabled
 if [ "$INSECURE" = "true" ]; then
-  mkdir -p /etc/docker
-  echo "{\"insecure-registries\":[\"$REGISTRY\"]}" > /etc/docker/daemon.json
-  kill -HUP $(cat /var/run/docker.pid 2>/dev/null) || true
+  cat >> "${HOSTS_DIR}/${REGISTRY}/hosts.toml" << EOF
+
+[host."https://${REGISTRY}"]
+  skip_verify = true
+EOF
 fi
 
 # Parse components and image lists
@@ -281,16 +364,20 @@ for component in "${COMPONENT_ARRAY[@]}"; do
     # Download tar
     curl -fsSL "${RELEASE_SERVER}/images/${component}/${VERSION}/${image_tar}" -o "/tmp/${image_tar}"
     
-    # Load image
-    docker load -i "/tmp/${image_tar}"
+    # Import to containerd
+    ctr -n "$CONTAINERD_NS" images import "/tmp/${image_tar}"
     
     # Get image name from tar filename (remove .tar extension)
     IMAGE_NAME=$(echo "$image_tar" | sed 's/\.tar$//')
     
-    # Tag and push
+    # Tag image
     TARGET_IMAGE="${REGISTRY}/${REPOSITORY}/${IMAGE_PREFIX}/${component}/${IMAGE_NAME}:${VERSION}"
-    docker tag "${IMAGE_NAME}" "$TARGET_IMAGE"
-    docker push "$TARGET_IMAGE"
+    ctr -n "$CONTAINERD_NS" images tag "${IMAGE_NAME}" "$TARGET_IMAGE"
+    
+    # Push to registry using hosts.d for authentication
+    ctr -n "$CONTAINERD_NS" images push \
+      --hosts-dir "$HOSTS_DIR" \
+      "$TARGET_IMAGE"
     
     echo "Pushed: $TARGET_IMAGE"
     rm -f "/tmp/${image_tar}"

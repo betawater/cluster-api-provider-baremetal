@@ -8067,12 +8067,15 @@ func (i *Installer) installManifestComponent(ctx context.Context, component Comp
                   │ 触发导入
                   ▼
 ┌─────────────────────────────────────────────────────────────┐
-│ 镜像导入 Job                                                 │
+│ 镜像导入 Job (使用 containerd/ctr)                           │
 │                                                             │
+│  镜像: registry.k8s.io/cri-tools:latest                    │
+│  - 挂载 containerd socket: /run/containerd/containerd.sock  │
+│  - 配置 hosts.d 认证: /etc/containerd/hosts.d/              │
 │  1. 从 ReleaseImage 提取 tar 文件                           │
-│  2. docker load < *.tar                                     │
-│  3. docker tag <local-image> <registry>/<repo>/<image>      │
-│  4. docker push <registry>/<repo>/<image>                   │
+│  2. ctr -n k8s.io images import *.tar                      │
+│  3. ctr -n k8s.io images tag <local> <target>              │
+│  4. ctr -n k8s.io images push <target>                     │
 └─────────────────┬───────────────────────────────────────────┘
                   │
                   ▼
@@ -8098,9 +8101,11 @@ func (i *Installer) installManifestComponent(ctx context.Context, component Comp
 │                                                             │
 │  containerd 配置:                                           │
 │  [plugins."io.containerd.grpc.v1.cri".registry]             │
-│    [plugins."io.containerd.grpc.v1.cri".registry.mirrors]   │
-│      [plugins."io.containerd.grpc.v1.cri".registry.mirrors."registry.example.com"] │
-│        endpoint = ["https://registry.example.com"]          │
+│    config_path = "/etc/containerd/hosts.d"                  │
+│    [plugins."io.containerd.grpc.v1.cri".registry.configs]   │
+│      [plugins."io.containerd.grpc.v1.cri".registry.configs."registry.example.com".auth] │
+│        username = "admin"                                   │
+│        password = "password"                                │
 │                                                             │
 │  Pod 拉取镜像:                                              │
 │  image: registry.example.com/capbm/calico/node:v3.27.0      │
@@ -8141,6 +8146,7 @@ type ImageRegistryConfig struct {
     Repository string `json:"repository,omitempty"`
     
     // CredentialsSecret is the secret name containing registry credentials.
+    // Secret type: Opaque with keys: username, password
     // +optional
     CredentialsSecret string `json:"credentialsSecret,omitempty"`
     
@@ -8152,6 +8158,10 @@ type ImageRegistryConfig struct {
     // Full image: {registry}/{repository}/{imagePrefix}/{component}:{version}
     // +optional
     ImagePrefix string `json:"imagePrefix,omitempty"`
+    
+    // CAConfigMap is the ConfigMap name containing the registry CA certificate.
+    // +optional
+    CAConfigMap string `json:"caConfigMap,omitempty"`
 }
 ```
 
@@ -8186,7 +8196,7 @@ spec:
       serviceAccountName: capbm-image-importer
       containers:
       - name: image-importer
-        image: docker:24.0-dind
+        image: registry.k8s.io/cri-tools:latest  # 包含 ctr 命令
         command:
         - sh
         - -c
@@ -8200,47 +8210,68 @@ spec:
           REGISTRY_USER="${REGISTRY_USER}"
           REGISTRY_PASSWORD="${REGISTRY_PASSWORD}"
           INSECURE="${INSECURE:-false}"
+          CONTAINERD_NS="k8s.io"
+          HOSTS_DIR="/etc/containerd/hosts.d"
           
-          # Login to registry
+          echo "=== Starting image import to $REGISTRY/$REPOSITORY ==="
+          
+          # 配置 containerd hosts.d 认证
+          mkdir -p "${HOSTS_DIR}/${REGISTRY}"
+          
+          # 生成 hosts.toml
+          cat > "${HOSTS_DIR}/${REGISTRY}/hosts.toml" << EOF
+          server = "https://${REGISTRY}"
+          
+          [host."https://${REGISTRY}"]
+            capabilities = ["pull", "resolve", "push"]
+          EOF
+          
+          # 添加认证
           if [ -n "$REGISTRY_USER" ] && [ -n "$REGISTRY_PASSWORD" ]; then
-            echo "$REGISTRY_PASSWORD" | docker login "$REGISTRY" -u "$REGISTRY_USER" --password-stdin
+            AUTH=$(echo -n "${REGISTRY_USER}:${REGISTRY_PASSWORD}" | base64)
+            cat >> "${HOSTS_DIR}/${REGISTRY}/hosts.toml" << EOF
+          
+          [host."https://${REGISTRY}".header]
+            Authorization = "Basic ${AUTH}"
+          EOF
           fi
           
+          # 如果跳过 TLS 验证
           if [ "$INSECURE" = "true" ]; then
-            mkdir -p /etc/docker
-            echo "{\"insecure-registries\":[\"$REGISTRY\"]}" > /etc/docker/daemon.json
+            cat >> "${HOSTS_DIR}/${REGISTRY}/hosts.toml" << EOF
+          
+          [host."https://${REGISTRY}"]
+            skip_verify = true
+          EOF
           fi
           
-          # Import images for each component
+          # 导入镜像...
           for component in kubernetes calico cilium ceph-csi envoy-gateway metallb; do
             echo "=== Importing $component images ==="
             
-            # Get component version from index.json
             VERSION=$(curl -fsSL "${RELEASE_SERVER}/index.json" | jq -r ".components.\"$component\".version")
-            if [ "$VERSION" = "null" ] || [ -z "$VERSION" ]; then
-              echo "Skipping $component (not in release)"
-              continue
-            fi
-            
-            # Get image list from index.json
             IMAGE_LIST=$(curl -fsSL "${RELEASE_SERVER}/index.json" | jq -r ".images.\"$component\".images[]")
             
             for image_tar in $IMAGE_LIST; do
               echo "Processing $image_tar..."
               
-              # Download tar
+              # 下载 tar
               curl -fsSL "${RELEASE_SERVER}/images/${component}/${VERSION}/${image_tar}" -o "/tmp/${image_tar}"
               
-              # Load image
-              docker load -i "/tmp/${image_tar}"
+              # 导入到 containerd
+              ctr -n "$CONTAINERD_NS" images import "/tmp/${image_tar}"
               
-              # Get image name from tar filename
+              # 获取镜像名称
               IMAGE_NAME=$(echo "$image_tar" | sed 's/\.tar$//')
               
-              # Tag and push
+              # 标记镜像
               TARGET_IMAGE="${REGISTRY}/${REPOSITORY}/${IMAGE_PREFIX}/${component}/${IMAGE_NAME}:${VERSION}"
-              docker tag "${IMAGE_NAME}" "$TARGET_IMAGE"
-              docker push "$TARGET_IMAGE"
+              ctr -n "$CONTAINERD_NS" images tag "${IMAGE_NAME}" "$TARGET_IMAGE"
+              
+              # 推送到仓库
+              ctr -n "$CONTAINERD_NS" images push \
+                --hosts-dir "$HOSTS_DIR" \
+                "$TARGET_IMAGE"
               
               echo "Pushed: $TARGET_IMAGE"
               rm -f "/tmp/${image_tar}"
@@ -8259,6 +8290,19 @@ spec:
               name: capbm-registry-config
               key: registry
         # ... 其他环境变量
+        volumeMounts:
+        - name: containerd-socket
+          mountPath: /run/containerd/containerd.sock
+        - name: hosts-dir
+          mountPath: /etc/containerd/hosts.d
+      volumes:
+      - name: containerd-socket
+        hostPath:
+          path: /run/containerd/containerd.sock
+          type: Socket
+      - name: hosts-dir
+        emptyDir: {}
+```
 ```
 
 #### 6.22.6 导入流程
@@ -8301,6 +8345,11 @@ spec:
 
 | 决策点 | 选项 | 推荐 | 理由 |
 |--------|------|------|------|
+| **导入工具** | docker vs ctr | ctr | 与系统运行时统一，无需 Docker-in-Docker |
+| **认证配置** | docker config.json vs hosts.toml | hosts.toml | containerd 原生支持 |
+| **镜像 Job 镜像** | docker:dind vs cri-tools | cri-tools | 包含 ctr，无需 dind |
+| **Socket 挂载** | 不需要 vs 需要 | 需要 | ctr 需要连接 containerd |
+| **命名空间** | default vs k8s.io | k8s.io | 与 CRI 一致 |
 | **导入触发方式** | 手动 vs 自动 | 自动 (ReleaseImage 创建时) | 减少人工操作 |
 | **导入目标** | 内部仓库 vs 外部仓库 | 可配置 | 适应不同环境 |
 | **镜像命名** | 保留原名 vs 统一前缀 | 统一前缀 | 避免冲突，便于管理 |
