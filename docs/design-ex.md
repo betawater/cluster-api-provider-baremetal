@@ -8042,6 +8042,345 @@ func (i *Installer) installManifestComponent(ctx context.Context, component Comp
 | **Job Labels** | 与 Helm 相同 | 相同 | 一致查询 |
 | **升级方式** | kubectl apply vs 新 Job | 新 Job | 可追踪，可回滚 |
 
+### 6.22 ReleaseImage 镜像仓库导入设计
+
+#### 6.22.1 问题背景
+
+当前 ReleaseImage 将容器镜像存储为 tar 文件，通过 `ctr -n k8s.io images import` 直接导入节点。但在生产环境中，使用镜像仓库有以下优势：
+
+| 方式 | 优势 | 劣势 |
+|------|------|------|
+| **直接导入 tar** | 无需额外基础设施 | 每个节点都需要 tar 文件，存储冗余 |
+| **导入镜像仓库** | 集中管理，节点按需拉取 | 需要镜像仓库基础设施 |
+
+#### 6.22.2 架构设计
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ ReleaseImage 构建环境                                        │
+│                                                             │
+│  1. docker pull <source-images>                             │
+│  2. docker save -o images/<component>/<version>/*.tar       │
+│  3. 打包 ReleaseImage OCI 镜像                              │
+└─────────────────┬───────────────────────────────────────────┘
+                  │
+                  │ 触发导入
+                  ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 镜像导入 Job                                                 │
+│                                                             │
+│  1. 从 ReleaseImage 提取 tar 文件                           │
+│  2. docker load < *.tar                                     │
+│  3. docker tag <local-image> <registry>/<repo>/<image>      │
+│  4. docker push <registry>/<repo>/<image>                   │
+└─────────────────┬───────────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 镜像仓库 (Harbor / Docker Registry / 其他)                   │
+│                                                             │
+│  registry.example.com/capbm/                                │
+│  ├── kubernetes/                                            │
+│  │   ├── kube-apiserver:v1.31.0                             │
+│  │   ├── kube-controller-manager:v1.31.0                    │
+│  │   └── ...                                                │
+│  ├── calico/                                                │
+│  │   ├── node:v3.27.0                                       │
+│  │   ├── kube-controllers:v3.27.0                           │
+│  │   └── cni:v3.27.0                                        │
+│  └── ...                                                    │
+└─────────────────┬───────────────────────────────────────────┘
+                  │
+                  │ 节点从仓库拉取
+                  ▼
+┌─────────────────────────────────────────────────────────────┐
+│ Workload Cluster 节点                                        │
+│                                                             │
+│  containerd 配置:                                           │
+│  [plugins."io.containerd.grpc.v1.cri".registry]             │
+│    [plugins."io.containerd.grpc.v1.cri".registry.mirrors]   │
+│      [plugins."io.containerd.grpc.v1.cri".registry.mirrors."registry.example.com"] │
+│        endpoint = ["https://registry.example.com"]          │
+│                                                             │
+│  Pod 拉取镜像:                                              │
+│  image: registry.example.com/capbm/calico/node:v3.27.0      │
+└─────────────────────────────────────────────────────────────┘
+```
+
+#### 6.22.3 CRD 设计扩展
+
+在 `ReleaseImageSpec` 中新增镜像仓库配置：
+
+```go
+type ReleaseImageSpec struct {
+    Version          string                   `json:"version"`
+    Image            string                   `json:"image"`
+    HTTPServer       *HTTPServerConfig        `json:"httpServer,omitempty"`
+    ImageRegistry    *ImageRegistryConfig     `json:"imageRegistry,omitempty"`  // 新增
+    Channels         []string                 `json:"channels,omitempty"`
+    PreviousVersions []string                 `json:"previousVersions,omitempty"`
+    Components       ReleaseComponentVersions `json:"components"`
+    UpgradeGraph     []UpgradePhase           `json:"upgradeGraph"`
+    ContentHash      string                   `json:"contentHash,omitempty"`
+}
+
+// ImageRegistryConfig defines the target image registry configuration.
+type ImageRegistryConfig struct {
+    // Enabled enables image registry import.
+    // +optional
+    // +kubebuilder:default=false
+    Enabled bool `json:"enabled,omitempty"`
+    
+    // Registry is the target registry URL (e.g., registry.example.com).
+    // +optional
+    Registry string `json:"registry,omitempty"`
+    
+    // Repository is the repository path prefix (e.g., capbm).
+    // +optional
+    // +kubebuilder:default=capbm
+    Repository string `json:"repository,omitempty"`
+    
+    // CredentialsSecret is the secret name containing registry credentials.
+    // +optional
+    CredentialsSecret string `json:"credentialsSecret,omitempty"`
+    
+    // InsecureSkipVerify skips TLS verification for the registry.
+    // +optional
+    InsecureSkipVerify bool `json:"insecureSkipVerify,omitempty"`
+    
+    // ImagePrefix is the prefix for image names.
+    // Full image: {registry}/{repository}/{imagePrefix}/{component}:{version}
+    // +optional
+    ImagePrefix string `json:"imagePrefix,omitempty"`
+}
+```
+
+#### 6.22.4 镜像命名规范
+
+```
+{registry}/{repository}/{imagePrefix}/{component}/{subcomponent}:{version}
+
+示例:
+registry.example.com/capbm/kubernetes/kube-apiserver:v1.31.0
+registry.example.com/capbm/calico/node:v3.27.0
+registry.example.com/capbm/cilium/cilium:v1.15.0
+registry.example.com/capbm/ceph-csi/cephcsi:v3.9.0
+```
+
+#### 6.22.5 镜像导入 Job 设计
+
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: import-images-v1.31.0
+  namespace: capbm-system
+  labels:
+    capbm.capbm.io/type: image-import
+    capbm.capbm.io/release-version: "v1.31.0"
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 3600
+  template:
+    spec:
+      serviceAccountName: capbm-image-importer
+      containers:
+      - name: image-importer
+        image: docker:24.0-dind
+        command:
+        - sh
+        - -c
+        - |
+          set -euo pipefail
+          
+          RELEASE_SERVER="${RELEASE_SERVER}"
+          REGISTRY="${REGISTRY}"
+          REPOSITORY="${REPOSITORY}"
+          IMAGE_PREFIX="${IMAGE_PREFIX}"
+          REGISTRY_USER="${REGISTRY_USER}"
+          REGISTRY_PASSWORD="${REGISTRY_PASSWORD}"
+          INSECURE="${INSECURE:-false}"
+          
+          # Login to registry
+          if [ -n "$REGISTRY_USER" ] && [ -n "$REGISTRY_PASSWORD" ]; then
+            echo "$REGISTRY_PASSWORD" | docker login "$REGISTRY" -u "$REGISTRY_USER" --password-stdin
+          fi
+          
+          if [ "$INSECURE" = "true" ]; then
+            mkdir -p /etc/docker
+            echo "{\"insecure-registries\":[\"$REGISTRY\"]}" > /etc/docker/daemon.json
+          fi
+          
+          # Import images for each component
+          for component in kubernetes calico cilium ceph-csi envoy-gateway metallb; do
+            echo "=== Importing $component images ==="
+            
+            # Get component version from index.json
+            VERSION=$(curl -fsSL "${RELEASE_SERVER}/index.json" | jq -r ".components.\"$component\".version")
+            if [ "$VERSION" = "null" ] || [ -z "$VERSION" ]; then
+              echo "Skipping $component (not in release)"
+              continue
+            fi
+            
+            # Get image list from index.json
+            IMAGE_LIST=$(curl -fsSL "${RELEASE_SERVER}/index.json" | jq -r ".images.\"$component\".images[]")
+            
+            for image_tar in $IMAGE_LIST; do
+              echo "Processing $image_tar..."
+              
+              # Download tar
+              curl -fsSL "${RELEASE_SERVER}/images/${component}/${VERSION}/${image_tar}" -o "/tmp/${image_tar}"
+              
+              # Load image
+              docker load -i "/tmp/${image_tar}"
+              
+              # Get image name from tar filename
+              IMAGE_NAME=$(echo "$image_tar" | sed 's/\.tar$//')
+              
+              # Tag and push
+              TARGET_IMAGE="${REGISTRY}/${REPOSITORY}/${IMAGE_PREFIX}/${component}/${IMAGE_NAME}:${VERSION}"
+              docker tag "${IMAGE_NAME}" "$TARGET_IMAGE"
+              docker push "$TARGET_IMAGE"
+              
+              echo "Pushed: $TARGET_IMAGE"
+              rm -f "/tmp/${image_tar}"
+            done
+            
+            echo "=== $component images imported ==="
+          done
+          
+          echo "=== All images imported successfully ==="
+        env:
+        - name: RELEASE_SERVER
+          value: "http://release-server:8080/release"
+        - name: REGISTRY
+          valueFrom:
+            configMapKeyRef:
+              name: capbm-registry-config
+              key: registry
+        # ... 其他环境变量
+```
+
+#### 6.22.6 导入流程
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ 1. 创建 ReleaseImage 资源                                    │
+│    └── spec.imageRegistry.enabled: true                     │
+└─────────────────┬───────────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 2. ReleaseImage Controller 检测 imageRegistry 配置           │
+│    └── 创建镜像导入 Job                                     │
+└─────────────────┬───────────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 3. 镜像导入 Job 执行                                         │
+│    ├── 从 ReleaseImage HTTP 服务器下载 tar 文件              │
+│    ├── docker load 加载镜像                                 │
+│    ├── docker tag 标记镜像                                  │
+│    └── docker push 推送到目标仓库                           │
+└─────────────────┬───────────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 4. 更新 ReleaseImage 状态                                    │
+│    └── status.imagesImported: true                          │
+└─────────────────┬───────────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 5. 节点配置 containerd registry mirrors                     │
+│    └── 指向目标镜像仓库                                     │
+└─────────────────────────────────────────────────────────────┘
+```
+
+#### 6.22.7 关键设计决策
+
+| 决策点 | 选项 | 推荐 | 理由 |
+|--------|------|------|------|
+| **导入触发方式** | 手动 vs 自动 | 自动 (ReleaseImage 创建时) | 减少人工操作 |
+| **导入目标** | 内部仓库 vs 外部仓库 | 可配置 | 适应不同环境 |
+| **镜像命名** | 保留原名 vs 统一前缀 | 统一前缀 | 避免冲突，便于管理 |
+| **认证方式** | 无认证 vs Secret | Secret | 安全性 |
+| **失败重试** | 不重试 vs 自动重试 | 自动重试 (backoffLimit: 3) | 网络波动恢复 |
+| **导入粒度** | 全量 vs 按需 | 全量 | 简化逻辑，确保完整性 |
+
+#### 6.22.8 代码实现
+
+**internal/registry/importer.go** - 镜像导入 Job 构建器:
+
+```go
+type Importer struct {
+    client        client.Client
+    releaseServer string
+    namespace     string
+}
+
+func (i *Importer) ImportImages(ctx context.Context, releaseImage *infrav1.ReleaseImage) error {
+    if releaseImage.Spec.ImageRegistry == nil || !releaseImage.Spec.ImageRegistry.Enabled {
+        return nil
+    }
+    
+    // 检查是否已存在导入 Job
+    job := &batchv1.Job{}
+    err := i.client.Get(ctx, types.NamespacedName{
+        Name:      fmt.Sprintf("import-images-%s", releaseImage.Spec.Version),
+        Namespace: i.namespace,
+    }, job)
+    if err == nil {
+        if job.Labels[LabelReleaseVersion] == releaseImage.Spec.Version {
+            return nil
+        }
+        if err := i.client.Delete(ctx, job); err != nil {
+            return fmt.Errorf("failed to delete old import job: %w", err)
+        }
+    }
+    
+    // 创建新的导入 Job
+    newJob := i.buildImportJob(releaseImage)
+    return i.client.Create(ctx, newJob)
+}
+```
+
+**internal/registry/status.go** - 导入状态追踪:
+
+```go
+type StatusTracker struct {
+    client client.Client
+}
+
+func (t *StatusTracker) UpdateReleaseImageStatus(ctx context.Context, releaseImage *infrav1.ReleaseImage) error {
+    jobName := fmt.Sprintf("import-images-%s", releaseImage.Spec.Version)
+    job := &batchv1.Job{}
+    err := t.client.Get(ctx, types.NamespacedName{
+        Name:      jobName,
+        Namespace: releaseImage.Namespace,
+    }, job)
+    
+    if err != nil {
+        releaseImage.Status.ImagesImported = false
+        releaseImage.Status.ImportStatus = "pending"
+        return nil
+    }
+    
+    if job.Status.Succeeded > 0 {
+        releaseImage.Status.ImagesImported = true
+        releaseImage.Status.ImportStatus = "completed"
+    } else if job.Status.Failed > 0 {
+        releaseImage.Status.ImagesImported = false
+        releaseImage.Status.ImportStatus = "failed"
+    } else {
+        releaseImage.Status.ImagesImported = false
+        releaseImage.Status.ImportStatus = "running"
+    }
+    
+    return nil
+}
+```
+
 ## 八、SSH 连接管理 (保持不变)
 
 ### 7.1 SSH Manager 设计

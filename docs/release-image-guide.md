@@ -972,3 +972,110 @@ kubectl get jobs -n kube-system -l capbm.capbm.io/component=gateway-api
 | Pod OOMKilled | Job 自动重试 (backoffLimit: 3) |
 | 网络超时 | Job 自动重试 |
 | 所有节点不可用 | Job 保持 Pending，等待节点恢复 |
+
+## 15. 镜像仓库导入
+
+### 15.1 概述
+
+ReleaseImage 支持将容器镜像导入到目标镜像仓库（如 Harbor、Docker Registry 等），实现镜像集中管理和节点按需拉取。
+
+**优势**:
+- **集中管理**: 所有镜像统一存储在镜像仓库
+- **按需拉取**: 节点只拉取需要的镜像
+- **离线支持**: ReleaseImage 作为镜像源，导入到内网仓库
+- **版本一致**: 镜像版本与 ReleaseImage 版本绑定
+
+### 15.2 配置镜像仓库
+
+在 ReleaseImage 中配置镜像仓库：
+
+```yaml
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: ReleaseImage
+metadata:
+  name: v1.31.0
+spec:
+  version: "v1.31.0"
+  image: "capbm-release:v1.31.0"
+  httpServer:
+    port: 8080
+    basePath: "/release"
+  imageRegistry:
+    enabled: true
+    registry: "registry.example.com"
+    repository: "capbm"
+    imagePrefix: "release"
+    credentialsSecret: "registry-credentials"
+    insecureSkipVerify: false
+```
+
+### 15.3 创建镜像仓库凭证
+
+```bash
+# 创建 Docker Registry 凭证 Secret
+kubectl create secret docker-registry registry-credentials \
+  --docker-server=registry.example.com \
+  --docker-username=admin \
+  --docker-password=password \
+  -n capbm-system
+```
+
+### 15.4 导入流程
+
+```bash
+# 1. 创建 ReleaseImage 资源
+kubectl apply -f releaseimage-v1.31.0.yaml
+
+# 2. 自动触发镜像导入 Job
+kubectl get jobs -n capbm-system -l capbm.capbm.io/type=image-import
+
+# 3. 查看导入进度
+kubectl logs -n capbm-system job/import-images-v1.31.0
+
+# 4. 查看 ReleaseImage 状态
+kubectl get releaseimage v1.31.0 -o jsonpath='{.status.imagesImported}'
+kubectl get releaseimage v1.31.0 -o jsonpath='{.status.importStatus}'
+```
+
+### 15.5 镜像命名规范
+
+```
+{registry}/{repository}/{imagePrefix}/{component}/{subcomponent}:{version}
+
+示例:
+registry.example.com/capbm/release/kubernetes/kube-apiserver:v1.31.0
+registry.example.com/capbm/release/calico/node:v3.27.0
+registry.example.com/capbm/release/cilium/cilium:v1.15.0
+```
+
+### 15.6 节点配置 containerd Registry Mirrors
+
+```yaml
+# containerd 配置 (/etc/containerd/config.toml)
+[plugins."io.containerd.grpc.v1.cri".registry]
+  [plugins."io.containerd.grpc.v1.cri".registry.mirrors]
+    [plugins."io.containerd.grpc.v1.cri".registry.mirrors."registry.example.com"]
+      endpoint = ["https://registry.example.com"]
+```
+
+### 15.7 查看导入状态
+
+```bash
+# 查看所有导入的镜像
+kubectl get releaseimage v1.31.0 -o jsonpath='{.status.importedImages}'
+
+# 查看导入 Job 状态
+kubectl get jobs -n capbm-system -l capbm.capbm.io/type=image-import
+
+# 查看 Job 详细状态
+kubectl describe job -n capbm-system import-images-v1.31.0
+```
+
+### 15.8 故障恢复
+
+| 故障场景 | 处理方式 |
+|---------|---------|
+| 镜像仓库不可达 | Job 自动重试 (backoffLimit: 3) |
+| 认证失败 | 检查 Secret 配置 |
+| 网络超时 | Job 自动重试 |
+| 磁盘空间不足 | 清理节点磁盘空间 |

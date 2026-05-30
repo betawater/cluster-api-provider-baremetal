@@ -30,11 +30,42 @@ type ReleaseImageSpec struct {
 	Version          string                   `json:"version"`
 	Image            string                   `json:"image"`
 	HTTPServer       *HTTPServerConfig        `json:"httpServer,omitempty"`
+	ImageRegistry    *ImageRegistryConfig     `json:"imageRegistry,omitempty"`
 	Channels         []string                 `json:"channels,omitempty"`
 	PreviousVersions []string                 `json:"previousVersions,omitempty"`
 	Components       ReleaseComponentVersions `json:"components"`
 	UpgradeGraph     []UpgradePhase           `json:"upgradeGraph"`
 	ContentHash      string                   `json:"contentHash,omitempty"`
+}
+
+// ImageRegistryConfig defines the target image registry configuration.
+type ImageRegistryConfig struct {
+	// Enabled enables image registry import.
+	// +optional
+	// +kubebuilder:default=false
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Registry is the target registry URL (e.g., registry.example.com).
+	// +optional
+	Registry string `json:"registry,omitempty"`
+
+	// Repository is the repository path prefix (e.g., capbm).
+	// +optional
+	// +kubebuilder:default=capbm
+	Repository string `json:"repository,omitempty"`
+
+	// CredentialsSecret is the secret name containing registry credentials.
+	// +optional
+	CredentialsSecret string `json:"credentialsSecret,omitempty"`
+
+	// InsecureSkipVerify skips TLS verification for the registry.
+	// +optional
+	InsecureSkipVerify bool `json:"insecureSkipVerify,omitempty"`
+
+	// ImagePrefix is the prefix for image names.
+	// Full image: {registry}/{repository}/{imagePrefix}/{component}:{version}
+	// +optional
+	ImagePrefix string `json:"imagePrefix,omitempty"`
 }
 
 // ReleaseComponentVersions defines all component versions with installation metadata.
@@ -83,6 +114,7 @@ type KubernetesComponent struct {
 	Type      ComponentType             `json:"type"`
 	Path      string                    `json:"path"`
 	Platforms map[string]K8SPlatform    `json:"platforms"`
+	ImageList []string                  `json:"imageList,omitempty"`
 }
 
 // K8SPlatform defines OS-specific package configuration.
@@ -177,8 +209,27 @@ type HealthCheck struct {
 }
 
 type ReleaseImageStatus struct {
-	Verified      bool `json:"verified"`
-	ManifestCount int  `json:"manifestCount"`
+	Verified        bool                    `json:"verified"`
+	ManifestCount   int                     `json:"manifestCount"`
+	ImagesImported  bool                    `json:"imagesImported,omitempty"`
+	ImportJobName   string                  `json:"importJobName,omitempty"`
+	ImportStatus    string                  `json:"importStatus,omitempty"`
+	ImportMessage   string                  `json:"importMessage,omitempty"`
+	ImportedImages  []ImportedImageStatus   `json:"importedImages,omitempty"`
+}
+
+// ImportedImageStatus tracks the status of a single imported image.
+type ImportedImageStatus struct {
+	// Component is the component name.
+	Component string `json:"component"`
+	// Image is the image name.
+	Image string `json:"image"`
+	// TargetRef is the target registry reference.
+	TargetRef string `json:"targetRef"`
+	// Status is the import status (pending/imported/failed).
+	Status string `json:"status"`
+	// Message is an optional status message.
+	Message string `json:"message,omitempty"`
 }
 
 type ReleaseImageList struct {

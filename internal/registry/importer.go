@@ -1,0 +1,304 @@
+/*
+Copyright 2024 The CAPBM Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package registry
+
+import (
+	"context"
+	"fmt"
+	"strings"
+
+	batchv1 "k8s.io/api/batch/v1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	infrav1 "github.com/BetaWater/cluster-api-provider-baremetal/api/v1beta1"
+)
+
+const (
+	// LabelReleaseVersion is the label key for release version.
+	LabelReleaseVersion = "capbm.capbm.io/release-version"
+	// LabelImportType is the label key for import type.
+	LabelImportType = "capbm.capbm.io/type"
+
+	// JobTypeImageImport is the job type for image import.
+	JobTypeImageImport = "image-import"
+
+	// ImageImporterServiceAccount is the service account for image import.
+	ImageImporterServiceAccount = "capbm-image-importer"
+	// ImageImporterImage is the default image importer image.
+	ImageImporterImage = "docker:24.0-dind"
+)
+
+// Importer imports images from ReleaseImage to target registry.
+type Importer struct {
+	client        client.Client
+	releaseServer string
+	namespace     string
+}
+
+// NewImporter creates a new image importer.
+func NewImporter(c client.Client, releaseServer, namespace string) *Importer {
+	return &Importer{
+		client:        c,
+		releaseServer: strings.TrimRight(releaseServer, "/"),
+		namespace:     namespace,
+	}
+}
+
+// ImportImages creates a Job to import images from ReleaseImage to target registry.
+func (i *Importer) ImportImages(ctx context.Context, releaseImage *infrav1.ReleaseImage) error {
+	if releaseImage.Spec.ImageRegistry == nil || !releaseImage.Spec.ImageRegistry.Enabled {
+		return nil
+	}
+
+	// Check if import job already exists
+	job := &batchv1.Job{}
+	err := i.client.Get(ctx, types.NamespacedName{
+		Name:      fmt.Sprintf("import-images-%s", releaseImage.Spec.Version),
+		Namespace: i.namespace,
+	}, job)
+	if err == nil {
+		// Job exists, check if it's for the same version
+		if job.Labels[LabelReleaseVersion] == releaseImage.Spec.Version {
+			return nil
+		}
+		// Different version, delete old job
+		if err := i.client.Delete(ctx, job); err != nil {
+			return fmt.Errorf("failed to delete old import job: %w", err)
+		}
+	}
+
+	// Create new import job
+	newJob := i.buildImportJob(releaseImage)
+	return i.client.Create(ctx, newJob)
+}
+
+// buildImportJob builds an image import Job.
+func (i *Importer) buildImportJob(releaseImage *infrav1.ReleaseImage) *batchv1.Job {
+	registryConfig := releaseImage.Spec.ImageRegistry
+
+	// Build image list for all components
+	var componentList []string
+	var imageLists []string
+
+	// Collect components that have images
+	if len(releaseImage.Spec.Components.Kubernetes.ImageList) > 0 {
+		componentList = append(componentList, "kubernetes")
+		imageLists = append(imageLists, fmt.Sprintf("kubernetes:%s", strings.Join(releaseImage.Spec.Components.Kubernetes.ImageList, ",")))
+	}
+	if len(releaseImage.Spec.Components.Calico.ImageList) > 0 {
+		componentList = append(componentList, "calico")
+		imageLists = append(imageLists, fmt.Sprintf("calico:%s", strings.Join(releaseImage.Spec.Components.Calico.ImageList, ",")))
+	}
+	if len(releaseImage.Spec.Components.Cilium.ImageList) > 0 {
+		componentList = append(componentList, "cilium")
+		imageLists = append(imageLists, fmt.Sprintf("cilium:%s", strings.Join(releaseImage.Spec.Components.Cilium.ImageList, ",")))
+	}
+	if len(releaseImage.Spec.Components.CephCsi.ImageList) > 0 {
+		componentList = append(componentList, "ceph-csi")
+		imageLists = append(imageLists, fmt.Sprintf("ceph-csi:%s", strings.Join(releaseImage.Spec.Components.CephCsi.ImageList, ",")))
+	}
+	if len(releaseImage.Spec.Components.EnvoyGateway.ImageList) > 0 {
+		componentList = append(componentList, "envoy-gateway")
+		imageLists = append(imageLists, fmt.Sprintf("envoy-gateway:%s", strings.Join(releaseImage.Spec.Components.EnvoyGateway.ImageList, ",")))
+	}
+	if len(releaseImage.Spec.Components.MetalLB.ImageList) > 0 {
+		componentList = append(componentList, "metallb")
+		imageLists = append(imageLists, fmt.Sprintf("metallb:%s", strings.Join(releaseImage.Spec.Components.MetalLB.ImageList, ",")))
+	}
+
+	// Build environment variables
+	envVars := []corev1.EnvVar{
+		{
+			Name:  "RELEASE_SERVER",
+			Value: i.releaseServer,
+		},
+		{
+			Name:  "REGISTRY",
+			Value: registryConfig.Registry,
+		},
+		{
+			Name:  "REPOSITORY",
+			Value: registryConfig.Repository,
+		},
+		{
+			Name:  "IMAGE_PREFIX",
+			Value: registryConfig.ImagePrefix,
+		},
+		{
+			Name:  "INSECURE",
+			Value: fmt.Sprintf("%t", registryConfig.InsecureSkipVerify),
+		},
+		{
+			Name:  "COMPONENTS",
+			Value: strings.Join(componentList, ","),
+		},
+		{
+			Name:  "IMAGE_LISTS",
+			Value: strings.Join(imageLists, ";"),
+		},
+	}
+
+	// Add credentials if configured
+	if registryConfig.CredentialsSecret != "" {
+		envVars = append(envVars, corev1.EnvVar{
+			Name: "REGISTRY_USER",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: registryConfig.CredentialsSecret,
+					},
+					Key: "username",
+				},
+			},
+		})
+		envVars = append(envVars, corev1.EnvVar{
+			Name: "REGISTRY_PASSWORD",
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: registryConfig.CredentialsSecret,
+					},
+					Key: "password",
+				},
+			},
+		})
+	}
+
+	return &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fmt.Sprintf("import-images-%s", releaseImage.Spec.Version),
+			Namespace: i.namespace,
+			Labels: map[string]string{
+				LabelReleaseVersion: releaseImage.Spec.Version,
+				LabelImportType:     JobTypeImageImport,
+			},
+		},
+		Spec: batchv1.JobSpec{
+			BackoffLimit:          ptr.To(int32(3)),
+			ActiveDeadlineSeconds: ptr.To(int64(3600)),
+			Template: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					ServiceAccountName: ImageImporterServiceAccount,
+					Containers: []corev1.Container{
+						{
+							Name:    "image-importer",
+							Image:   ImageImporterImage,
+							Command: []string{"sh", "-c", i.buildImportScript()},
+							Env:     envVars,
+							SecurityContext: &corev1.SecurityContext{
+								Privileged: ptr.To(true),
+							},
+						},
+					},
+					RestartPolicy: corev1.RestartPolicyNever,
+				},
+			},
+		},
+	}
+}
+
+// buildImportScript builds the image import script.
+func (i *Importer) buildImportScript() string {
+	return `#!/bin/sh
+set -euo pipefail
+
+RELEASE_SERVER="${RELEASE_SERVER}"
+REGISTRY="${REGISTRY}"
+REPOSITORY="${REPOSITORY}"
+IMAGE_PREFIX="${IMAGE_PREFIX}"
+REGISTRY_USER="${REGISTRY_USER:-}"
+REGISTRY_PASSWORD="${REGISTRY_PASSWORD:-}"
+INSECURE="${INSECURE:-false}"
+COMPONENTS="${COMPONENTS}"
+IMAGE_LISTS="${IMAGE_LISTS}"
+
+echo "=== Starting image import to $REGISTRY/$REPOSITORY ==="
+
+# Login to registry
+if [ -n "$REGISTRY_USER" ] && [ -n "$REGISTRY_PASSWORD" ]; then
+  echo "$REGISTRY_PASSWORD" | docker login "$REGISTRY" -u "$REGISTRY_USER" --password-stdin
+fi
+
+if [ "$INSECURE" = "true" ]; then
+  mkdir -p /etc/docker
+  echo "{\"insecure-registries\":[\"$REGISTRY\"]}" > /etc/docker/daemon.json
+  kill -HUP $(cat /var/run/docker.pid 2>/dev/null) || true
+fi
+
+# Parse components and image lists
+IFS=',' read -ra COMPONENT_ARRAY <<< "$COMPONENTS"
+IFS=';' read -ra IMAGE_LIST_ARRAY <<< "$IMAGE_LISTS"
+
+# Build component to images mapping
+declare -A COMPONENT_IMAGES
+for entry in "${IMAGE_LIST_ARRAY[@]}"; do
+  component="${entry%%:*}"
+  images="${entry#*:}"
+  COMPONENT_IMAGES[$component]="$images"
+done
+
+# Import images for each component
+for component in "${COMPONENT_ARRAY[@]}"; do
+  echo "=== Importing $component images ==="
+  
+  # Get component version from index.json
+  VERSION=$(curl -fsSL "${RELEASE_SERVER}/index.json" | jq -r ".components.\"$component\".version")
+  if [ "$VERSION" = "null" ] || [ -z "$VERSION" ]; then
+    echo "Skipping $component (not in release)"
+    continue
+  fi
+  
+  # Get image list
+  IMAGES="${COMPONENT_IMAGES[$component]}"
+  if [ -z "$IMAGES" ]; then
+    echo "Skipping $component (no images)"
+    continue
+  fi
+  
+  IFS=',' read -ra IMAGE_ARRAY <<< "$IMAGES"
+  
+  for image_tar in "${IMAGE_ARRAY[@]}"; do
+    echo "Processing $image_tar..."
+    
+    # Download tar
+    curl -fsSL "${RELEASE_SERVER}/images/${component}/${VERSION}/${image_tar}" -o "/tmp/${image_tar}"
+    
+    # Load image
+    docker load -i "/tmp/${image_tar}"
+    
+    # Get image name from tar filename (remove .tar extension)
+    IMAGE_NAME=$(echo "$image_tar" | sed 's/\.tar$//')
+    
+    # Tag and push
+    TARGET_IMAGE="${REGISTRY}/${REPOSITORY}/${IMAGE_PREFIX}/${component}/${IMAGE_NAME}:${VERSION}"
+    docker tag "${IMAGE_NAME}" "$TARGET_IMAGE"
+    docker push "$TARGET_IMAGE"
+    
+    echo "Pushed: $TARGET_IMAGE"
+    rm -f "/tmp/${image_tar}"
+  done
+  
+  echo "=== $component images imported ==="
+done
+
+echo "=== All images imported successfully ==="
+`
+}
