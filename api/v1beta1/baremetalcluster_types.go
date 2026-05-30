@@ -54,6 +54,10 @@ type BareMetalClusterSpec struct {
 	// IngressLoadBalancer holds the load balancer configuration for ingress traffic.
 	// +optional
 	IngressLoadBalancer *IngressLoadBalancerConfig `json:"ingressLoadBalancer,omitempty"`
+
+	// GatewayAPI holds the Gateway API component configuration.
+	// +optional
+	GatewayAPI *GatewayAPIConfig `json:"gatewayAPI,omitempty"`
 }
 
 // NetworkConfig holds the network configuration for the cluster.
@@ -379,6 +383,60 @@ type IngressMetalLBConfig struct {
 	// LoadBalancerIP is the VIP for ingress traffic.
 	// +optional
 	LoadBalancerIP string `json:"loadBalancerIP,omitempty"`
+}
+
+// GatewayAPIConfig defines the Gateway API component configuration.
+type GatewayAPIConfig struct {
+	// Enabled enables Gateway API component installation.
+	// +optional
+	// +kubebuilder:default=true
+	Enabled bool `json:"enabled,omitempty"`
+
+	// EnvoyGateway holds Envoy Gateway specific configuration.
+	// +optional
+	EnvoyGateway *EnvoyGatewayConfig `json:"envoyGateway,omitempty"`
+
+	// MetalLB holds MetalLB specific configuration.
+	// +optional
+	MetalLB *GatewayMetalLBConfig `json:"metalLB,omitempty"`
+}
+
+// EnvoyGatewayConfig defines Envoy Gateway specific configuration.
+type EnvoyGatewayConfig struct {
+	// ReplicaCount is the number of Envoy Gateway replicas.
+	// +optional
+	// +kubebuilder:default=2
+	ReplicaCount int `json:"replicaCount,omitempty"`
+
+	// NodeSelector for scheduling Envoy Gateway pods.
+	// +optional
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+}
+
+// GatewayMetalLBConfig defines MetalLB specific configuration for Gateway API.
+type GatewayMetalLBConfig struct {
+	// Enabled enables MetalLB installation.
+	// +optional
+	// +kubebuilder:default=false
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Mode is the MetalLB mode (layer2 or bgp).
+	// +optional
+	// +kubebuilder:default=layer2
+	Mode string `json:"mode,omitempty"`
+
+	// IPAddressPools defines the IP address pools.
+	// +optional
+	IPAddressPools []MetalLBIPAddressPool `json:"ipAddressPools,omitempty"`
+}
+
+// MetalLBIPAddressPool defines an IP address pool for MetalLB.
+type MetalLBIPAddressPool struct {
+	// Name is the pool name.
+	Name string `json:"name"`
+
+	// Addresses is the list of IP address ranges.
+	Addresses []string `json:"addresses"`
 }
 
 // +kubebuilder:object:root=true

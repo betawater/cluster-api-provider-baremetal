@@ -37,11 +37,14 @@ type ReleaseImageSpec struct {
 }
 
 type ReleaseComponentVersions struct {
-	Kubernetes map[string]string `json:"kubernetes"`
-	Containerd string            `json:"containerd,omitempty"`
-	Calico     string            `json:"calico,omitempty"`
-	Cilium     string            `json:"cilium,omitempty"`
-	CephCsi    string            `json:"cephCsi,omitempty"`
+	Kubernetes   map[string]string `json:"kubernetes"`
+	Containerd   string            `json:"containerd,omitempty"`
+	Calico       string            `json:"calico,omitempty"`
+	Cilium       string            `json:"cilium,omitempty"`
+	CephCsi      string            `json:"cephCsi,omitempty"`
+	GatewayAPI   string            `json:"gatewayAPI,omitempty"`
+	EnvoyGateway string            `json:"envoyGateway,omitempty"`
+	MetalLB      string            `json:"metalLB,omitempty"`
 }
 
 type UpgradePhase struct {

@@ -45,6 +45,9 @@ const (
 
 	// IngressLoadBalancerReadyCondition reports whether the ingress load balancer is ready.
 	IngressLoadBalancerReadyCondition clusterv1.ConditionType = "IngressLoadBalancerReady"
+
+	// GatewayAPIReadyCondition reports whether the Gateway API components are ready.
+	GatewayAPIReadyCondition clusterv1.ConditionType = "GatewayAPIReady"
 )
 
 // Common condition reasons
@@ -105,4 +108,10 @@ const (
 
 	// IngressLoadBalancerReadyReason indicates ingress load balancer is ready.
 	IngressLoadBalancerReadyReason = "IngressLoadBalancerReady"
+
+	// GatewayAPIInstallFailedReason indicates Gateway API installation failed.
+	GatewayAPIInstallFailedReason = "GatewayAPIInstallFailed"
+
+	// GatewayAPIReadyReason indicates Gateway API components are ready.
+	GatewayAPIReadyReason = "GatewayAPIReady"
 )

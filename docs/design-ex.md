@@ -6485,13 +6485,544 @@ SSH 连接成功
 └─────────────────────────────────────────┘
 ```
 
+### 6.18 Gateway API 安装与升级设计
+
+#### 6.18.1 问题背景
+
+裸金属集群在 CNI 安装完成后，需要部署 Gateway API 组件来管理外部流量。Gateway API 是 Kubernetes Ingress 的下一代演进方向，由 CNCF 标准化。
+
+**Gateway API vs 传统 Ingress**:
+
+| 维度 | Ingress | Gateway API |
+|------|---------|-------------|
+| **API 版本** | networking.k8s.io/v1 | gateway.networking.k8s.io/v1 (GA) |
+| **表达能力** | HTTP/HTTPS 路由 | HTTP/HTTPS/TCP/UDP/gRPC + mTLS + 流量拆分 |
+| **角色分离** | 单一资源 | Gateway (基础设施) + HTTPRoute (应用路由) |
+| **多租户** | 困难 | 原生支持 |
+| **社区趋势** | 维护模式 | 活跃开发，CNCF 标准 |
+
+**集群内 Gateway 组件 vs 外部 LB 设备**:
+
+| 组件 | 类型 | 版本管理 | 安装方式 |
+|------|------|---------|---------|
+| Gateway API CRDs | Kubernetes CRDs | ReleaseImage | Manifest |
+| Envoy Gateway Controller | 集群内 Pod | ReleaseImage | Manifest/Helm |
+| MetalLB | 集群内 Pod | ReleaseImage | Manifest/Helm |
+| HAProxy (外部) | 外部基础设施 | 基础设施团队 | 手动/Ansible |
+| F5 BIG-IP | 外部硬件设备 | 基础设施团队 | 手动 |
+
+CAPBM 通过 ReleaseImage 管理 Gateway API 组件版本，实现与 Kubernetes 版本的兼容性管理。
+
+#### 6.18.2 ReleaseImage 集成
+
+在 `ReleaseComponentVersions` 中新增 Gateway API 组件版本：
+
+```go
+type ReleaseComponentVersions struct {
+    Kubernetes   map[string]string `json:"kubernetes"`
+    Containerd   string            `json:"containerd,omitempty"`
+    Calico       string            `json:"calico,omitempty"`
+    Cilium       string            `json:"cilium,omitempty"`
+    CephCsi      string            `json:"cephCsi,omitempty"`
+    GatewayAPI   string            `json:"gatewayAPI,omitempty"`    // 新增
+    EnvoyGateway string            `json:"envoyGateway,omitempty"`  // 新增
+    MetalLB      string            `json:"metalLB,omitempty"`
+}
+```
+
+示例 ReleaseImage:
+
+```yaml
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: ReleaseImage
+metadata:
+  name: v1.31.0
+spec:
+  version: "v1.31.0"
+  components:
+    kubernetes:
+      kubelet: "v1.31.0"
+      kubeadm: "v1.31.0"
+      kubectl: "v1.31.0"
+    containerd: "1.7.0"
+    calico: "v3.27.0"
+    gatewayAPI: "v1.2.0"       # Gateway API CRDs 版本
+    envoyGateway: "v1.1.0"     # Envoy Gateway Controller 版本
+    metalLB: "v0.14.0"
+    cephCsi: "v3.9.0"
+  upgradeGraph:
+    - name: cni
+      order: 1
+      components:
+        - name: calico
+          manifests: ["calico-crds.yaml", "calico-controller.yaml"]
+    - name: gateway-api
+      order: 2
+      dependsOn: ["cni"]
+      components:
+        - name: gateway-api-crds
+          manifests: ["gateway-api-crds.yaml"]
+    - name: envoy-gateway
+      order: 3
+      dependsOn: ["gateway-api"]
+      components:
+        - name: envoy-gateway
+          manifests: ["envoy-gateway-crds.yaml", "envoy-gateway-controller.yaml"]
+    - name: metallb
+      order: 4
+      dependsOn: ["envoy-gateway"]
+      components:
+        - name: metallb
+          manifests: ["metallb-crds.yaml", "metallb-controller.yaml"]
+```
+
+#### 6.18.3 架构设计
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                    Gateway API 架构                          │
+│                                                              │
+│  用户请求                                                     │
+│       │                                                      │
+│       ▼                                                      │
+│  ┌─────────────────┐                                         │
+│  │  MetalLB        │  ←  分配外部 IP                         │
+│  │  VIP: 10.0.0.200│                                         │
+│  └────┬────────────┘                                         │
+│       │                                                      │
+│       ▼                                                      │
+│  ┌─────────────────────────────────────────┐                 │
+│  │         Envoy Gateway                    │                 │
+│  │  (Gateway Controller + Envoy Proxy)      │                 │
+│  │                                          │                 │
+│  │  Gateway (基础设施团队管理)               │                 │
+│  │  ├── HTTPRoute (应用团队管理)            │                 │
+│  │  ├── TLSRoute                            │                 │
+│  │  └── TCPRoute/UDPRoute                   │                 │
+│  └────────────────────┬────────────────────┘                 │
+│                       │                                      │
+│                       ▼                                      │
+│  ┌─────────────────────────────────────────┐                 │
+│  │         应用服务 (ClusterIP)             │                 │
+│  └─────────────────────────────────────────┘                 │
+└──────────────────────────────────────────────────────────────┘
+```
+
+#### 6.18.4 安装流程
+
+```
+CNI 安装完成
+    │
+    ▼
+┌─────────────────────────────────────────────────────────┐
+│ 1. 安装 Gateway API CRDs                                │
+│    └── 从 ReleaseImage.Spec.Components.GatewayAPI       │
+│    ├── 安装 GatewayClass CRD                            │
+│    ├── 安装 Gateway CRD                                 │
+│    ├── 安装 HTTPRoute/TLSRoute CRD                      │
+│    └── 等待 CRDs Ready                                  │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 2. 安装 Envoy Gateway Controller                        │
+│    └── 从 ReleaseImage.Spec.Components.EnvoyGateway     │
+│    ├── 安装 Controller CRDs                             │
+│    ├── 安装 Controller Deployment                       │
+│    └── 等待 Controller Ready                           │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 3. 安装 MetalLB (如需外部 IP)                           │
+│    └── 从 ReleaseImage.Spec.Components.MetalLB          │
+│    ├── 安装 CRDs                                        │
+│    ├── 安装 Controller/Speaker                          │
+│    └── 配置 IPAddressPool                               │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 4. 创建默认 Gateway 资源                                │
+│    ├── GatewayClass                                     │
+│    └── Gateway (默认 HTTP/HTTPS 监听器)                 │
+└─────────────────────────────────────────────────────────┘
+```
+
+#### 6.18.5 CRD 设计扩展
+
+在 `BareMetalClusterSpec` 中新增 Gateway API 配置：
+
+```yaml
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: BareMetalCluster
+spec:
+  gatewayAPI:
+    enabled: true
+    envoyGateway:
+      replicaCount: 2
+      nodeSelector:
+        node-role.kubernetes.io/worker: ""
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "128Mi"
+        limits:
+          cpu: "500m"
+          memory: "512Mi"
+    metalLB:
+      enabled: true
+      mode: "layer2"
+      ipAddressPools:
+      - name: default-pool
+        addresses:
+        - "10.0.0.200-10.0.0.250"
+```
+
+**Go 类型定义**:
+
+```go
+type GatewayAPIConfig struct {
+	// Enabled enables Gateway API component installation.
+	// +optional
+	// +kubebuilder:default=true
+	Enabled bool `json:"enabled,omitempty"`
+	
+	// EnvoyGateway holds Envoy Gateway specific configuration.
+	// +optional
+	EnvoyGateway *EnvoyGatewayConfig `json:"envoyGateway,omitempty"`
+	
+	// MetalLB holds MetalLB specific configuration.
+	// +optional
+	MetalLB *GatewayMetalLBConfig `json:"metalLB,omitempty"`
+}
+
+type EnvoyGatewayConfig struct {
+	// ReplicaCount is the number of Envoy Gateway replicas.
+	// +optional
+	// +kubebuilder:default=2
+	ReplicaCount int `json:"replicaCount,omitempty"`
+	
+	// NodeSelector for scheduling Envoy Gateway pods.
+	// +optional
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
+	
+	// Resources defines resource requests and limits.
+	// +optional
+	Resources *corev1.ResourceRequirements `json:"resources,omitempty"`
+}
+
+type GatewayMetalLBConfig struct {
+	// Enabled enables MetalLB installation.
+	// +optional
+	// +kubebuilder:default=false
+	Enabled bool `json:"enabled,omitempty"`
+	
+	// Mode is the MetalLB mode (layer2 or bgp).
+	// +optional
+	// +kubebuilder:default=layer2
+	Mode string `json:"mode,omitempty"`
+	
+	// IPAddressPools defines the IP address pools.
+	// +optional
+	IPAddressPools []MetalLBIPAddressPool `json:"ipAddressPools,omitempty"`
+}
+
+type MetalLBIPAddressPool struct {
+	// Name is the pool name.
+	Name string `json:"name"`
+	
+	// Addresses is the list of IP address ranges.
+	Addresses []string `json:"addresses"`
+}
+```
+
+更新 `BareMetalClusterSpec`:
+
+```go
+type BareMetalClusterSpec struct {
+	ControlPlaneEndpoint  clusterv1.APIEndpoint      `json:"controlPlaneEndpoint,omitempty"`
+	Network               NetworkConfig              `json:"network,omitempty"`
+	LoadBalancer          *LoadBalancerConfig        `json:"loadBalancer,omitempty"`
+	IngressLoadBalancer   *IngressLoadBalancerConfig `json:"ingressLoadBalancer,omitempty"`
+	GatewayAPI            *GatewayAPIConfig          `json:"gatewayAPI,omitempty"`
+}
+```
+
+#### 6.18.6 Controller 集成
+
+在 `BareMetalCluster Controller` 中集成 Gateway API 组件安装：
+
+```go
+func (r *BareMetalClusterReconciler) reconcileNormal(ctx context.Context, bmCluster *infrav1.BareMetalCluster) (ctrl.Result, error) {
+    // ... 现有逻辑 ...
+    
+    // 安装 Gateway API 组件 (仅首个 control-plane 节点就绪后)
+    if err := r.reconcileGatewayAPI(ctx, bmCluster, capiCluster); err != nil {
+        log.Error(err, "failed to reconcile Gateway API components")
+        markConditionFalse(&bmCluster.Status.Conditions, infrav1.GatewayAPIReadyCondition, infrav1.GatewayAPIInstallFailedReason, clusterv1.ConditionSeverityError, err.Error())
+        return ctrl.Result{RequeueAfter: 60 * time.Second}, r.Status().Update(ctx, bmCluster)
+    }
+    
+    if bmCluster.Spec.GatewayAPI != nil && bmCluster.Spec.GatewayAPI.Enabled {
+        markConditionTrue(&bmCluster.Status.Conditions, infrav1.GatewayAPIReadyCondition, "Gateway API components are ready")
+    }
+    
+    // ... 其余逻辑 ...
+}
+
+func (r *BareMetalClusterReconciler) reconcileGatewayAPI(ctx context.Context, bmCluster *infrav1.BareMetalCluster, capiCluster *clusterv1.Cluster) error {
+    gatewayConfig := bmCluster.Spec.GatewayAPI
+    if gatewayConfig == nil || !gatewayConfig.Enabled {
+        return nil
+    }
+    
+    // 获取 ReleaseImage
+    releaseImage, err := r.getReleaseImage(ctx, bmCluster)
+    if err != nil {
+        return fmt.Errorf("failed to get ReleaseImage: %w", err)
+    }
+    
+    // 安装 Gateway API CRDs
+    if releaseImage.Spec.Components.GatewayAPI != "" {
+        installer := gateway.NewGatewayAPICRDsInstaller(releaseImage.Spec.Components.GatewayAPI)
+        if err := installer.Install(ctx); err != nil {
+            return fmt.Errorf("failed to install Gateway API CRDs: %w", err)
+        }
+    }
+    
+    // 安装 Envoy Gateway Controller
+    if releaseImage.Spec.Components.EnvoyGateway != "" {
+        installer := gateway.NewEnvoyGatewayInstaller(releaseImage.Spec.Components.EnvoyGateway, gatewayConfig.EnvoyGateway)
+        if err := installer.Install(ctx); err != nil {
+            return fmt.Errorf("failed to install Envoy Gateway: %w", err)
+        }
+    }
+    
+    // 安装 MetalLB
+    if gatewayConfig.MetalLB != nil && gatewayConfig.MetalLB.Enabled {
+        if releaseImage.Spec.Components.MetalLB != "" {
+            installer := gateway.NewMetalLBInstaller(releaseImage.Spec.Components.MetalLB, gatewayConfig.MetalLB)
+            if err := installer.Install(ctx); err != nil {
+                return fmt.Errorf("failed to install MetalLB: %w", err)
+            }
+        }
+    }
+    
+    // 创建默认 Gateway 资源
+    if err := r.createDefaultGateway(ctx, bmCluster); err != nil {
+        return fmt.Errorf("failed to create default Gateway: %w", err)
+    }
+    
+    return nil
+}
+```
+
+#### 6.18.7 ClusterClass 变量和 Patches
+
+在 ClusterClass 中新增 Gateway API 变量：
+
+```yaml
+  variables:
+  - name: gatewayAPI
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          enabled:
+            type: boolean
+            default: true
+          envoyGateway:
+            type: object
+            properties:
+              replicaCount:
+                type: integer
+                default: 2
+              nodeSelector:
+                type: object
+              resources:
+                type: object
+          metalLB:
+            type: object
+            properties:
+              enabled:
+                type: boolean
+                default: false
+              mode:
+                type: string
+                default: "layer2"
+                enum:
+                  - "layer2"
+                  - "bgp"
+              ipAddressPools:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    name:
+                      type: string
+                    addresses:
+                      type: array
+                      items:
+                        type: string
+```
+
+Patch 定义：
+
+```yaml
+  patches:
+  - name: gatewayAPI
+    enabledIf: "{{ if .gatewayAPI.enabled }}true{{end}}"
+    definitions:
+    - selector:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        kind: BareMetalClusterTemplate
+        matchResources:
+          infrastructureCluster: true
+      jsonPatches:
+      - op: add
+        path: /spec/template/spec/gatewayAPI
+        valueFrom:
+          variable: gatewayAPI
+```
+
+#### 6.18.8 用户使用示例
+
+##### Gateway API + MetalLB 方式
+
+```yaml
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  name: my-baremetal-cluster
+spec:
+  topology:
+    classRef:
+      name: baremetal-clusterclass-v0.1.0
+    version: v1.31.0
+    controlPlane:
+      replicas: 3
+    workers:
+      machineDeployments:
+      - class: default-worker
+        name: md-0
+        replicas: 3
+    variables:
+    - name: gatewayAPI
+      value:
+        enabled: true
+        envoyGateway:
+          replicaCount: 2
+          nodeSelector:
+            node-role.kubernetes.io/worker: ""
+        metalLB:
+          enabled: true
+          mode: "layer2"
+          ipAddressPools:
+          - name: default-pool
+            addresses:
+            - "10.0.0.200-10.0.0.250"
+```
+
+##### 外部 LB 方式 (不使用 MetalLB)
+
+```yaml
+    variables:
+    - name: gatewayAPI
+      value:
+        enabled: true
+        envoyGateway:
+          replicaCount: 2
+        metalLB:
+          enabled: false
+    - name: ingressLoadBalancer
+      value:
+        enabled: true
+        provider: "haproxy"
+        haproxy:
+          adminHost: "10.0.0.50"
+          backendName: "k8s-ingress"
+          httpPort: 30080
+          httpsPort: 30443
+```
+
+#### 6.18.9 默认 Gateway 资源
+
+集群初始化后自动创建：
+
+```yaml
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: capbm-envoy
+spec:
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: default
+  namespace: default
+spec:
+  gatewayClassName: capbm-envoy
+  listeners:
+  - name: http
+    protocol: HTTP
+    port: 80
+    allowedRoutes:
+      namespaces:
+        from: All
+  - name: https
+    protocol: HTTPS
+    port: 443
+    allowedRoutes:
+      namespaces:
+        from: All
+    tls:
+      mode: Terminate
+```
+
+#### 6.18.10 完整安装流程
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ 集群内组件安装顺序 (基于 ReleaseImage UpgradeGraph)      │
+│                                                         │
+│ 1. containerd                                           │
+│ 2. kubeadm/kubelet/kubectl                              │
+│ 3. CNI (Calico/Cilium)                                  │
+│ 4. Gateway API CRDs                                     │
+│ 5. Envoy Gateway Controller                             │
+│ 6. MetalLB                                              │
+│ 7. CSI (CephCsi)                                        │
+└─────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────────────────────────┐
+│ 外部 LB 注册 (BareMetalCluster 配置)                     │
+│ - API Server LB → control-plane 节点 :6443              │
+│ - Ingress LB → worker 节点 NodePort :30080/:30443       │
+│   (如使用外部 LB 而非 MetalLB)                           │
+└─────────────────────────────────────────────────────────┘
+```
+
+#### 6.18.11 关键设计决策
+
+| 决策点 | 选项 | 推荐 | 理由 |
+|--------|------|------|------|
+| **Gateway Controller** | Nginx Ingress vs Envoy Gateway | Envoy Gateway | 原生支持 Gateway API，CNCF 标准 |
+| **版本管理** | ReleaseImage vs ClusterClass 变量 | ReleaseImage | 与 Kubernetes 版本有兼容性要求 |
+| **外部 IP 分配** | MetalLB vs 外部 LB | MetalLB (默认) | 裸金属环境无云厂商 LB |
+| **安装时机** | 集群初始化时 vs 用户手动安装 | 集群初始化时 | 与 CNI/CSI 一致的自动化体验 |
+| **默认 Gateway** | 自动创建 vs 用户手动创建 | 自动创建 | 开箱即用，降低使用门槛 |
+
 ---
 
 > **集群升级设计 (CVO 机制)** 已移至独立文档: [cluster-upgrade-cvo.md](cluster-upgrade-cvo.md)
 > 
 > 最新方案包含:
 > - 四个核心 CRD: ClusterVersion / ReleaseImage / UpgradePath / ReleaseCatalog
-> - 基于 ReleaseImage 的组件版本管理 (kubeadm/kubelet/kubectl/containerd/CNI/CSI)
+> - 基于 ReleaseImage 的组件版本管理 (kubeadm/kubelet/kubectl/containerd/CNI/CSI/Gateway API)
 > - 纯内存版本检测 (DiffComponents 对比 currentRI vs targetRI，不使用 shell 命令)
 > - 升级依赖图 (DAG) 驱动的安装/升级流程
 > - OCI 镜像拉取 + 默认值兜底机制
