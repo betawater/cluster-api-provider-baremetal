@@ -7802,6 +7802,246 @@ func (t *StatusTracker) GetComponentStatus(ctx context.Context, componentName st
 | **状态追踪** | Job 状态 vs ConfigMap | ConfigMap + Job Labels | 持久化，易查询 |
 | **升级方式** | helm upgrade vs 新 Job | 新 Job | 可追踪，可回滚 |
 
+### 6.21 Manifest 组件安装设计
+
+#### 6.21.1 问题背景
+
+CAPBM 使用 Manifest (kubectl apply) 安装多个组件（Gateway API、Envoy Gateway、MetalLB 等），需要与 Helm 组件保持一致的故障处理和状态追踪机制。
+
+**核心需求**:
+1. **节点故障处理**: Job 自动调度到其他节点
+2. **状态追踪**: 与 Helm 组件共用 ConfigMap
+3. **离线支持**: Manifest 和镜像都从 ReleaseImage 获取
+4. **统一接口**: 与 Helm 组件使用相同的 Installer 接口
+
+#### 6.21.2 架构设计
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ Workload Cluster                                            │
+│                                                             │
+│  ┌───────────────────────────────────────────────────────┐  │
+│  │  Job: install-gateway-api (Manifest)                  │  │
+│  │  Job: install-envoy-gateway (Manifest)                │  │
+│  │  Job: install-metallb (Manifest)                      │  │
+│  │  Job: install-calico (Helm)                           │  │
+│  │  Job: install-ceph-csi (Helm)                         │  │
+│  └───────────────────────────────────────────────────────┘  │
+│         │                                                   │
+│         │ 自动调度到任意可用节点                             │
+│         ▼                                                   │
+│  ┌───────────────────────────────────────────────────────┐  │
+│  │  Node-01 / Node-02 / Node-03 (任意可用节点)            │  │
+│  └───────────────────────────────────────────────────────┘  │
+│                                                             │
+│  ┌───────────────────────────────────────────────────────┐  │
+│  │  ConfigMap: capbm-component-status                    │  │
+│  │  └── 追踪所有组件安装状态 (Helm + Manifest)            │  │
+│  └───────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+#### 6.21.3 Manifest Job 模板
+
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: install-gateway-api
+  namespace: kube-system
+  labels:
+    capbm.capbm.io/component: gateway-api
+    capbm.capbm.io/version: "v1.2.0"
+    capbm.capbm.io/type: manifest-install
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 600
+  template:
+    spec:
+      serviceAccountName: capbm-manifest
+      containers:
+      - name: kubectl
+        image: bitnami/kubectl:1.31.0
+        command:
+        - sh
+        - -c
+        - |
+          set -euo pipefail
+          
+          COMPONENT="gateway-api"
+          VERSION="v1.2.0"
+          RELEASE_SERVER="${RELEASE_SERVER}"
+          COMPONENT_PATH="gateway/gateway-api"
+          INSTALL_SOURCE="${INSTALL_SOURCE:-online}"
+          
+          echo "=== Installing $COMPONENT v$VERSION ==="
+          
+          # 1. Download manifest
+          curl -fsSL "${RELEASE_SERVER}/${COMPONENT_PATH}/${VERSION}/gateway-api-crds.yaml" -o "/tmp/gateway-api-crds.yaml"
+          
+          # 2. Load images (offline mode)
+          if [ "${INSTALL_SOURCE}" != "online" ]; then
+            echo "Loading images for $COMPONENT..."
+            IMAGE_PATH="${RELEASE_SERVER}/images/${COMPONENT}/${VERSION}"
+            for image_tar in gateway-api-images.tar; do
+              curl -fsSL "${IMAGE_PATH}/${image_tar}" -o "/tmp/${image_tar}"
+              ctr -n k8s.io images import "/tmp/${image_tar}"
+              rm -f "/tmp/${image_tar}"
+            done
+          fi
+          
+          # 3. Apply manifest
+          echo "Applying $COMPONENT manifest..."
+          kubectl apply -f "/tmp/gateway-api-crds.yaml"
+          
+          # 4. Update status ConfigMap
+          kubectl patch configmap capbm-component-status -n kube-system \
+            --type merge \
+            -p '{"data":{"gateway-api":"version: v1.2.0\nstatus: installed\ninstalledAt: $(date -u +%Y-%m-%dT%H:%M:%SZ)\njobName: install-gateway-api"}}'
+          
+          echo "=== $COMPONENT v$VERSION installed successfully ==="
+        env:
+        - name: RELEASE_SERVER
+          value: "http://release-server:8080/release"
+        - name: INSTALL_SOURCE
+          value: "http"
+      restartPolicy: Never
+      tolerations:
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+```
+
+#### 6.21.4 RBAC 配置
+
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: capbm-manifest
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: capbm-manifest
+rules:
+- apiGroups: ["*"]
+  resources: ["*"]
+  verbs: ["get", "list", "watch", "create", "update", "patch"]
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: capbm-manifest
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: capbm-manifest
+subjects:
+- kind: ServiceAccount
+  name: capbm-manifest
+  namespace: kube-system
+```
+
+#### 6.21.5 统一组件安装器
+
+```go
+// internal/component/installer.go
+
+type Installer struct {
+    client        client.Client
+    releaseServer string
+    namespace     string
+}
+
+func (i *Installer) InstallComponent(ctx context.Context, component Component) error {
+    switch component.Type {
+    case ComponentTypeHelm:
+        return i.installHelmComponent(ctx, component)
+    case ComponentTypeManifest:
+        return i.installManifestComponent(ctx, component)
+    case ComponentTypeBinary:
+        // Binary components are installed on nodes, not as Jobs
+        return i.installBinaryComponent(ctx, component)
+    }
+}
+
+func (i *Installer) installManifestComponent(ctx context.Context, component Component) error {
+    // Check if job already exists
+    job := &batchv1.Job{}
+    err := i.client.Get(ctx, types.NamespacedName{
+        Name:      fmt.Sprintf("install-%s", component.Name),
+        Namespace: i.namespace,
+    }, job)
+    if err == nil {
+        if job.Labels[LabelVersion] == component.Version {
+            return nil
+        }
+        if err := i.client.Delete(ctx, job); err != nil {
+            return fmt.Errorf("failed to delete old job: %w", err)
+        }
+    }
+    
+    // Create new job
+    newJob := i.buildManifestJob(component)
+    return i.client.Create(ctx, newJob)
+}
+```
+
+#### 6.21.6 完整安装流程
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ 1. 创建 RBAC (Helm + Manifest ServiceAccounts)              │
+└─────────────────┬───────────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 2. 创建 ConfigMap: capbm-component-status                   │
+└─────────────────┬───────────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 3. 为所有组件创建 Job                                        │
+│    ├── Job: install-gateway-api (Manifest)                  │
+│    ├── Job: install-envoy-gateway (Manifest)                │
+│    ├── Job: install-metallb (Manifest)                      │
+│    ├── Job: install-calico (Helm)                           │
+│    └── Job: install-ceph-csi (Helm)                         │
+└─────────────────┬───────────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 4. Job 自动调度到可用节点                                    │
+│    ├── 下载 chart/manifest (从 ReleaseImage)                │
+│    ├── 加载容器镜像 (离线模式)                               │
+│    ├── 执行 helm install / kubectl apply                    │
+│    └── 更新 ConfigMap 状态                                  │
+└─────────────────┬───────────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 5. Controller 监控 Job 状态                                 │
+│    ├── Success: 标记组件 installed                          │
+│    ├── Failed: 重试或告警                                   │
+│    └── Running: 等待完成                                    │
+└─────────────────────────────────────────────────────────────┘
+```
+
+#### 6.21.7 关键设计决策
+
+| 决策点 | 选项 | 推荐 | 理由 |
+|--------|------|------|------|
+| **Job 镜像** | bitnami/kubectl vs alpine+kubectl | bitnami/kubectl | 预构建，体积小 |
+| **RBAC** | 与 Helm 共用 SA vs 独立 SA | 独立 SA | 最小权限原则 |
+| **状态 ConfigMap** | 与 Helm 共用 vs 独立 | 共用 | 统一视图，简化查询 |
+| **Job Labels** | 与 Helm 相同 | 相同 | 一致查询 |
+| **升级方式** | kubectl apply vs 新 Job | 新 Job | 可追踪，可回滚 |
+
 ## 八、SSH 连接管理 (保持不变)
 
 ### 7.1 SSH Manager 设计

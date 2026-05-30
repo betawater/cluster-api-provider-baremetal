@@ -911,3 +911,64 @@ kubectl get jobs -n kube-system -l capbm.capbm.io/component=calico
 | Pod OOMKilled | Job 自动重试 (backoffLimit: 3) |
 | 网络超时 | Job 自动重试 |
 | 所有节点不可用 | Job 保持 Pending，等待节点恢复 |
+
+## 14. Manifest 组件安装
+
+### 14.1 概述
+
+CAPBM 使用 Kubernetes Job 运行 kubectl 来安装 Manifest 组件（Gateway API、Envoy Gateway、MetalLB 等），与 Helm 组件保持一致的故障处理和状态追踪机制。
+
+**优势**:
+- **节点故障无影响**: Job 自动调度到其他节点
+- **自动重试**: `backoffLimit: 3` 自动恢复
+- **状态可追踪**: ConfigMap + Job Labels 双重追踪
+- **离线支持**: Manifest 和镜像都从 ReleaseImage 获取
+
+### 14.2 安装流程
+
+```bash
+# 1. 部署 Manifest RBAC
+kubectl apply -f config/rbac/manifest_rbac.yaml
+
+# 2. 创建状态 ConfigMap (与 Helm 共用)
+kubectl create configmap capbm-component-status -n kube-system
+
+# 3. 创建 Manifest Job (由 Controller 自动创建)
+# Job 自动调度到可用节点
+# 从 ReleaseImage 下载 manifest
+# 加载容器镜像 (离线模式)
+# 执行 kubectl apply
+# 更新 ConfigMap 状态
+```
+
+### 14.3 查看安装状态
+
+```bash
+# 查看所有组件状态 (Helm + Manifest)
+kubectl get configmap capbm-component-status -n kube-system -o yaml
+
+# 查看 Manifest Job 状态
+kubectl get jobs -n kube-system -l capbm.capbm.io/type=manifest-install
+
+# 查看 Job 日志
+kubectl logs -n kube-system job/install-gateway-api
+```
+
+### 14.4 升级组件
+
+```bash
+# 升级 Gateway API (创建新的 Job)
+kubectl apply -f upgrade-gateway-api-job.yaml
+
+# 查看升级状态
+kubectl get jobs -n kube-system -l capbm.capbm.io/component=gateway-api
+```
+
+### 14.5 故障恢复
+
+| 故障场景 | 处理方式 |
+|---------|---------|
+| Pod 所在节点宕机 | Job 自动在其他节点重新创建 Pod |
+| Pod OOMKilled | Job 自动重试 (backoffLimit: 3) |
+| 网络超时 | Job 自动重试 |
+| 所有节点不可用 | Job 保持 Pending，等待节点恢复 |
