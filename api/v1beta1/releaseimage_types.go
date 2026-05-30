@@ -98,6 +98,7 @@ type CNIComponent struct {
 	InstallModes []string    `json:"installModes,omitempty"`
 	Files        CNIFiles    `json:"files,omitempty"`
 	Images       string      `json:"images,omitempty"`
+	ImageList    []string    `json:"imageList,omitempty"`
 	HelmValues   map[string]string `json:"helmValues,omitempty"`
 }
 
@@ -114,6 +115,8 @@ type CSIComponent struct {
 	Path         string      `json:"path"`
 	InstallModes []string    `json:"installModes,omitempty"`
 	Files        CSIFiles    `json:"files,omitempty"`
+	Images       string      `json:"images,omitempty"`
+	ImageList    []string    `json:"imageList,omitempty"`
 	HelmValues   map[string]string `json:"helmValues,omitempty"`
 }
 
@@ -125,12 +128,21 @@ type CSIFiles struct {
 
 // ManifestComponent defines a manifest-based component.
 type ManifestComponent struct {
-	Version  string      `json:"version"`
-	Type     ComponentType `json:"type"`
-	Path     string      `json:"path"`
-	Manifest string      `json:"manifest"`
-	CRDs     string      `json:"crds,omitempty"`
-	Images   string      `json:"images,omitempty"`
+	Version   string      `json:"version"`
+	Type      ComponentType `json:"type"`
+	Path      string      `json:"path"`
+	Manifest  string      `json:"manifest"`
+	CRDs      string      `json:"crds,omitempty"`
+	Images    string      `json:"images,omitempty"`
+	ImageList []string    `json:"imageList,omitempty"`
+}
+
+// ImageMetadata defines container image metadata.
+type ImageMetadata struct {
+	// Path is the directory path in the release image.
+	Path string `json:"path"`
+	// Images is the list of image tar files.
+	Images []string `json:"images"`
 }
 
 type UpgradePhase struct {

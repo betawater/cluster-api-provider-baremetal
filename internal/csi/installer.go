@@ -211,11 +211,15 @@ load_csi_images() {
             echo "在线模式：镜像从 registry 拉取"
             ;;
         http|local)
-            local images_archive=$(mktemp)
-            fetch_resource "images/ceph-csi-v${CSI_VERSION}.tar" "$images_archive"
-            ctr -n k8s.io images import "$images_archive"
-            rm -f "$images_archive"
-            echo "CSI 镜像加载完成"
+            echo "=== 加载 Ceph-CSI 镜像 ==="
+            for image in cephcsi.tar csi-attacher.tar csi-provisioner.tar csi-snapshotter.tar csi-resizer.tar csi-node-driver-registrar.tar; do
+                echo "下载: $image"
+                fetch_resource "images/ceph-csi/v${CSI_VERSION}/$image" "/tmp/$image"
+                echo "导入: $image"
+                ctr -n k8s.io images import "/tmp/$image"
+                rm -f "/tmp/$image"
+            done
+            echo "=== Ceph-CSI 镜像加载完成 ==="
             ;;
     esac
 }

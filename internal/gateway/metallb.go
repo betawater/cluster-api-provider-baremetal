@@ -100,6 +100,19 @@ case "$INSTALL_SOURCE" in
         ;;
 esac
 
+# Load MetalLB images (offline mode)
+if [ "$INSTALL_SOURCE" != "online" ]; then
+    echo "=== Loading MetalLB images ==="
+    for image in metallb-controller.tar metallb-speaker.tar; do
+        echo "下载: $image"
+        fetch_resource "images/metallb/v${METALLB_VERSION}/$image" "/tmp/$image"
+        echo "导入: $image"
+        ctr -n k8s.io images import "/tmp/$image"
+        rm -f "/tmp/$image"
+    done
+    echo "=== MetalLB images loaded ==="
+fi
+
 # Install MetalLB Controller and Speaker
 local controller_manifest=$(mktemp)
 case "$INSTALL_SOURCE" in

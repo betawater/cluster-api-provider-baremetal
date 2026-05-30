@@ -7068,6 +7068,46 @@ CMD ["nginx", "-g", "daemon off;"]
 
 ```
 /release/
+├── images/                           # 容器镜像 (按组件分类)
+│   ├── kubernetes/
+│   │   └── v1.31.0/
+│   │       ├── kube-apiserver.tar
+│   │       ├── kube-controller-manager.tar
+│   │       ├── kube-scheduler.tar
+│   │       ├── kube-proxy.tar
+│   │       ├── coredns.tar
+│   │       ├── etcd.tar
+│   │       └── pause.tar
+│   │
+│   ├── calico/
+│   │   └── v3.27.0/
+│   │       ├── calico-node.tar
+│   │       ├── calico-kube-controllers.tar
+│   │       └── calico-cni.tar
+│   │
+│   ├── cilium/
+│   │   └── v1.15.0/
+│   │       ├── cilium.tar
+│   │       ├── cilium-operator.tar
+│   │       └── hubble-relay.tar
+│   │
+│   ├── ceph-csi/
+│   │   └── v3.9.0/
+│   │       ├── cephcsi.tar
+│   │       ├── csi-attacher.tar
+│   │       ├── csi-provisioner.tar
+│   │       └── csi-node-driver-registrar.tar
+│   │
+│   ├── envoy-gateway/
+│   │   └── v1.1.0/
+│   │       ├── envoy-gateway.tar
+│   │       └── envoy-proxy.tar
+│   │
+│   └── metallb/
+│       └── v0.14.0/
+│           ├── metallb-controller.tar
+│           └── metallb-speaker.tar
+│
 ├── runtime/                          # 容器运行时 (通用 Linux 二进制)
 │   └── containerd/
 │       └── v1.7.0/
@@ -7228,7 +7268,12 @@ CMD ["nginx", "-g", "daemon off;"]
         "manifest": "calico.yaml",
         "chart": "calico.tgz"
       },
-      "images": "images/calico-v3.27.0.tar"
+      "images": "images/calico/v3.27.0",
+      "imageList": [
+        "calico-node.tar",
+        "calico-kube-controllers.tar",
+        "calico-cni.tar"
+      ]
     },
     "cilium": {
       "version": "v1.15.0",
@@ -7238,11 +7283,65 @@ CMD ["nginx", "-g", "daemon off;"]
       "files": {
         "chart": "cilium.tgz"
       },
-      "images": "images/cilium-v1.15.0.tar",
+      "images": "images/cilium/v1.15.0",
+      "imageList": [
+        "cilium.tar",
+        "cilium-operator.tar",
+        "hubble-relay.tar"
+      ],
       "helmValues": {
         "ipam.mode": "kubernetes",
         "kubeProxyReplacement": "partial"
       }
+    }
+  },
+  "images": {
+    "kubernetes": {
+      "version": "v1.31.0",
+      "path": "images/kubernetes/v1.31.0",
+      "images": [
+        "kube-apiserver.tar",
+        "kube-controller-manager.tar",
+        "kube-scheduler.tar",
+        "kube-proxy.tar",
+        "coredns.tar",
+        "etcd.tar",
+        "pause.tar"
+      ]
+    },
+    "calico": {
+      "version": "v3.27.0",
+      "path": "images/calico/v3.27.0",
+      "images": [
+        "calico-node.tar",
+        "calico-kube-controllers.tar",
+        "calico-cni.tar"
+      ]
+    },
+    "cilium": {
+      "version": "v1.15.0",
+      "path": "images/cilium/v1.15.0",
+      "images": [
+        "cilium.tar",
+        "cilium-operator.tar",
+        "hubble-relay.tar"
+      ]
+    },
+    "envoy-gateway": {
+      "version": "v1.1.0",
+      "path": "images/envoy-gateway/v1.1.0",
+      "images": [
+        "envoy-gateway.tar",
+        "envoy-proxy.tar"
+      ]
+    },
+    "metallb": {
+      "version": "v0.14.0",
+      "path": "images/metallb/v0.14.0",
+      "images": [
+        "metallb-controller.tar",
+        "metallb-speaker.tar"
+      ]
     }
   }
 }

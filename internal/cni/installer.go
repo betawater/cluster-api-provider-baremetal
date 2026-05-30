@@ -215,6 +215,19 @@ install_cni_plugins() {
 }
 
 install_calico() {
+    # 加载 Calico 镜像 (离线模式)
+    if [ "$INSTALL_SOURCE" != "online" ]; then
+        echo "=== 加载 Calico 镜像 ==="
+        for image in calico-node.tar calico-kube-controllers.tar calico-cni.tar; do
+            echo "下载: $image"
+            fetch_resource "images/calico/v${CNI_VERSION}/$image" "/tmp/$image"
+            echo "导入: $image"
+            ctr -n k8s.io images import "/tmp/$image"
+            rm -f "/tmp/$image"
+        done
+        echo "=== Calico 镜像加载完成 ==="
+    fi
+
     local manifest=$(mktemp)
     case "$INSTALL_SOURCE" in
         online)
@@ -232,6 +245,19 @@ install_calico() {
 }
 
 install_cilium_helm() {
+    # 加载 Cilium 镜像 (离线模式)
+    if [ "$INSTALL_SOURCE" != "online" ]; then
+        echo "=== 加载 Cilium 镜像 ==="
+        for image in cilium.tar cilium-operator.tar hubble-relay.tar; do
+            echo "下载: $image"
+            fetch_resource "images/cilium/v${CNI_VERSION}/$image" "/tmp/$image"
+            echo "导入: $image"
+            ctr -n k8s.io images import "/tmp/$image"
+            rm -f "/tmp/$image"
+        done
+        echo "=== Cilium 镜像加载完成 ==="
+    fi
+
     case "$INSTALL_SOURCE" in
         online)
             helm repo add cilium https://helm.cilium.io/ || true
@@ -256,6 +282,19 @@ install_cilium_helm() {
 }
 
 install_flannel() {
+    # 加载 Flannel 镜像 (离线模式)
+    if [ "$INSTALL_SOURCE" != "online" ]; then
+        echo "=== 加载 Flannel 镜像 ==="
+        for image in flannel.tar; do
+            echo "下载: $image"
+            fetch_resource "images/flannel/v${CNI_VERSION}/$image" "/tmp/$image"
+            echo "导入: $image"
+            ctr -n k8s.io images import "/tmp/$image"
+            rm -f "/tmp/$image"
+        done
+        echo "=== Flannel 镜像加载完成 ==="
+    fi
+
     local manifest=$(mktemp)
     case "$INSTALL_SOURCE" in
         online)

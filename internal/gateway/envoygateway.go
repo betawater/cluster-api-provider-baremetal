@@ -79,6 +79,19 @@ case "$INSTALL_SOURCE" in
         ;;
 esac
 
+# Load Envoy Gateway images (offline mode)
+if [ "$INSTALL_SOURCE" != "online" ]; then
+    echo "=== Loading Envoy Gateway images ==="
+    for image in envoy-gateway.tar envoy-proxy.tar; do
+        echo "下载: $image"
+        fetch_resource "images/envoy-gateway/v${ENVOY_GATEWAY_VERSION}/$image" "/tmp/$image"
+        echo "导入: $image"
+        ctr -n k8s.io images import "/tmp/$image"
+        rm -f "/tmp/$image"
+    done
+    echo "=== Envoy Gateway images loaded ==="
+fi
+
 # Install Envoy Gateway Controller
 local controller_manifest=$(mktemp)
 case "$INSTALL_SOURCE" in
