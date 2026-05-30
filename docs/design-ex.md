@@ -3594,6 +3594,9953 @@ SSH 连接成功
 ---
 
 
+### 6.15 API Server 负载均衡注册
+
+#### 6.15.1 问题背景
+
+裸金属集群的控制面节点通常部署为高可用架构（3 或 5 个 control-plane 节点），需要外部负载均衡器将流量分发到所有 API Server 实例。
+
+仅设置 `controlPlaneEndpoint` 是不够的，还需要：
+1. **注册**: 当 control-plane 节点加入集群时，将其 API Server 地址注册到负载均衡器后端
+2. **健康检查**: 定期检查 API Server 健康状态，自动剔除不健康节点
+3. **注销**: 当 control-plane 节点被删除或缩容时，从负载均衡器移除后端
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                    负载均衡架构                               │
+│                                                              │
+│  kubectl / 客户端                                            │
+│       │                                                      │
+│       ▼                                                      │
+│  ┌─────────────────┐                                         │
+│  │  Load Balancer   │  ←  CAPBM 负责注册/注销后端             │
+│  │  VIP: 10.0.0.100 │                                         │
+│  │  Port: 6443      │                                         │
+│  └────┬────┬────┬───┘                                         │
+│       │    │    │                                             │
+│       ▼    ▼    ▼                                             │
+│  ┌──────┐┌──────┐┌──────┐                                    │
+│  │CP-01 ││CP-02 ││CP-03 │                                    │
+│  │:6443 ││:6443 ││:6443 │                                    │
+│  └──────┘└──────┘└──────┘                                    │
+└──────────────────────────────────────────────────────────────┘
+```
+
+#### 6.15.2 支持的负载均衡器类型
+
+| 类型 | 注册方式 | 适用场景 | 健康检查 |
+|------|---------|---------|---------|
+| **HAProxy** | 配置文件 + reload / Runtime API | 中小型集群，软件 LB | HTTP GET /healthz |
+| **Keepalived + HAProxy** | Keepalived VIP + HAProxy 后端 | 无外部 LB 的裸金属 | TCP check + HTTP |
+| **F5 BIG-IP** | iControl REST API | 企业级硬件 LB | HTTP monitor |
+| **Nginx** | 配置文件 + reload / Stream module | 轻量级场景 | TCP check |
+| **云厂商 LB** | Cloud Provider API (AWS/Aliyun/华为云) | 混合云场景 | 云厂商内置 |
+| **MetalLB** | BGP / L2 宣告 | 裸金属 Service LB | 内置 |
+
+CAPBM 采用**插件化设计**，通过 `lbProvider` 变量选择负载均衡器类型。
+
+#### 6.15.3 CRD 设计扩展
+
+在 `BareMetalClusterSpec` 中新增负载均衡器配置：
+
+```yaml
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: BareMetalCluster
+spec:
+  controlPlaneEndpoint:
+    host: "lb.example.com"
+    port: 6443
+  
+  loadBalancer:
+    # 负载均衡器类型
+    provider: "haproxy"        # haproxy | keepalived | f5 | nginx | metal-lb
+    
+    # 通用配置
+    healthCheck:
+      enabled: true
+      path: "/healthz"
+      interval: "5s"
+      timeout: "3s"
+      healthyThreshold: 2
+      unhealthyThreshold: 3
+    
+    # HAProxy 特定配置
+    haproxy:
+      # HAProxy 管理节点地址（Runtime API）
+      adminHost: "10.0.0.50"
+      adminPort: 9999
+      # 或 SSH 方式管理
+      sshHost: "10.0.0.50"
+      sshPort: 22
+      sshCredentialsRef:
+        name: "haproxy-credentials"
+      # 配置文件路径
+      configFile: "/etc/haproxy/haproxy.cfg"
+      backendName: "k8s-apiserver"
+      # reload 命令
+      reloadCommand: "systemctl reload haproxy"
+    
+    # Keepalived 特定配置
+    keepalived:
+      virtualIP: "10.0.0.100"
+      interface: "eth0"
+      virtualRouterID: 51
+      priority: 100
+      advertInterval: 1
+    
+    # F5 特定配置
+    f5:
+      host: "f5.example.com"
+      port: 443
+      credentialsRef:
+        name: "f5-credentials"
+      partition: "Common"
+      poolName: "k8s-apiserver-pool"
+      virtualServerName: "k8s-apiserver-vs"
+    
+    # MetalLB 特定配置
+    metal-lb:
+      ipAddressPool: "apiserver-pool"
+      loadBalancerIP: "10.0.0.100"
+```
+
+**Go 类型定义**:
+
+```go
+type LoadBalancerConfig struct {
+	// Provider is the load balancer type.
+	// +optional
+	// +kubebuilder:default=haproxy
+	Provider string `json:"provider,omitempty"`
+	
+	// HealthCheck defines health check configuration.
+	// +optional
+	HealthCheck HealthCheckConfig `json:"healthCheck,omitempty"`
+	
+	// HAProxy holds HAProxy specific configuration.
+	// +optional
+	HAProxy *HAProxyConfig `json:"haproxy,omitempty"`
+	
+	// Keepalived holds Keepalived specific configuration.
+	// +optional
+	Keepalived *KeepalivedConfig `json:"keepalived,omitempty"`
+	
+	// F5 holds F5 BIG-IP specific configuration.
+	// +optional
+	F5 *F5Config `json:"f5,omitempty"`
+	
+	// MetalLB holds MetalLB specific configuration.
+	// +optional
+	MetalLB *MetalLBConfig `json:"metal-lb,omitempty"`
+}
+
+type HealthCheckConfig struct {
+	// Enabled enables health checking.
+	// +optional
+	// +kubebuilder:default=true
+	Enabled bool `json:"enabled,omitempty"`
+	
+	// Path is the health check endpoint.
+	// +optional
+	// +kubebuilder:default=/healthz
+	Path string `json:"path,omitempty"`
+	
+	// Interval is the check interval.
+	// +optional
+	// +kubebuilder:default="5s"
+	Interval string `json:"interval,omitempty"`
+	
+	// Timeout is the check timeout.
+	// +optional
+	// +kubebuilder:default="3s"
+	Timeout string `json:"timeout,omitempty"`
+	
+	// HealthyThreshold is the number of successful checks to mark as healthy.
+	// +optional
+	// +kubebuilder:default=2
+	HealthyThreshold int `json:"healthyThreshold,omitempty"`
+	
+	// UnhealthyThreshold is the number of failed checks to mark as unhealthy.
+	// +optional
+	// +kubebuilder:default=3
+	UnhealthyThreshold int `json:"unhealthyThreshold,omitempty"`
+}
+
+type HAProxyConfig struct {
+	// AdminHost is the HAProxy Runtime API host.
+	// +optional
+	AdminHost string `json:"adminHost,omitempty"`
+	
+	// AdminPort is the HAProxy Runtime API port.
+	// +optional
+	// +kubebuilder:default=9999
+	AdminPort int `json:"adminPort,omitempty"`
+	
+	// SSHHost is the HAProxy server SSH host (alternative to Runtime API).
+	// +optional
+	SSHHost string `json:"sshHost,omitempty"`
+	
+	// SSHPort is the HAProxy server SSH port.
+	// +optional
+	// +kubebuilder:default=22
+	SSHPort int `json:"sshPort,omitempty"`
+	
+	// SSHCredentialsRef references the SSH credentials secret.
+	// +optional
+	SSHCredentialsRef *corev1.LocalObjectReference `json:"sshCredentialsRef,omitempty"`
+	
+	// ConfigFile is the HAProxy configuration file path.
+	// +optional
+	// +kubebuilder:default=/etc/haproxy/haproxy.cfg
+	ConfigFile string `json:"configFile,omitempty"`
+	
+	// BackendName is the backend name in HAProxy config.
+	// +optional
+	// +kubebuilder:default=k8s-apiserver
+	BackendName string `json:"backendName,omitempty"`
+	
+	// ReloadCommand is the command to reload HAProxy.
+	// +optional
+	// +kubebuilder:default="systemctl reload haproxy"
+	ReloadCommand string `json:"reloadCommand,omitempty"`
+}
+
+type KeepalivedConfig struct {
+	// VirtualIP is the virtual IP address.
+	// +optional
+	VirtualIP string `json:"virtualIP,omitempty"`
+	
+	// Interface is the network interface.
+	// +optional
+	// +kubebuilder:default=eth0
+	Interface string `json:"interface,omitempty"`
+	
+	// VirtualRouterID is the VRRP router ID.
+	// +optional
+	// +kubebuilder:default=51
+	VirtualRouterID int `json:"virtualRouterID,omitempty"`
+	
+	// Priority is the VRRP priority.
+	// +optional
+	// +kubebuilder:default=100
+	Priority int `json:"priority,omitempty"`
+	
+	// AdvertInterval is the advertisement interval in seconds.
+	// +optional
+	// +kubebuilder:default=1
+	AdvertInterval int `json:"advertInterval,omitempty"`
+}
+
+type F5Config struct {
+	// Host is the F5 BIG-IP management host.
+	// +optional
+	Host string `json:"host,omitempty"`
+	
+	// Port is the F5 BIG-IP management port.
+	// +optional
+	// +kubebuilder:default=443
+	Port int `json:"port,omitempty"`
+	
+	// CredentialsRef references the F5 credentials secret.
+	// +optional
+	CredentialsRef *corev1.LocalObjectReference `json:"credentialsRef,omitempty"`
+	
+	// Partition is the F5 partition.
+	// +optional
+	// +kubebuilder:default=Common
+	Partition string `json:"partition,omitempty"`
+	
+	// PoolName is the F5 pool name.
+	// +optional
+	PoolName string `json:"poolName,omitempty"`
+	
+	// VirtualServerName is the F5 virtual server name.
+	// +optional
+	VirtualServerName string `json:"virtualServerName,omitempty"`
+}
+
+type MetalLBConfig struct {
+	// IPAddressPool is the MetalLB IP address pool name.
+	// +optional
+	IPAddressPool string `json:"ipAddressPool,omitempty"`
+	
+	// LoadBalancerIP is the specific IP to assign.
+	// +optional
+	LoadBalancerIP string `json:"loadBalancerIP,omitempty"`
+}
+```
+
+更新 `BareMetalClusterSpec`:
+
+```go
+type BareMetalClusterSpec struct {
+	ControlPlaneEndpoint clusterv1.APIEndpoint `json:"controlPlaneEndpoint,omitempty"`
+	Network              NetworkConfig         `json:"network,omitempty"`
+	LoadBalancer         *LoadBalancerConfig   `json:"loadBalancer,omitempty"`
+}
+```
+
+#### 6.15.4 注册流程
+
+##### 6.15.4.1 注册时机
+
+| 事件 | 操作 | 说明 |
+|------|------|------|
+| 首个 control-plane 初始化 | 创建后端池 + 注册首个节点 | 初始化 HAProxy/F5 配置 |
+| 新 control-plane 加入 | 注册新节点到后端池 | kubeadm join 完成后执行 |
+| control-plane 缩容/删除 | 注销节点从后端池 | 先注销，再删除节点 |
+| 节点健康检查失败 | 临时标记为 unhealthy | 不立即移除，等待恢复 |
+
+##### 6.15.4.2 HAProxy 注册流程 (Runtime API 方式)
+
+```
+control-plane 节点 API Server 启动完成
+    │
+    ▼
+┌─────────────────────────────────────────────────────────┐
+│ 1. 等待 API Server 健康                                  │
+│    ├── curl -sk https://<node-ip>:6443/healthz          │
+│    └── 等待返回 "ok"                                    │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 2. 注册到 HAProxy 后端池                                │
+│    ├── echo "add server <backend>/<server> <ip>:6443    │
+│    │     check inter 5s fall 3 rise 2" |                │
+│    │     socat stdio haproxy-admin:9999                 │
+│    └── 或使用 SSH 执行                                  │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 3. 验证注册结果                                          │
+│    ├── echo "show servers state <backend>" |             │
+│    │     socat stdio haproxy-admin:9999                 │
+│    └── 确认节点状态为 UP                                  │
+└─────────────────────────────────────────────────────────┘
+```
+
+##### 6.15.4.3 HAProxy 注册脚本 (Runtime API)
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+HAPROXY_ADMIN_HOST="${HAPROXY_ADMIN_HOST:-10.0.0.50}"
+HAPROXY_ADMIN_PORT="${HAPROXY_ADMIN_PORT:-9999}"
+BACKEND_NAME="${BACKEND_NAME:-k8s-apiserver}"
+SERVER_NAME="${SERVER_NAME}"
+SERVER_IP="${SERVER_IP}"
+SERVER_PORT="${SERVER_PORT:-6443}"
+
+echo "=== 注册 API Server 到 HAProxy ==="
+
+# 1. 等待 API Server 健康
+wait_for_apiserver() {
+    local max_retries=30
+    local retry=0
+    while [ $retry -lt $max_retries ]; do
+        if curl -sk --connect-timeout 2 "https://${SERVER_IP}:${SERVER_PORT}/healthz" 2>/dev/null | grep -q "ok"; then
+            echo "API Server 健康检查通过"
+            return 0
+        fi
+        retry=$((retry + 1))
+        echo "等待 API Server 启动... ($retry/$max_retries)"
+        sleep 5
+    done
+    echo "ERROR: API Server 未能在超时时间内启动"
+    return 1
+}
+
+# 2. 注册到 HAProxy
+register_to_haproxy() {
+    local cmd="add server ${BACKEND_NAME}/${SERVER_NAME} ${SERVER_IP}:${SERVER_PORT} check inter 5s fall 3 rise 2"
+    echo "$cmd" | socat stdio tcp:${HAPROXY_ADMIN_HOST}:${HAPROXY_ADMIN_PORT}
+    echo "已发送注册命令: $cmd"
+}
+
+# 3. 验证注册结果
+verify_registration() {
+    local max_retries=12
+    local retry=0
+    while [ $retry -lt $max_retries ]; do
+        local status
+        status=$(echo "show servers state ${BACKEND_NAME}" | socat stdio tcp:${HAPROXY_ADMIN_HOST}:${HAPROXY_ADMIN_PORT} 2>/dev/null | grep "${SERVER_NAME}" || true)
+        if echo "$status" | grep -q "UP"; then
+            echo "节点 ${SERVER_NAME} 已注册并健康 (UP)"
+            return 0
+        fi
+        retry=$((retry + 1))
+        echo "等待节点健康... ($retry/$max_retries)"
+        sleep 5
+    done
+    echo "WARNING: 节点 ${SERVER_NAME} 注册成功但尚未 UP"
+    return 0
+}
+
+# 4. 注销函数 (用于缩容)
+unregister_from_haproxy() {
+    local cmd="del server ${BACKEND_NAME}/${SERVER_NAME}"
+    echo "$cmd" | socat stdio tcp:${HAPROXY_ADMIN_HOST}:${HAPROXY_ADMIN_PORT}
+    echo "已发送注销命令: $cmd"
+}
+
+case "${ACTION:-register}" in
+    register)
+        wait_for_apiserver
+        register_to_haproxy
+        verify_registration
+        ;;
+    unregister)
+        unregister_from_haproxy
+        ;;
+    *)
+        echo "ERROR: 不支持的操作: ${ACTION}"
+        exit 1
+        ;;
+esac
+
+echo "=== HAProxy 操作完成 ==="
+```
+
+##### 6.15.4.4 HAProxy 注册脚本 (SSH + 配置文件方式)
+
+适用于不支持 Runtime API 的 HAProxy 版本：
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+HAPROXY_SSH_HOST="${HAPROXY_SSH_HOST:-10.0.0.50}"
+HAPROXY_SSH_PORT="${HAPROXY_SSH_PORT:-22}"
+CONFIG_FILE="${CONFIG_FILE:-/etc/haproxy/haproxy.cfg}"
+BACKEND_NAME="${BACKEND_NAME:-k8s-apiserver}"
+SERVER_NAME="${SERVER_NAME}"
+SERVER_IP="${SERVER_IP}"
+SERVER_PORT="${SERVER_PORT:-6443}"
+RELOAD_CMD="${RELOAD_CMD:-systemctl reload haproxy}"
+
+echo "=== 注册 API Server 到 HAProxy (SSH 方式) ==="
+
+# 1. 等待 API Server 健康
+wait_for_apiserver() {
+    local max_retries=30
+    local retry=0
+    while [ $retry -lt $max_retries ]; do
+        if curl -sk --connect-timeout 2 "https://${SERVER_IP}:${SERVER_PORT}/healthz" 2>/dev/null | grep -q "ok"; then
+            echo "API Server 健康检查通过"
+            return 0
+        fi
+        retry=$((retry + 1))
+        sleep 5
+    done
+    echo "ERROR: API Server 未能在超时时间内启动"
+    return 1
+}
+
+# 2. 通过 SSH 修改 HAProxy 配置
+register_to_haproxy() {
+    ssh -p "$HAPROXY_SSH_PORT" root@"$HAPROXY_SSH_HOST" << EOF
+        # 检查是否已存在
+        if grep -q "server ${SERVER_NAME} ${SERVER_IP}:${SERVER_PORT}" "$CONFIG_FILE"; then
+            echo "节点 ${SERVER_NAME} 已存在于配置中"
+        else
+            # 在 backend 段末尾添加 server
+            sed -i "/^backend ${BACKEND_NAME}/,/^$/ {
+                /^$/ i\\    server ${SERVER_NAME} ${SERVER_IP}:${SERVER_PORT} check inter 5s fall 3 rise 2
+            }" "$CONFIG_FILE"
+            echo "已添加节点 ${SERVER_NAME} 到配置"
+        fi
+        
+        # 验证配置
+        haproxy -c -f "$CONFIG_FILE"
+        
+        # 重新加载
+        $RELOAD_CMD
+EOF
+}
+
+# 3. 注销
+unregister_from_haproxy() {
+    ssh -p "$HAPROXY_SSH_PORT" root@"$HAPROXY_SSH_HOST" << EOF
+        sed -i "/server ${SERVER_NAME} ${SERVER_IP}:${SERVER_PORT}/d" "$CONFIG_FILE"
+        haproxy -c -f "$CONFIG_FILE"
+        $RELOAD_CMD
+        echo "已注销节点 ${SERVER_NAME}"
+EOF
+}
+
+case "${ACTION:-register}" in
+    register)
+        wait_for_apiserver
+        register_to_haproxy
+        ;;
+    unregister)
+        unregister_from_haproxy
+        ;;
+esac
+
+echo "=== HAProxy 操作完成 ==="
+```
+
+##### 6.15.4.5 F5 BIG-IP 注册流程
+
+```
+control-plane 节点 API Server 启动完成
+    │
+    ▼
+┌─────────────────────────────────────────────────────────┐
+│ 1. 等待 API Server 健康                                  │
+│    └── curl -sk https://<node-ip>:6443/healthz          │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 2. 调用 F5 iControl REST API 注册节点                    │
+│    ├── POST /mgmt/tm/ltm/pool/~Common~<pool>/members    │
+│    │   {"address": "<ip>", "port": 6443}                │
+│    └── 认证: Basic Auth (admin/password)                │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 3. 验证注册结果                                          │
+│    ├── GET /mgmt/tm/ltm/pool/~Common~<pool>/members     │
+│    └── 确认节点状态为 available                          │
+└─────────────────────────────────────────────────────────┘
+```
+
+##### 6.15.4.6 F5 注册脚本
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+F5_HOST="${F5_HOST:-f5.example.com}"
+F5_PORT="${F5_PORT:-443}"
+F5_USER="${F5_USER:-admin}"
+F5_PASSWORD="${F5_PASSWORD}"
+PARTITION="${PARTITION:-Common}"
+POOL_NAME="${POOL_NAME:-k8s-apiserver-pool}"
+SERVER_IP="${SERVER_IP}"
+SERVER_PORT="${SERVER_PORT:-6443}"
+
+echo "=== 注册 API Server 到 F5 ==="
+
+F5_URL="https://${F5_HOST}:${F5_PORT}/mgmt/tm"
+
+# 1. 等待 API Server 健康
+wait_for_apiserver() {
+    local max_retries=30
+    local retry=0
+    while [ $retry -lt $max_retries ]; do
+        if curl -sk --connect-timeout 2 "https://${SERVER_IP}:${SERVER_PORT}/healthz" 2>/dev/null | grep -q "ok"; then
+            echo "API Server 健康检查通过"
+            return 0
+        fi
+        retry=$((retry + 1))
+        sleep 5
+    done
+    return 1
+}
+
+# 2. 注册到 F5 Pool
+register_to_f5() {
+    local response
+    response=$(curl -sk -X POST \
+        -u "${F5_USER}:${F5_PASSWORD}" \
+        -H "Content-Type: application/json" \
+        -d "{\"address\":\"${SERVER_IP}\",\"port\":${SERVER_PORT},\"name\":\"${SERVER_IP}:${SERVER_PORT}\"}" \
+        "${F5_URL}/ltm/pool/~${PARTITION}~${POOL_NAME}/members")
+    
+    if echo "$response" | grep -q "kind.*ltm:pool:member"; then
+        echo "节点 ${SERVER_IP}:${SERVER_PORT} 已注册到 F5 Pool"
+    else
+        echo "WARNING: F5 注册响应: $response"
+    fi
+}
+
+# 3. 注销
+unregister_from_f5() {
+    local encoded_member
+    encoded_member=$(echo "${SERVER_IP}:${SERVER_PORT}" | sed 's/:/%3A/g')
+    
+    curl -sk -X DELETE \
+        -u "${F5_USER}:${F5_PASSWORD}" \
+        "${F5_URL}/ltm/pool/~${PARTITION}~${POOL_NAME}/members/~${PARTITION}~${encoded_member}"
+    
+    echo "节点 ${SERVER_IP}:${SERVER_PORT} 已从 F5 Pool 注销"
+}
+
+case "${ACTION:-register}" in
+    register)
+        wait_for_apiserver
+        register_to_f5
+        ;;
+    unregister)
+        unregister_from_f5
+        ;;
+esac
+
+echo "=== F5 操作完成 ==="
+```
+
+#### 6.15.5 Controller 集成
+
+在 `BareMetalCluster Controller` 中集成负载均衡器注册逻辑：
+
+```go
+func (r *BareMetalClusterReconciler) reconcileNormal(ctx context.Context, cluster *infrav1.BareMetalCluster) (ctrl.Result, error) {
+    log := ctrl.LoggerFrom(ctx)
+
+    // 1. 验证配置
+    if cluster.Spec.ControlPlaneEndpoint.Host == "" {
+        conditions.MarkFalse(cluster, infrav1.ReadyCondition, infrav1.EndpointNotSetReason, clusterv1.ConditionSeverityError, "controlPlaneEndpoint is required")
+        return ctrl.Result{}, nil
+    }
+
+    // 2. 获取所有 control-plane 节点
+    cpMachines, err := r.getControlPlaneMachines(ctx, cluster)
+    if err != nil {
+        return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+    }
+
+    // 3. 同步负载均衡器后端
+    if cluster.Spec.LoadBalancer != nil {
+        if err := r.syncLoadBalancerBackends(ctx, cluster, cpMachines); err != nil {
+            log.Error(err, "Failed to sync load balancer backends")
+            conditions.MarkFalse(cluster, infrav1.LoadBalancerReadyCondition, infrav1.LBSyncFailedReason, clusterv1.ConditionSeverityWarning, err.Error())
+            return ctrl.Result{RequeueAfter: 30 * time.Second}, r.Status().Update(ctx, cluster)
+        }
+        conditions.MarkTrue(cluster, infrav1.LoadBalancerReadyCondition)
+    }
+
+    // 4. 设置就绪状态
+    cluster.Status.Ready = true
+    conditions.MarkTrue(cluster, infrav1.ReadyCondition)
+
+    return ctrl.Result{}, r.Status().Update(ctx, cluster)
+}
+
+func (r *BareMetalClusterReconciler) syncLoadBalancerBackends(ctx context.Context, cluster *infrav1.BareMetalCluster, cpMachines []*clusterv1.Machine) error {
+    lbConfig := cluster.Spec.LoadBalancer
+    if lbConfig == nil {
+        return nil
+    }
+
+    // 获取期望的后端列表
+    desiredBackends := make(map[string]string) // name -> ip:port
+    for _, m := range cpMachines {
+        if m.Status.Phase == string(clusterv1.MachinePhaseRunning) {
+            ip := getMachineIP(m)
+            if ip != "" {
+                desiredBackends[m.Name] = fmt.Sprintf("%s:%d", ip, cluster.Spec.ControlPlaneEndpoint.Port)
+            }
+        }
+    }
+
+    // 获取当前后端列表
+    currentBackends, err := r.getLoadBalancerBackends(ctx, lbConfig)
+    if err != nil {
+        return err
+    }
+
+    // 计算差异
+    toAdd := make(map[string]string)
+    toRemove := make(map[string]string)
+
+    for name, addr := range desiredBackends {
+        if _, exists := currentBackends[name]; !exists {
+            toAdd[name] = addr
+        }
+    }
+    for name, addr := range currentBackends {
+        if _, exists := desiredBackends[name]; !exists {
+            toRemove[name] = addr
+        }
+    }
+
+    // 执行注册
+    for name, addr := range toAdd {
+        ip := strings.Split(addr, ":")[0]
+        port := strings.Split(addr, ":")[1]
+        if err := r.registerBackend(ctx, lbConfig, name, ip, port); err != nil {
+            return fmt.Errorf("failed to register backend %s: %w", name, err)
+        }
+    }
+
+    // 执行注销
+    for name, addr := range toRemove {
+        ip := strings.Split(addr, ":")[0]
+        port := strings.Split(addr, ":")[1]
+        if err := r.unregisterBackend(ctx, lbConfig, name, ip, port); err != nil {
+            return fmt.Errorf("failed to unregister backend %s: %w", name, err)
+        }
+    }
+
+    return nil
+}
+
+func (r *BareMetalClusterReconciler) registerBackend(ctx context.Context, lbConfig *infrav1.LoadBalancerConfig, name, ip, port string) error {
+    switch lbConfig.Provider {
+    case "haproxy":
+        return r.registerHAProxy(ctx, lbConfig.HAProxy, name, ip, port)
+    case "f5":
+        return r.registerF5(ctx, lbConfig.F5, name, ip, port)
+    case "keepalived":
+        return r.registerKeepalived(ctx, lbConfig.Keepalived, name, ip, port)
+    default:
+        return fmt.Errorf("unsupported load balancer provider: %s", lbConfig.Provider)
+    }
+}
+
+func (r *BareMetalClusterReconciler) registerHAProxy(ctx context.Context, haproxyConfig *infrav1.HAProxyConfig, name, ip, port string) error {
+    if haproxyConfig.AdminHost != "" {
+        // Runtime API 方式
+        cmd := fmt.Sprintf("add server %s/%s %s:%s check inter 5s fall 3 rise 2",
+            haproxyConfig.BackendName, name, ip, port)
+        return r.execHAProxyRuntimeAPI(ctx, haproxyConfig.AdminHost, haproxyConfig.AdminPort, cmd)
+    } else if haproxyConfig.SSHHost != "" {
+        // SSH 方式
+        return r.execHAProxySSH(ctx, haproxyConfig, name, ip, port, "register")
+    }
+    return fmt.Errorf("HAProxy: neither adminHost nor sshHost configured")
+}
+```
+
+#### 6.15.6 ClusterClass 变量和 Patches
+
+在 ClusterClass 中新增负载均衡器变量：
+
+```yaml
+  variables:
+  - name: loadBalancer
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          provider:
+            type: string
+            default: "haproxy"
+            enum:
+              - "haproxy"
+              - "keepalived"
+              - "f5"
+              - "nginx"
+              - "metal-lb"
+          healthCheck:
+            type: object
+            properties:
+              enabled:
+                type: boolean
+                default: true
+              path:
+                type: string
+                default: "/healthz"
+              interval:
+                type: string
+                default: "5s"
+              timeout:
+                type: string
+                default: "3s"
+          haproxy:
+            type: object
+            properties:
+              adminHost:
+                type: string
+              adminPort:
+                type: integer
+                default: 9999
+              sshHost:
+                type: string
+              sshPort:
+                type: integer
+                default: 22
+              configFile:
+                type: string
+                default: "/etc/haproxy/haproxy.cfg"
+              backendName:
+                type: string
+                default: "k8s-apiserver"
+              reloadCommand:
+                type: string
+                default: "systemctl reload haproxy"
+          keepalived:
+            type: object
+            properties:
+              virtualIP:
+                type: string
+              interface:
+                type: string
+                default: "eth0"
+              virtualRouterID:
+                type: integer
+                default: 51
+              priority:
+                type: integer
+                default: 100
+          f5:
+            type: object
+            properties:
+              host:
+                type: string
+              port:
+                type: integer
+                default: 443
+              partition:
+                type: string
+                default: "Common"
+              poolName:
+                type: string
+              virtualServerName:
+                type: string
+```
+
+Patch 定义：
+
+```yaml
+  patches:
+  - name: loadBalancer
+    enabledIf: "{{ if .loadBalancer }}true{{end}}"
+    definitions:
+    - selector:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        kind: BareMetalClusterTemplate
+        matchResources:
+          infrastructureCluster: true
+      jsonPatches:
+      - op: add
+        path: /spec/template/spec/loadBalancer
+        valueFrom:
+          variable: loadBalancer
+```
+
+#### 6.15.7 用户使用示例
+
+##### 6.15.7.1 HAProxy 方式
+
+```yaml
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  name: my-baremetal-cluster
+spec:
+  topology:
+    classRef:
+      name: baremetal-clusterclass-v0.1.0
+    version: v1.31.0
+    controlPlane:
+      replicas: 3
+    workers:
+      machineDeployments:
+      - class: default-worker
+        name: md-0
+        replicas: 2
+    variables:
+    - name: controlPlaneEndpoint
+      value:
+        host: "10.0.0.100"
+        port: 6443
+    - name: loadBalancer
+      value:
+        provider: "haproxy"
+        healthCheck:
+          enabled: true
+          path: "/healthz"
+          interval: "5s"
+          timeout: "3s"
+        haproxy:
+          adminHost: "10.0.0.50"
+          adminPort: 9999
+          backendName: "k8s-apiserver"
+          reloadCommand: "systemctl reload haproxy"
+```
+
+##### 6.15.7.2 Keepalived + HAProxy 方式 (无外部 LB)
+
+```yaml
+    variables:
+    - name: loadBalancer
+      value:
+        provider: "keepalived"
+        healthCheck:
+          enabled: true
+          path: "/healthz"
+        keepalived:
+          virtualIP: "10.0.0.100"
+          interface: "eth0"
+          virtualRouterID: 51
+          priority: 100
+          advertInterval: 1
+```
+
+##### 6.15.7.3 F5 BIG-IP 方式
+
+```yaml
+    variables:
+    - name: loadBalancer
+      value:
+        provider: "f5"
+        healthCheck:
+          enabled: true
+          path: "/healthz"
+          interval: "5s"
+        f5:
+          host: "f5.example.com"
+          port: 443
+          partition: "Common"
+          poolName: "k8s-apiserver-pool"
+          virtualServerName: "k8s-apiserver-vs"
+```
+
+#### 6.15.8 关键设计决策
+
+| 决策点 | 选项 | 推荐 | 理由 |
+|--------|------|------|------|
+| **注册方式** | Runtime API vs SSH vs 配置文件 | Runtime API 优先，SSH 备选 | Runtime API 无需 reload，零中断 |
+| **健康检查** | LB 内置 vs CAPBM 主动检查 | LB 内置 | 利用 LB 原生能力，更可靠 |
+| **注销时机** | 先注销再删除 vs 先删除再注销 | 先注销再删除 | 避免流量路由到已删除节点 |
+| **多 LB 支持** | 单一 LB 类型 vs 插件化 | 插件化 | 不同环境可能使用不同 LB |
+| **凭证管理** | 明文 vs Secret | Secret | 安全性，支持 RBAC 控制访问 |
+
+### 6.15 API Server 负载均衡注册
+
+#### 6.15.1 问题背景
+
+裸金属集群的控制面节点通常部署为高可用架构（3 或 5 个 control-plane 节点），需要外部负载均衡器将流量分发到所有 API Server 实例。
+
+仅设置 `controlPlaneEndpoint` 是不够的，还需要：
+1. **注册**: 当 control-plane 节点加入集群时，将其 API Server 地址注册到负载均衡器后端
+2. **健康检查**: 定期检查 API Server 健康状态，自动剔除不健康节点
+3. **注销**: 当 control-plane 节点被删除或缩容时，从负载均衡器移除后端
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                    负载均衡架构                               │
+│                                                              │
+│  kubectl / 客户端                                            │
+│       │                                                      │
+│       ▼                                                      │
+│  ┌─────────────────┐                                         │
+│  │  Load Balancer   │  ←  CAPBM 负责注册/注销后端             │
+│  │  VIP: 10.0.0.100 │                                         │
+│  │  Port: 6443      │                                         │
+│  └────┬────┬────┬───┘                                         │
+│       │    │    │                                             │
+│       ▼    ▼    ▼                                             │
+│  ┌──────┐┌──────┐┌──────┐                                    │
+│  │CP-01 ││CP-02 ││CP-03 │                                    │
+│  │:6443 ││:6443 ││:6443 │                                    │
+│  └──────┘└──────┘└──────┘                                    │
+└──────────────────────────────────────────────────────────────┘
+```
+
+#### 6.15.2 支持的负载均衡器类型
+
+| 类型 | 注册方式 | 适用场景 | 健康检查 |
+|------|---------|---------|---------|
+| **HAProxy** | 配置文件 + reload / Runtime API | 中小型集群，软件 LB | HTTP GET /healthz |
+| **Keepalived + HAProxy** | Keepalived VIP + HAProxy 后端 | 无外部 LB 的裸金属 | TCP check + HTTP |
+| **F5 BIG-IP** | iControl REST API | 企业级硬件 LB | HTTP monitor |
+| **Nginx** | 配置文件 + reload / Stream module | 轻量级场景 | TCP check |
+| **云厂商 LB** | Cloud Provider API (AWS/Aliyun/华为云) | 混合云场景 | 云厂商内置 |
+| **MetalLB** | BGP / L2 宣告 | 裸金属 Service LB | 内置 |
+
+CAPBM 采用**插件化设计**，通过 `lbProvider` 变量选择负载均衡器类型。
+
+#### 6.15.3 CRD 设计扩展
+
+在 `BareMetalClusterSpec` 中新增负载均衡器配置：
+
+```yaml
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: BareMetalCluster
+spec:
+  controlPlaneEndpoint:
+    host: "lb.example.com"
+    port: 6443
+  
+  loadBalancer:
+    # 负载均衡器类型
+    provider: "haproxy"        # haproxy | keepalived | f5 | nginx | metal-lb
+    
+    # 通用配置
+    healthCheck:
+      enabled: true
+      path: "/healthz"
+      interval: "5s"
+      timeout: "3s"
+      healthyThreshold: 2
+      unhealthyThreshold: 3
+    
+    # HAProxy 特定配置
+    haproxy:
+      # HAProxy 管理节点地址（Runtime API）
+      adminHost: "10.0.0.50"
+      adminPort: 9999
+      # 或 SSH 方式管理
+      sshHost: "10.0.0.50"
+      sshPort: 22
+      sshCredentialsRef:
+        name: "haproxy-credentials"
+      # 配置文件路径
+      configFile: "/etc/haproxy/haproxy.cfg"
+      backendName: "k8s-apiserver"
+      # reload 命令
+      reloadCommand: "systemctl reload haproxy"
+    
+    # Keepalived 特定配置
+    keepalived:
+      virtualIP: "10.0.0.100"
+      interface: "eth0"
+      virtualRouterID: 51
+      priority: 100
+      advertInterval: 1
+    
+    # F5 特定配置
+    f5:
+      host: "f5.example.com"
+      port: 443
+      credentialsRef:
+        name: "f5-credentials"
+      partition: "Common"
+      poolName: "k8s-apiserver-pool"
+      virtualServerName: "k8s-apiserver-vs"
+    
+    # MetalLB 特定配置
+    metal-lb:
+      ipAddressPool: "apiserver-pool"
+      loadBalancerIP: "10.0.0.100"
+```
+
+**Go 类型定义**:
+
+```go
+type LoadBalancerConfig struct {
+	// Provider is the load balancer type.
+	// +optional
+	// +kubebuilder:default=haproxy
+	Provider string `json:"provider,omitempty"`
+	
+	// HealthCheck defines health check configuration.
+	// +optional
+	HealthCheck HealthCheckConfig `json:"healthCheck,omitempty"`
+	
+	// HAProxy holds HAProxy specific configuration.
+	// +optional
+	HAProxy *HAProxyConfig `json:"haproxy,omitempty"`
+	
+	// Keepalived holds Keepalived specific configuration.
+	// +optional
+	Keepalived *KeepalivedConfig `json:"keepalived,omitempty"`
+	
+	// F5 holds F5 BIG-IP specific configuration.
+	// +optional
+	F5 *F5Config `json:"f5,omitempty"`
+	
+	// MetalLB holds MetalLB specific configuration.
+	// +optional
+	MetalLB *MetalLBConfig `json:"metal-lb,omitempty"`
+}
+
+type HealthCheckConfig struct {
+	// Enabled enables health checking.
+	// +optional
+	// +kubebuilder:default=true
+	Enabled bool `json:"enabled,omitempty"`
+	
+	// Path is the health check endpoint.
+	// +optional
+	// +kubebuilder:default=/healthz
+	Path string `json:"path,omitempty"`
+	
+	// Interval is the check interval.
+	// +optional
+	// +kubebuilder:default="5s"
+	Interval string `json:"interval,omitempty"`
+	
+	// Timeout is the check timeout.
+	// +optional
+	// +kubebuilder:default="3s"
+	Timeout string `json:"timeout,omitempty"`
+	
+	// HealthyThreshold is the number of successful checks to mark as healthy.
+	// +optional
+	// +kubebuilder:default=2
+	HealthyThreshold int `json:"healthyThreshold,omitempty"`
+	
+	// UnhealthyThreshold is the number of failed checks to mark as unhealthy.
+	// +optional
+	// +kubebuilder:default=3
+	UnhealthyThreshold int `json:"unhealthyThreshold,omitempty"`
+}
+
+type HAProxyConfig struct {
+	// AdminHost is the HAProxy Runtime API host.
+	// +optional
+	AdminHost string `json:"adminHost,omitempty"`
+	
+	// AdminPort is the HAProxy Runtime API port.
+	// +optional
+	// +kubebuilder:default=9999
+	AdminPort int `json:"adminPort,omitempty"`
+	
+	// SSHHost is the HAProxy server SSH host (alternative to Runtime API).
+	// +optional
+	SSHHost string `json:"sshHost,omitempty"`
+	
+	// SSHPort is the HAProxy server SSH port.
+	// +optional
+	// +kubebuilder:default=22
+	SSHPort int `json:"sshPort,omitempty"`
+	
+	// SSHCredentialsRef references the SSH credentials secret.
+	// +optional
+	SSHCredentialsRef *corev1.LocalObjectReference `json:"sshCredentialsRef,omitempty"`
+	
+	// ConfigFile is the HAProxy configuration file path.
+	// +optional
+	// +kubebuilder:default=/etc/haproxy/haproxy.cfg
+	ConfigFile string `json:"configFile,omitempty"`
+	
+	// BackendName is the backend name in HAProxy config.
+	// +optional
+	// +kubebuilder:default=k8s-apiserver
+	BackendName string `json:"backendName,omitempty"`
+	
+	// ReloadCommand is the command to reload HAProxy.
+	// +optional
+	// +kubebuilder:default="systemctl reload haproxy"
+	ReloadCommand string `json:"reloadCommand,omitempty"`
+}
+
+type KeepalivedConfig struct {
+	// VirtualIP is the virtual IP address.
+	// +optional
+	VirtualIP string `json:"virtualIP,omitempty"`
+	
+	// Interface is the network interface.
+	// +optional
+	// +kubebuilder:default=eth0
+	Interface string `json:"interface,omitempty"`
+	
+	// VirtualRouterID is the VRRP router ID.
+	// +optional
+	// +kubebuilder:default=51
+	VirtualRouterID int `json:"virtualRouterID,omitempty"`
+	
+	// Priority is the VRRP priority.
+	// +optional
+	// +kubebuilder:default=100
+	Priority int `json:"priority,omitempty"`
+	
+	// AdvertInterval is the advertisement interval in seconds.
+	// +optional
+	// +kubebuilder:default=1
+	AdvertInterval int `json:"advertInterval,omitempty"`
+}
+
+type F5Config struct {
+	// Host is the F5 BIG-IP management host.
+	// +optional
+	Host string `json:"host,omitempty"`
+	
+	// Port is the F5 BIG-IP management port.
+	// +optional
+	// +kubebuilder:default=443
+	Port int `json:"port,omitempty"`
+	
+	// CredentialsRef references the F5 credentials secret.
+	// +optional
+	CredentialsRef *corev1.LocalObjectReference `json:"credentialsRef,omitempty"`
+	
+	// Partition is the F5 partition.
+	// +optional
+	// +kubebuilder:default=Common
+	Partition string `json:"partition,omitempty"`
+	
+	// PoolName is the F5 pool name.
+	// +optional
+	PoolName string `json:"poolName,omitempty"`
+	
+	// VirtualServerName is the F5 virtual server name.
+	// +optional
+	VirtualServerName string `json:"virtualServerName,omitempty"`
+}
+
+type MetalLBConfig struct {
+	// IPAddressPool is the MetalLB IP address pool name.
+	// +optional
+	IPAddressPool string `json:"ipAddressPool,omitempty"`
+	
+	// LoadBalancerIP is the specific IP to assign.
+	// +optional
+	LoadBalancerIP string `json:"loadBalancerIP,omitempty"`
+}
+```
+
+更新 `BareMetalClusterSpec`:
+
+```go
+type BareMetalClusterSpec struct {
+	ControlPlaneEndpoint clusterv1.APIEndpoint `json:"controlPlaneEndpoint,omitempty"`
+	Network              NetworkConfig         `json:"network,omitempty"`
+	LoadBalancer         *LoadBalancerConfig   `json:"loadBalancer,omitempty"`
+}
+```
+
+#### 6.15.4 注册流程
+
+##### 6.15.4.1 注册时机
+
+| 事件 | 操作 | 说明 |
+|------|------|------|
+| 首个 control-plane 初始化 | 创建后端池 + 注册首个节点 | 初始化 HAProxy/F5 配置 |
+| 新 control-plane 加入 | 注册新节点到后端池 | kubeadm join 完成后执行 |
+| control-plane 缩容/删除 | 注销节点从后端池 | 先注销，再删除节点 |
+| 节点健康检查失败 | 临时标记为 unhealthy | 不立即移除，等待恢复 |
+
+##### 6.15.4.2 HAProxy 注册流程 (Runtime API 方式)
+
+```
+control-plane 节点 API Server 启动完成
+    │
+    ▼
+┌─────────────────────────────────────────────────────────┐
+│ 1. 等待 API Server 健康                                  │
+│    ├── curl -sk https://<node-ip>:6443/healthz          │
+│    └── 等待返回 "ok"                                    │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 2. 注册到 HAProxy 后端池                                │
+│    ├── echo "add server <backend>/<server> <ip>:6443    │
+│    │     check inter 5s fall 3 rise 2" |                │
+│    │     socat stdio haproxy-admin:9999                 │
+│    └── 或使用 SSH 执行                                  │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 3. 验证注册结果                                          │
+│    ├── echo "show servers state <backend>" |             │
+│    │     socat stdio haproxy-admin:9999                 │
+│    └── 确认节点状态为 UP                                  │
+└─────────────────────────────────────────────────────────┘
+```
+
+##### 6.15.4.3 HAProxy 注册脚本 (Runtime API)
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+HAPROXY_ADMIN_HOST="${HAPROXY_ADMIN_HOST:-10.0.0.50}"
+HAPROXY_ADMIN_PORT="${HAPROXY_ADMIN_PORT:-9999}"
+BACKEND_NAME="${BACKEND_NAME:-k8s-apiserver}"
+SERVER_NAME="${SERVER_NAME}"
+SERVER_IP="${SERVER_IP}"
+SERVER_PORT="${SERVER_PORT:-6443}"
+
+echo "=== 注册 API Server 到 HAProxy ==="
+
+# 1. 等待 API Server 健康
+wait_for_apiserver() {
+    local max_retries=30
+    local retry=0
+    while [ $retry -lt $max_retries ]; do
+        if curl -sk --connect-timeout 2 "https://${SERVER_IP}:${SERVER_PORT}/healthz" 2>/dev/null | grep -q "ok"; then
+            echo "API Server 健康检查通过"
+            return 0
+        fi
+        retry=$((retry + 1))
+        echo "等待 API Server 启动... ($retry/$max_retries)"
+        sleep 5
+    done
+    echo "ERROR: API Server 未能在超时时间内启动"
+    return 1
+}
+
+# 2. 注册到 HAProxy
+register_to_haproxy() {
+    local cmd="add server ${BACKEND_NAME}/${SERVER_NAME} ${SERVER_IP}:${SERVER_PORT} check inter 5s fall 3 rise 2"
+    echo "$cmd" | socat stdio tcp:${HAPROXY_ADMIN_HOST}:${HAPROXY_ADMIN_PORT}
+    echo "已发送注册命令: $cmd"
+}
+
+# 3. 验证注册结果
+verify_registration() {
+    local max_retries=12
+    local retry=0
+    while [ $retry -lt $max_retries ]; do
+        local status
+        status=$(echo "show servers state ${BACKEND_NAME}" | socat stdio tcp:${HAPROXY_ADMIN_HOST}:${HAPROXY_ADMIN_PORT} 2>/dev/null | grep "${SERVER_NAME}" || true)
+        if echo "$status" | grep -q "UP"; then
+            echo "节点 ${SERVER_NAME} 已注册并健康 (UP)"
+            return 0
+        fi
+        retry=$((retry + 1))
+        echo "等待节点健康... ($retry/$max_retries)"
+        sleep 5
+    done
+    echo "WARNING: 节点 ${SERVER_NAME} 注册成功但尚未 UP"
+    return 0
+}
+
+# 4. 注销函数 (用于缩容)
+unregister_from_haproxy() {
+    local cmd="del server ${BACKEND_NAME}/${SERVER_NAME}"
+    echo "$cmd" | socat stdio tcp:${HAPROXY_ADMIN_HOST}:${HAPROXY_ADMIN_PORT}
+    echo "已发送注销命令: $cmd"
+}
+
+case "${ACTION:-register}" in
+    register)
+        wait_for_apiserver
+        register_to_haproxy
+        verify_registration
+        ;;
+    unregister)
+        unregister_from_haproxy
+        ;;
+    *)
+        echo "ERROR: 不支持的操作: ${ACTION}"
+        exit 1
+        ;;
+esac
+
+echo "=== HAProxy 操作完成 ==="
+```
+
+##### 6.15.4.4 HAProxy 注册脚本 (SSH + 配置文件方式)
+
+适用于不支持 Runtime API 的 HAProxy 版本：
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+HAPROXY_SSH_HOST="${HAPROXY_SSH_HOST:-10.0.0.50}"
+HAPROXY_SSH_PORT="${HAPROXY_SSH_PORT:-22}"
+CONFIG_FILE="${CONFIG_FILE:-/etc/haproxy/haproxy.cfg}"
+BACKEND_NAME="${BACKEND_NAME:-k8s-apiserver}"
+SERVER_NAME="${SERVER_NAME}"
+SERVER_IP="${SERVER_IP}"
+SERVER_PORT="${SERVER_PORT:-6443}"
+RELOAD_CMD="${RELOAD_CMD:-systemctl reload haproxy}"
+
+echo "=== 注册 API Server 到 HAProxy (SSH 方式) ==="
+
+# 1. 等待 API Server 健康
+wait_for_apiserver() {
+    local max_retries=30
+    local retry=0
+    while [ $retry -lt $max_retries ]; do
+        if curl -sk --connect-timeout 2 "https://${SERVER_IP}:${SERVER_PORT}/healthz" 2>/dev/null | grep -q "ok"; then
+            echo "API Server 健康检查通过"
+            return 0
+        fi
+        retry=$((retry + 1))
+        sleep 5
+    done
+    echo "ERROR: API Server 未能在超时时间内启动"
+    return 1
+}
+
+# 2. 通过 SSH 修改 HAProxy 配置
+register_to_haproxy() {
+    ssh -p "$HAPROXY_SSH_PORT" root@"$HAPROXY_SSH_HOST" << EOF
+        # 检查是否已存在
+        if grep -q "server ${SERVER_NAME} ${SERVER_IP}:${SERVER_PORT}" "$CONFIG_FILE"; then
+            echo "节点 ${SERVER_NAME} 已存在于配置中"
+        else
+            # 在 backend 段末尾添加 server
+            sed -i "/^backend ${BACKEND_NAME}/,/^$/ {
+                /^$/ i\\    server ${SERVER_NAME} ${SERVER_IP}:${SERVER_PORT} check inter 5s fall 3 rise 2
+            }" "$CONFIG_FILE"
+            echo "已添加节点 ${SERVER_NAME} 到配置"
+        fi
+        
+        # 验证配置
+        haproxy -c -f "$CONFIG_FILE"
+        
+        # 重新加载
+        $RELOAD_CMD
+EOF
+}
+
+# 3. 注销
+unregister_from_haproxy() {
+    ssh -p "$HAPROXY_SSH_PORT" root@"$HAPROXY_SSH_HOST" << EOF
+        sed -i "/server ${SERVER_NAME} ${SERVER_IP}:${SERVER_PORT}/d" "$CONFIG_FILE"
+        haproxy -c -f "$CONFIG_FILE"
+        $RELOAD_CMD
+        echo "已注销节点 ${SERVER_NAME}"
+EOF
+}
+
+case "${ACTION:-register}" in
+    register)
+        wait_for_apiserver
+        register_to_haproxy
+        ;;
+    unregister)
+        unregister_from_haproxy
+        ;;
+esac
+
+echo "=== HAProxy 操作完成 ==="
+```
+
+##### 6.15.4.5 F5 BIG-IP 注册流程
+
+```
+control-plane 节点 API Server 启动完成
+    │
+    ▼
+┌─────────────────────────────────────────────────────────┐
+│ 1. 等待 API Server 健康                                  │
+│    └── curl -sk https://<node-ip>:6443/healthz          │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 2. 调用 F5 iControl REST API 注册节点                    │
+│    ├── POST /mgmt/tm/ltm/pool/~Common~<pool>/members    │
+│    │   {"address": "<ip>", "port": 6443}                │
+│    └── 认证: Basic Auth (admin/password)                │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 3. 验证注册结果                                          │
+│    ├── GET /mgmt/tm/ltm/pool/~Common~<pool>/members     │
+│    └── 确认节点状态为 available                          │
+└─────────────────────────────────────────────────────────┘
+```
+
+##### 6.15.4.6 F5 注册脚本
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+F5_HOST="${F5_HOST:-f5.example.com}"
+F5_PORT="${F5_PORT:-443}"
+F5_USER="${F5_USER:-admin}"
+F5_PASSWORD="${F5_PASSWORD}"
+PARTITION="${PARTITION:-Common}"
+POOL_NAME="${POOL_NAME:-k8s-apiserver-pool}"
+SERVER_IP="${SERVER_IP}"
+SERVER_PORT="${SERVER_PORT:-6443}"
+
+echo "=== 注册 API Server 到 F5 ==="
+
+F5_URL="https://${F5_HOST}:${F5_PORT}/mgmt/tm"
+
+# 1. 等待 API Server 健康
+wait_for_apiserver() {
+    local max_retries=30
+    local retry=0
+    while [ $retry -lt $max_retries ]; do
+        if curl -sk --connect-timeout 2 "https://${SERVER_IP}:${SERVER_PORT}/healthz" 2>/dev/null | grep -q "ok"; then
+            echo "API Server 健康检查通过"
+            return 0
+        fi
+        retry=$((retry + 1))
+        sleep 5
+    done
+    return 1
+}
+
+# 2. 注册到 F5 Pool
+register_to_f5() {
+    local response
+    response=$(curl -sk -X POST \
+        -u "${F5_USER}:${F5_PASSWORD}" \
+        -H "Content-Type: application/json" \
+        -d "{\"address\":\"${SERVER_IP}\",\"port\":${SERVER_PORT},\"name\":\"${SERVER_IP}:${SERVER_PORT}\"}" \
+        "${F5_URL}/ltm/pool/~${PARTITION}~${POOL_NAME}/members")
+    
+    if echo "$response" | grep -q "kind.*ltm:pool:member"; then
+        echo "节点 ${SERVER_IP}:${SERVER_PORT} 已注册到 F5 Pool"
+    else
+        echo "WARNING: F5 注册响应: $response"
+    fi
+}
+
+# 3. 注销
+unregister_from_f5() {
+    local encoded_member
+    encoded_member=$(echo "${SERVER_IP}:${SERVER_PORT}" | sed 's/:/%3A/g')
+    
+    curl -sk -X DELETE \
+        -u "${F5_USER}:${F5_PASSWORD}" \
+        "${F5_URL}/ltm/pool/~${PARTITION}~${POOL_NAME}/members/~${PARTITION}~${encoded_member}"
+    
+    echo "节点 ${SERVER_IP}:${SERVER_PORT} 已从 F5 Pool 注销"
+}
+
+case "${ACTION:-register}" in
+    register)
+        wait_for_apiserver
+        register_to_f5
+        ;;
+    unregister)
+        unregister_from_f5
+        ;;
+esac
+
+echo "=== F5 操作完成 ==="
+```
+
+#### 6.15.5 Controller 集成
+
+在 `BareMetalCluster Controller` 中集成负载均衡器注册逻辑：
+
+```go
+func (r *BareMetalClusterReconciler) reconcileNormal(ctx context.Context, cluster *infrav1.BareMetalCluster) (ctrl.Result, error) {
+    log := ctrl.LoggerFrom(ctx)
+
+    // 1. 验证配置
+    if cluster.Spec.ControlPlaneEndpoint.Host == "" {
+        conditions.MarkFalse(cluster, infrav1.ReadyCondition, infrav1.EndpointNotSetReason, clusterv1.ConditionSeverityError, "controlPlaneEndpoint is required")
+        return ctrl.Result{}, nil
+    }
+
+    // 2. 获取所有 control-plane 节点
+    cpMachines, err := r.getControlPlaneMachines(ctx, cluster)
+    if err != nil {
+        return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+    }
+
+    // 3. 同步负载均衡器后端
+    if cluster.Spec.LoadBalancer != nil {
+        if err := r.syncLoadBalancerBackends(ctx, cluster, cpMachines); err != nil {
+            log.Error(err, "Failed to sync load balancer backends")
+            conditions.MarkFalse(cluster, infrav1.LoadBalancerReadyCondition, infrav1.LBSyncFailedReason, clusterv1.ConditionSeverityWarning, err.Error())
+            return ctrl.Result{RequeueAfter: 30 * time.Second}, r.Status().Update(ctx, cluster)
+        }
+        conditions.MarkTrue(cluster, infrav1.LoadBalancerReadyCondition)
+    }
+
+    // 4. 设置就绪状态
+    cluster.Status.Ready = true
+    conditions.MarkTrue(cluster, infrav1.ReadyCondition)
+
+    return ctrl.Result{}, r.Status().Update(ctx, cluster)
+}
+
+func (r *BareMetalClusterReconciler) syncLoadBalancerBackends(ctx context.Context, cluster *infrav1.BareMetalCluster, cpMachines []*clusterv1.Machine) error {
+    lbConfig := cluster.Spec.LoadBalancer
+    if lbConfig == nil {
+        return nil
+    }
+
+    // 获取期望的后端列表
+    desiredBackends := make(map[string]string) // name -> ip:port
+    for _, m := range cpMachines {
+        if m.Status.Phase == string(clusterv1.MachinePhaseRunning) {
+            ip := getMachineIP(m)
+            if ip != "" {
+                desiredBackends[m.Name] = fmt.Sprintf("%s:%d", ip, cluster.Spec.ControlPlaneEndpoint.Port)
+            }
+        }
+    }
+
+    // 获取当前后端列表
+    currentBackends, err := r.getLoadBalancerBackends(ctx, lbConfig)
+    if err != nil {
+        return err
+    }
+
+    // 计算差异
+    toAdd := make(map[string]string)
+    toRemove := make(map[string]string)
+
+    for name, addr := range desiredBackends {
+        if _, exists := currentBackends[name]; !exists {
+            toAdd[name] = addr
+        }
+    }
+    for name, addr := range currentBackends {
+        if _, exists := desiredBackends[name]; !exists {
+            toRemove[name] = addr
+        }
+    }
+
+    // 执行注册
+    for name, addr := range toAdd {
+        ip := strings.Split(addr, ":")[0]
+        port := strings.Split(addr, ":")[1]
+        if err := r.registerBackend(ctx, lbConfig, name, ip, port); err != nil {
+            return fmt.Errorf("failed to register backend %s: %w", name, err)
+        }
+    }
+
+    // 执行注销
+    for name, addr := range toRemove {
+        ip := strings.Split(addr, ":")[0]
+        port := strings.Split(addr, ":")[1]
+        if err := r.unregisterBackend(ctx, lbConfig, name, ip, port); err != nil {
+            return fmt.Errorf("failed to unregister backend %s: %w", name, err)
+        }
+    }
+
+    return nil
+}
+
+func (r *BareMetalClusterReconciler) registerBackend(ctx context.Context, lbConfig *infrav1.LoadBalancerConfig, name, ip, port string) error {
+    switch lbConfig.Provider {
+    case "haproxy":
+        return r.registerHAProxy(ctx, lbConfig.HAProxy, name, ip, port)
+    case "f5":
+        return r.registerF5(ctx, lbConfig.F5, name, ip, port)
+    case "keepalived":
+        return r.registerKeepalived(ctx, lbConfig.Keepalived, name, ip, port)
+    default:
+        return fmt.Errorf("unsupported load balancer provider: %s", lbConfig.Provider)
+    }
+}
+
+func (r *BareMetalClusterReconciler) registerHAProxy(ctx context.Context, haproxyConfig *infrav1.HAProxyConfig, name, ip, port string) error {
+    if haproxyConfig.AdminHost != "" {
+        // Runtime API 方式
+        cmd := fmt.Sprintf("add server %s/%s %s:%s check inter 5s fall 3 rise 2",
+            haproxyConfig.BackendName, name, ip, port)
+        return r.execHAProxyRuntimeAPI(ctx, haproxyConfig.AdminHost, haproxyConfig.AdminPort, cmd)
+    } else if haproxyConfig.SSHHost != "" {
+        // SSH 方式
+        return r.execHAProxySSH(ctx, haproxyConfig, name, ip, port, "register")
+    }
+    return fmt.Errorf("HAProxy: neither adminHost nor sshHost configured")
+}
+```
+
+#### 6.15.6 ClusterClass 变量和 Patches
+
+在 ClusterClass 中新增负载均衡器变量：
+
+```yaml
+  variables:
+  - name: loadBalancer
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          provider:
+            type: string
+            default: "haproxy"
+            enum:
+              - "haproxy"
+              - "keepalived"
+              - "f5"
+              - "nginx"
+              - "metal-lb"
+          healthCheck:
+            type: object
+            properties:
+              enabled:
+                type: boolean
+                default: true
+              path:
+                type: string
+                default: "/healthz"
+              interval:
+                type: string
+                default: "5s"
+              timeout:
+                type: string
+                default: "3s"
+          haproxy:
+            type: object
+            properties:
+              adminHost:
+                type: string
+              adminPort:
+                type: integer
+                default: 9999
+              sshHost:
+                type: string
+              sshPort:
+                type: integer
+                default: 22
+              configFile:
+                type: string
+                default: "/etc/haproxy/haproxy.cfg"
+              backendName:
+                type: string
+                default: "k8s-apiserver"
+              reloadCommand:
+                type: string
+                default: "systemctl reload haproxy"
+          keepalived:
+            type: object
+            properties:
+              virtualIP:
+                type: string
+              interface:
+                type: string
+                default: "eth0"
+              virtualRouterID:
+                type: integer
+                default: 51
+              priority:
+                type: integer
+                default: 100
+          f5:
+            type: object
+            properties:
+              host:
+                type: string
+              port:
+                type: integer
+                default: 443
+              partition:
+                type: string
+                default: "Common"
+              poolName:
+                type: string
+              virtualServerName:
+                type: string
+```
+
+Patch 定义：
+
+```yaml
+  patches:
+  - name: loadBalancer
+    enabledIf: "{{ if .loadBalancer }}true{{end}}"
+    definitions:
+    - selector:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        kind: BareMetalClusterTemplate
+        matchResources:
+          infrastructureCluster: true
+      jsonPatches:
+      - op: add
+        path: /spec/template/spec/loadBalancer
+        valueFrom:
+          variable: loadBalancer
+```
+
+#### 6.15.7 用户使用示例
+
+##### 6.15.7.1 HAProxy 方式
+
+```yaml
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  name: my-baremetal-cluster
+spec:
+  topology:
+    classRef:
+      name: baremetal-clusterclass-v0.1.0
+    version: v1.31.0
+    controlPlane:
+      replicas: 3
+    workers:
+      machineDeployments:
+      - class: default-worker
+        name: md-0
+        replicas: 2
+    variables:
+    - name: controlPlaneEndpoint
+      value:
+        host: "10.0.0.100"
+        port: 6443
+    - name: loadBalancer
+      value:
+        provider: "haproxy"
+        healthCheck:
+          enabled: true
+          path: "/healthz"
+          interval: "5s"
+          timeout: "3s"
+        haproxy:
+          adminHost: "10.0.0.50"
+          adminPort: 9999
+          backendName: "k8s-apiserver"
+          reloadCommand: "systemctl reload haproxy"
+```
+
+##### 6.15.7.2 Keepalived + HAProxy 方式 (无外部 LB)
+
+```yaml
+    variables:
+    - name: loadBalancer
+      value:
+        provider: "keepalived"
+        healthCheck:
+          enabled: true
+          path: "/healthz"
+        keepalived:
+          virtualIP: "10.0.0.100"
+          interface: "eth0"
+          virtualRouterID: 51
+          priority: 100
+          advertInterval: 1
+```
+
+##### 6.15.7.3 F5 BIG-IP 方式
+
+```yaml
+    variables:
+    - name: loadBalancer
+      value:
+        provider: "f5"
+        healthCheck:
+          enabled: true
+          path: "/healthz"
+          interval: "5s"
+        f5:
+          host: "f5.example.com"
+          port: 443
+          partition: "Common"
+          poolName: "k8s-apiserver-pool"
+          virtualServerName: "k8s-apiserver-vs"
+```
+
+#### 6.15.8 关键设计决策
+
+| 决策点 | 选项 | 推荐 | 理由 |
+|--------|------|------|------|
+| **注册方式** | Runtime API vs SSH vs 配置文件 | Runtime API 优先，SSH 备选 | Runtime API 无需 reload，零中断 |
+| **健康检查** | LB 内置 vs CAPBM 主动检查 | LB 内置 | 利用 LB 原生能力，更可靠 |
+| **注销时机** | 先注销再删除 vs 先删除再注销 | 先注销再删除 | 避免流量路由到已删除节点 |
+| **多 LB 支持** | 单一 LB 类型 vs 插件化 | 插件化 | 不同环境可能使用不同 LB |
+| **凭证管理** | 明文 vs Secret | Secret | 安全性，支持 RBAC 控制访问 |
+
+### 6.15 API Server 负载均衡注册
+
+#### 6.15.1 问题背景
+
+裸金属集群的控制面节点通常部署为高可用架构（3 或 5 个 control-plane 节点），需要外部负载均衡器将流量分发到所有 API Server 实例。
+
+仅设置 `controlPlaneEndpoint` 是不够的，还需要：
+1. **注册**: 当 control-plane 节点加入集群时，将其 API Server 地址注册到负载均衡器后端
+2. **健康检查**: 定期检查 API Server 健康状态，自动剔除不健康节点
+3. **注销**: 当 control-plane 节点被删除或缩容时，从负载均衡器移除后端
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                    负载均衡架构                               │
+│                                                              │
+│  kubectl / 客户端                                            │
+│       │                                                      │
+│       ▼                                                      │
+│  ┌─────────────────┐                                         │
+│  │  Load Balancer   │  ←  CAPBM 负责注册/注销后端             │
+│  │  VIP: 10.0.0.100 │                                         │
+│  │  Port: 6443      │                                         │
+│  └────┬────┬────┬───┘                                         │
+│       │    │    │                                             │
+│       ▼    ▼    ▼                                             │
+│  ┌──────┐┌──────┐┌──────┐                                    │
+│  │CP-01 ││CP-02 ││CP-03 │                                    │
+│  │:6443 ││:6443 ││:6443 │                                    │
+│  └──────┘└──────┘└──────┘                                    │
+└──────────────────────────────────────────────────────────────┘
+```
+
+#### 6.15.2 支持的负载均衡器类型
+
+| 类型 | 注册方式 | 适用场景 | 健康检查 |
+|------|---------|---------|---------|
+| **HAProxy** | 配置文件 + reload / Runtime API | 中小型集群，软件 LB | HTTP GET /healthz |
+| **Keepalived + HAProxy** | Keepalived VIP + HAProxy 后端 | 无外部 LB 的裸金属 | TCP check + HTTP |
+| **F5 BIG-IP** | iControl REST API | 企业级硬件 LB | HTTP monitor |
+| **Nginx** | 配置文件 + reload / Stream module | 轻量级场景 | TCP check |
+| **云厂商 LB** | Cloud Provider API (AWS/Aliyun/华为云) | 混合云场景 | 云厂商内置 |
+| **MetalLB** | BGP / L2 宣告 | 裸金属 Service LB | 内置 |
+
+CAPBM 采用**插件化设计**，通过 `lbProvider` 变量选择负载均衡器类型。
+
+#### 6.15.3 CRD 设计扩展
+
+在 `BareMetalClusterSpec` 中新增负载均衡器配置：
+
+```yaml
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: BareMetalCluster
+spec:
+  controlPlaneEndpoint:
+    host: "lb.example.com"
+    port: 6443
+  
+  loadBalancer:
+    # 负载均衡器类型
+    provider: "haproxy"        # haproxy | keepalived | f5 | nginx | metal-lb
+    
+    # 通用配置
+    healthCheck:
+      enabled: true
+      path: "/healthz"
+      interval: "5s"
+      timeout: "3s"
+      healthyThreshold: 2
+      unhealthyThreshold: 3
+    
+    # HAProxy 特定配置
+    haproxy:
+      # HAProxy 管理节点地址（Runtime API）
+      adminHost: "10.0.0.50"
+      adminPort: 9999
+      # 或 SSH 方式管理
+      sshHost: "10.0.0.50"
+      sshPort: 22
+      sshCredentialsRef:
+        name: "haproxy-credentials"
+      # 配置文件路径
+      configFile: "/etc/haproxy/haproxy.cfg"
+      backendName: "k8s-apiserver"
+      # reload 命令
+      reloadCommand: "systemctl reload haproxy"
+    
+    # Keepalived 特定配置
+    keepalived:
+      virtualIP: "10.0.0.100"
+      interface: "eth0"
+      virtualRouterID: 51
+      priority: 100
+      advertInterval: 1
+    
+    # F5 特定配置
+    f5:
+      host: "f5.example.com"
+      port: 443
+      credentialsRef:
+        name: "f5-credentials"
+      partition: "Common"
+      poolName: "k8s-apiserver-pool"
+      virtualServerName: "k8s-apiserver-vs"
+    
+    # MetalLB 特定配置
+    metal-lb:
+      ipAddressPool: "apiserver-pool"
+      loadBalancerIP: "10.0.0.100"
+```
+
+**Go 类型定义**:
+
+```go
+type LoadBalancerConfig struct {
+	// Provider is the load balancer type.
+	// +optional
+	// +kubebuilder:default=haproxy
+	Provider string `json:"provider,omitempty"`
+	
+	// HealthCheck defines health check configuration.
+	// +optional
+	HealthCheck HealthCheckConfig `json:"healthCheck,omitempty"`
+	
+	// HAProxy holds HAProxy specific configuration.
+	// +optional
+	HAProxy *HAProxyConfig `json:"haproxy,omitempty"`
+	
+	// Keepalived holds Keepalived specific configuration.
+	// +optional
+	Keepalived *KeepalivedConfig `json:"keepalived,omitempty"`
+	
+	// F5 holds F5 BIG-IP specific configuration.
+	// +optional
+	F5 *F5Config `json:"f5,omitempty"`
+	
+	// MetalLB holds MetalLB specific configuration.
+	// +optional
+	MetalLB *MetalLBConfig `json:"metal-lb,omitempty"`
+}
+
+type HealthCheckConfig struct {
+	// Enabled enables health checking.
+	// +optional
+	// +kubebuilder:default=true
+	Enabled bool `json:"enabled,omitempty"`
+	
+	// Path is the health check endpoint.
+	// +optional
+	// +kubebuilder:default=/healthz
+	Path string `json:"path,omitempty"`
+	
+	// Interval is the check interval.
+	// +optional
+	// +kubebuilder:default="5s"
+	Interval string `json:"interval,omitempty"`
+	
+	// Timeout is the check timeout.
+	// +optional
+	// +kubebuilder:default="3s"
+	Timeout string `json:"timeout,omitempty"`
+	
+	// HealthyThreshold is the number of successful checks to mark as healthy.
+	// +optional
+	// +kubebuilder:default=2
+	HealthyThreshold int `json:"healthyThreshold,omitempty"`
+	
+	// UnhealthyThreshold is the number of failed checks to mark as unhealthy.
+	// +optional
+	// +kubebuilder:default=3
+	UnhealthyThreshold int `json:"unhealthyThreshold,omitempty"`
+}
+
+type HAProxyConfig struct {
+	// AdminHost is the HAProxy Runtime API host.
+	// +optional
+	AdminHost string `json:"adminHost,omitempty"`
+	
+	// AdminPort is the HAProxy Runtime API port.
+	// +optional
+	// +kubebuilder:default=9999
+	AdminPort int `json:"adminPort,omitempty"`
+	
+	// SSHHost is the HAProxy server SSH host (alternative to Runtime API).
+	// +optional
+	SSHHost string `json:"sshHost,omitempty"`
+	
+	// SSHPort is the HAProxy server SSH port.
+	// +optional
+	// +kubebuilder:default=22
+	SSHPort int `json:"sshPort,omitempty"`
+	
+	// SSHCredentialsRef references the SSH credentials secret.
+	// +optional
+	SSHCredentialsRef *corev1.LocalObjectReference `json:"sshCredentialsRef,omitempty"`
+	
+	// ConfigFile is the HAProxy configuration file path.
+	// +optional
+	// +kubebuilder:default=/etc/haproxy/haproxy.cfg
+	ConfigFile string `json:"configFile,omitempty"`
+	
+	// BackendName is the backend name in HAProxy config.
+	// +optional
+	// +kubebuilder:default=k8s-apiserver
+	BackendName string `json:"backendName,omitempty"`
+	
+	// ReloadCommand is the command to reload HAProxy.
+	// +optional
+	// +kubebuilder:default="systemctl reload haproxy"
+	ReloadCommand string `json:"reloadCommand,omitempty"`
+}
+
+type KeepalivedConfig struct {
+	// VirtualIP is the virtual IP address.
+	// +optional
+	VirtualIP string `json:"virtualIP,omitempty"`
+	
+	// Interface is the network interface.
+	// +optional
+	// +kubebuilder:default=eth0
+	Interface string `json:"interface,omitempty"`
+	
+	// VirtualRouterID is the VRRP router ID.
+	// +optional
+	// +kubebuilder:default=51
+	VirtualRouterID int `json:"virtualRouterID,omitempty"`
+	
+	// Priority is the VRRP priority.
+	// +optional
+	// +kubebuilder:default=100
+	Priority int `json:"priority,omitempty"`
+	
+	// AdvertInterval is the advertisement interval in seconds.
+	// +optional
+	// +kubebuilder:default=1
+	AdvertInterval int `json:"advertInterval,omitempty"`
+}
+
+type F5Config struct {
+	// Host is the F5 BIG-IP management host.
+	// +optional
+	Host string `json:"host,omitempty"`
+	
+	// Port is the F5 BIG-IP management port.
+	// +optional
+	// +kubebuilder:default=443
+	Port int `json:"port,omitempty"`
+	
+	// CredentialsRef references the F5 credentials secret.
+	// +optional
+	CredentialsRef *corev1.LocalObjectReference `json:"credentialsRef,omitempty"`
+	
+	// Partition is the F5 partition.
+	// +optional
+	// +kubebuilder:default=Common
+	Partition string `json:"partition,omitempty"`
+	
+	// PoolName is the F5 pool name.
+	// +optional
+	PoolName string `json:"poolName,omitempty"`
+	
+	// VirtualServerName is the F5 virtual server name.
+	// +optional
+	VirtualServerName string `json:"virtualServerName,omitempty"`
+}
+
+type MetalLBConfig struct {
+	// IPAddressPool is the MetalLB IP address pool name.
+	// +optional
+	IPAddressPool string `json:"ipAddressPool,omitempty"`
+	
+	// LoadBalancerIP is the specific IP to assign.
+	// +optional
+	LoadBalancerIP string `json:"loadBalancerIP,omitempty"`
+}
+```
+
+更新 `BareMetalClusterSpec`:
+
+```go
+type BareMetalClusterSpec struct {
+	ControlPlaneEndpoint clusterv1.APIEndpoint `json:"controlPlaneEndpoint,omitempty"`
+	Network              NetworkConfig         `json:"network,omitempty"`
+	LoadBalancer         *LoadBalancerConfig   `json:"loadBalancer,omitempty"`
+}
+```
+
+#### 6.15.4 注册流程
+
+##### 6.15.4.1 注册时机
+
+| 事件 | 操作 | 说明 |
+|------|------|------|
+| 首个 control-plane 初始化 | 创建后端池 + 注册首个节点 | 初始化 HAProxy/F5 配置 |
+| 新 control-plane 加入 | 注册新节点到后端池 | kubeadm join 完成后执行 |
+| control-plane 缩容/删除 | 注销节点从后端池 | 先注销，再删除节点 |
+| 节点健康检查失败 | 临时标记为 unhealthy | 不立即移除，等待恢复 |
+
+##### 6.15.4.2 HAProxy 注册流程 (Runtime API 方式)
+
+```
+control-plane 节点 API Server 启动完成
+    │
+    ▼
+┌─────────────────────────────────────────────────────────┐
+│ 1. 等待 API Server 健康                                  │
+│    ├── curl -sk https://<node-ip>:6443/healthz          │
+│    └── 等待返回 "ok"                                    │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 2. 注册到 HAProxy 后端池                                │
+│    ├── echo "add server <backend>/<server> <ip>:6443    │
+│    │     check inter 5s fall 3 rise 2" |                │
+│    │     socat stdio haproxy-admin:9999                 │
+│    └── 或使用 SSH 执行                                  │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 3. 验证注册结果                                          │
+│    ├── echo "show servers state <backend>" |             │
+│    │     socat stdio haproxy-admin:9999                 │
+│    └── 确认节点状态为 UP                                  │
+└─────────────────────────────────────────────────────────┘
+```
+
+##### 6.15.4.3 HAProxy 注册脚本 (Runtime API)
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+HAPROXY_ADMIN_HOST="${HAPROXY_ADMIN_HOST:-10.0.0.50}"
+HAPROXY_ADMIN_PORT="${HAPROXY_ADMIN_PORT:-9999}"
+BACKEND_NAME="${BACKEND_NAME:-k8s-apiserver}"
+SERVER_NAME="${SERVER_NAME}"
+SERVER_IP="${SERVER_IP}"
+SERVER_PORT="${SERVER_PORT:-6443}"
+
+echo "=== 注册 API Server 到 HAProxy ==="
+
+# 1. 等待 API Server 健康
+wait_for_apiserver() {
+    local max_retries=30
+    local retry=0
+    while [ $retry -lt $max_retries ]; do
+        if curl -sk --connect-timeout 2 "https://${SERVER_IP}:${SERVER_PORT}/healthz" 2>/dev/null | grep -q "ok"; then
+            echo "API Server 健康检查通过"
+            return 0
+        fi
+        retry=$((retry + 1))
+        echo "等待 API Server 启动... ($retry/$max_retries)"
+        sleep 5
+    done
+    echo "ERROR: API Server 未能在超时时间内启动"
+    return 1
+}
+
+# 2. 注册到 HAProxy
+register_to_haproxy() {
+    local cmd="add server ${BACKEND_NAME}/${SERVER_NAME} ${SERVER_IP}:${SERVER_PORT} check inter 5s fall 3 rise 2"
+    echo "$cmd" | socat stdio tcp:${HAPROXY_ADMIN_HOST}:${HAPROXY_ADMIN_PORT}
+    echo "已发送注册命令: $cmd"
+}
+
+# 3. 验证注册结果
+verify_registration() {
+    local max_retries=12
+    local retry=0
+    while [ $retry -lt $max_retries ]; do
+        local status
+        status=$(echo "show servers state ${BACKEND_NAME}" | socat stdio tcp:${HAPROXY_ADMIN_HOST}:${HAPROXY_ADMIN_PORT} 2>/dev/null | grep "${SERVER_NAME}" || true)
+        if echo "$status" | grep -q "UP"; then
+            echo "节点 ${SERVER_NAME} 已注册并健康 (UP)"
+            return 0
+        fi
+        retry=$((retry + 1))
+        echo "等待节点健康... ($retry/$max_retries)"
+        sleep 5
+    done
+    echo "WARNING: 节点 ${SERVER_NAME} 注册成功但尚未 UP"
+    return 0
+}
+
+# 4. 注销函数 (用于缩容)
+unregister_from_haproxy() {
+    local cmd="del server ${BACKEND_NAME}/${SERVER_NAME}"
+    echo "$cmd" | socat stdio tcp:${HAPROXY_ADMIN_HOST}:${HAPROXY_ADMIN_PORT}
+    echo "已发送注销命令: $cmd"
+}
+
+case "${ACTION:-register}" in
+    register)
+        wait_for_apiserver
+        register_to_haproxy
+        verify_registration
+        ;;
+    unregister)
+        unregister_from_haproxy
+        ;;
+    *)
+        echo "ERROR: 不支持的操作: ${ACTION}"
+        exit 1
+        ;;
+esac
+
+echo "=== HAProxy 操作完成 ==="
+```
+
+##### 6.15.4.4 HAProxy 注册脚本 (SSH + 配置文件方式)
+
+适用于不支持 Runtime API 的 HAProxy 版本：
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+HAPROXY_SSH_HOST="${HAPROXY_SSH_HOST:-10.0.0.50}"
+HAPROXY_SSH_PORT="${HAPROXY_SSH_PORT:-22}"
+CONFIG_FILE="${CONFIG_FILE:-/etc/haproxy/haproxy.cfg}"
+BACKEND_NAME="${BACKEND_NAME:-k8s-apiserver}"
+SERVER_NAME="${SERVER_NAME}"
+SERVER_IP="${SERVER_IP}"
+SERVER_PORT="${SERVER_PORT:-6443}"
+RELOAD_CMD="${RELOAD_CMD:-systemctl reload haproxy}"
+
+echo "=== 注册 API Server 到 HAProxy (SSH 方式) ==="
+
+# 1. 等待 API Server 健康
+wait_for_apiserver() {
+    local max_retries=30
+    local retry=0
+    while [ $retry -lt $max_retries ]; do
+        if curl -sk --connect-timeout 2 "https://${SERVER_IP}:${SERVER_PORT}/healthz" 2>/dev/null | grep -q "ok"; then
+            echo "API Server 健康检查通过"
+            return 0
+        fi
+        retry=$((retry + 1))
+        sleep 5
+    done
+    echo "ERROR: API Server 未能在超时时间内启动"
+    return 1
+}
+
+# 2. 通过 SSH 修改 HAProxy 配置
+register_to_haproxy() {
+    ssh -p "$HAPROXY_SSH_PORT" root@"$HAPROXY_SSH_HOST" << EOF
+        # 检查是否已存在
+        if grep -q "server ${SERVER_NAME} ${SERVER_IP}:${SERVER_PORT}" "$CONFIG_FILE"; then
+            echo "节点 ${SERVER_NAME} 已存在于配置中"
+        else
+            # 在 backend 段末尾添加 server
+            sed -i "/^backend ${BACKEND_NAME}/,/^$/ {
+                /^$/ i\\    server ${SERVER_NAME} ${SERVER_IP}:${SERVER_PORT} check inter 5s fall 3 rise 2
+            }" "$CONFIG_FILE"
+            echo "已添加节点 ${SERVER_NAME} 到配置"
+        fi
+        
+        # 验证配置
+        haproxy -c -f "$CONFIG_FILE"
+        
+        # 重新加载
+        $RELOAD_CMD
+EOF
+}
+
+# 3. 注销
+unregister_from_haproxy() {
+    ssh -p "$HAPROXY_SSH_PORT" root@"$HAPROXY_SSH_HOST" << EOF
+        sed -i "/server ${SERVER_NAME} ${SERVER_IP}:${SERVER_PORT}/d" "$CONFIG_FILE"
+        haproxy -c -f "$CONFIG_FILE"
+        $RELOAD_CMD
+        echo "已注销节点 ${SERVER_NAME}"
+EOF
+}
+
+case "${ACTION:-register}" in
+    register)
+        wait_for_apiserver
+        register_to_haproxy
+        ;;
+    unregister)
+        unregister_from_haproxy
+        ;;
+esac
+
+echo "=== HAProxy 操作完成 ==="
+```
+
+##### 6.15.4.5 F5 BIG-IP 注册流程
+
+```
+control-plane 节点 API Server 启动完成
+    │
+    ▼
+┌─────────────────────────────────────────────────────────┐
+│ 1. 等待 API Server 健康                                  │
+│    └── curl -sk https://<node-ip>:6443/healthz          │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 2. 调用 F5 iControl REST API 注册节点                    │
+│    ├── POST /mgmt/tm/ltm/pool/~Common~<pool>/members    │
+│    │   {"address": "<ip>", "port": 6443}                │
+│    └── 认证: Basic Auth (admin/password)                │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 3. 验证注册结果                                          │
+│    ├── GET /mgmt/tm/ltm/pool/~Common~<pool>/members     │
+│    └── 确认节点状态为 available                          │
+└─────────────────────────────────────────────────────────┘
+```
+
+##### 6.15.4.6 F5 注册脚本
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+F5_HOST="${F5_HOST:-f5.example.com}"
+F5_PORT="${F5_PORT:-443}"
+F5_USER="${F5_USER:-admin}"
+F5_PASSWORD="${F5_PASSWORD}"
+PARTITION="${PARTITION:-Common}"
+POOL_NAME="${POOL_NAME:-k8s-apiserver-pool}"
+SERVER_IP="${SERVER_IP}"
+SERVER_PORT="${SERVER_PORT:-6443}"
+
+echo "=== 注册 API Server 到 F5 ==="
+
+F5_URL="https://${F5_HOST}:${F5_PORT}/mgmt/tm"
+
+# 1. 等待 API Server 健康
+wait_for_apiserver() {
+    local max_retries=30
+    local retry=0
+    while [ $retry -lt $max_retries ]; do
+        if curl -sk --connect-timeout 2 "https://${SERVER_IP}:${SERVER_PORT}/healthz" 2>/dev/null | grep -q "ok"; then
+            echo "API Server 健康检查通过"
+            return 0
+        fi
+        retry=$((retry + 1))
+        sleep 5
+    done
+    return 1
+}
+
+# 2. 注册到 F5 Pool
+register_to_f5() {
+    local response
+    response=$(curl -sk -X POST \
+        -u "${F5_USER}:${F5_PASSWORD}" \
+        -H "Content-Type: application/json" \
+        -d "{\"address\":\"${SERVER_IP}\",\"port\":${SERVER_PORT},\"name\":\"${SERVER_IP}:${SERVER_PORT}\"}" \
+        "${F5_URL}/ltm/pool/~${PARTITION}~${POOL_NAME}/members")
+    
+    if echo "$response" | grep -q "kind.*ltm:pool:member"; then
+        echo "节点 ${SERVER_IP}:${SERVER_PORT} 已注册到 F5 Pool"
+    else
+        echo "WARNING: F5 注册响应: $response"
+    fi
+}
+
+# 3. 注销
+unregister_from_f5() {
+    local encoded_member
+    encoded_member=$(echo "${SERVER_IP}:${SERVER_PORT}" | sed 's/:/%3A/g')
+    
+    curl -sk -X DELETE \
+        -u "${F5_USER}:${F5_PASSWORD}" \
+        "${F5_URL}/ltm/pool/~${PARTITION}~${POOL_NAME}/members/~${PARTITION}~${encoded_member}"
+    
+    echo "节点 ${SERVER_IP}:${SERVER_PORT} 已从 F5 Pool 注销"
+}
+
+case "${ACTION:-register}" in
+    register)
+        wait_for_apiserver
+        register_to_f5
+        ;;
+    unregister)
+        unregister_from_f5
+        ;;
+esac
+
+echo "=== F5 操作完成 ==="
+```
+
+#### 6.15.5 Controller 集成
+
+在 `BareMetalCluster Controller` 中集成负载均衡器注册逻辑：
+
+```go
+func (r *BareMetalClusterReconciler) reconcileNormal(ctx context.Context, cluster *infrav1.BareMetalCluster) (ctrl.Result, error) {
+    log := ctrl.LoggerFrom(ctx)
+
+    // 1. 验证配置
+    if cluster.Spec.ControlPlaneEndpoint.Host == "" {
+        conditions.MarkFalse(cluster, infrav1.ReadyCondition, infrav1.EndpointNotSetReason, clusterv1.ConditionSeverityError, "controlPlaneEndpoint is required")
+        return ctrl.Result{}, nil
+    }
+
+    // 2. 获取所有 control-plane 节点
+    cpMachines, err := r.getControlPlaneMachines(ctx, cluster)
+    if err != nil {
+        return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+    }
+
+    // 3. 同步负载均衡器后端
+    if cluster.Spec.LoadBalancer != nil {
+        if err := r.syncLoadBalancerBackends(ctx, cluster, cpMachines); err != nil {
+            log.Error(err, "Failed to sync load balancer backends")
+            conditions.MarkFalse(cluster, infrav1.LoadBalancerReadyCondition, infrav1.LBSyncFailedReason, clusterv1.ConditionSeverityWarning, err.Error())
+            return ctrl.Result{RequeueAfter: 30 * time.Second}, r.Status().Update(ctx, cluster)
+        }
+        conditions.MarkTrue(cluster, infrav1.LoadBalancerReadyCondition)
+    }
+
+    // 4. 设置就绪状态
+    cluster.Status.Ready = true
+    conditions.MarkTrue(cluster, infrav1.ReadyCondition)
+
+    return ctrl.Result{}, r.Status().Update(ctx, cluster)
+}
+
+func (r *BareMetalClusterReconciler) syncLoadBalancerBackends(ctx context.Context, cluster *infrav1.BareMetalCluster, cpMachines []*clusterv1.Machine) error {
+    lbConfig := cluster.Spec.LoadBalancer
+    if lbConfig == nil {
+        return nil
+    }
+
+    // 获取期望的后端列表
+    desiredBackends := make(map[string]string) // name -> ip:port
+    for _, m := range cpMachines {
+        if m.Status.Phase == string(clusterv1.MachinePhaseRunning) {
+            ip := getMachineIP(m)
+            if ip != "" {
+                desiredBackends[m.Name] = fmt.Sprintf("%s:%d", ip, cluster.Spec.ControlPlaneEndpoint.Port)
+            }
+        }
+    }
+
+    // 获取当前后端列表
+    currentBackends, err := r.getLoadBalancerBackends(ctx, lbConfig)
+    if err != nil {
+        return err
+    }
+
+    // 计算差异
+    toAdd := make(map[string]string)
+    toRemove := make(map[string]string)
+
+    for name, addr := range desiredBackends {
+        if _, exists := currentBackends[name]; !exists {
+            toAdd[name] = addr
+        }
+    }
+    for name, addr := range currentBackends {
+        if _, exists := desiredBackends[name]; !exists {
+            toRemove[name] = addr
+        }
+    }
+
+    // 执行注册
+    for name, addr := range toAdd {
+        ip := strings.Split(addr, ":")[0]
+        port := strings.Split(addr, ":")[1]
+        if err := r.registerBackend(ctx, lbConfig, name, ip, port); err != nil {
+            return fmt.Errorf("failed to register backend %s: %w", name, err)
+        }
+    }
+
+    // 执行注销
+    for name, addr := range toRemove {
+        ip := strings.Split(addr, ":")[0]
+        port := strings.Split(addr, ":")[1]
+        if err := r.unregisterBackend(ctx, lbConfig, name, ip, port); err != nil {
+            return fmt.Errorf("failed to unregister backend %s: %w", name, err)
+        }
+    }
+
+    return nil
+}
+
+func (r *BareMetalClusterReconciler) registerBackend(ctx context.Context, lbConfig *infrav1.LoadBalancerConfig, name, ip, port string) error {
+    switch lbConfig.Provider {
+    case "haproxy":
+        return r.registerHAProxy(ctx, lbConfig.HAProxy, name, ip, port)
+    case "f5":
+        return r.registerF5(ctx, lbConfig.F5, name, ip, port)
+    case "keepalived":
+        return r.registerKeepalived(ctx, lbConfig.Keepalived, name, ip, port)
+    default:
+        return fmt.Errorf("unsupported load balancer provider: %s", lbConfig.Provider)
+    }
+}
+
+func (r *BareMetalClusterReconciler) registerHAProxy(ctx context.Context, haproxyConfig *infrav1.HAProxyConfig, name, ip, port string) error {
+    if haproxyConfig.AdminHost != "" {
+        // Runtime API 方式
+        cmd := fmt.Sprintf("add server %s/%s %s:%s check inter 5s fall 3 rise 2",
+            haproxyConfig.BackendName, name, ip, port)
+        return r.execHAProxyRuntimeAPI(ctx, haproxyConfig.AdminHost, haproxyConfig.AdminPort, cmd)
+    } else if haproxyConfig.SSHHost != "" {
+        // SSH 方式
+        return r.execHAProxySSH(ctx, haproxyConfig, name, ip, port, "register")
+    }
+    return fmt.Errorf("HAProxy: neither adminHost nor sshHost configured")
+}
+```
+
+#### 6.15.6 ClusterClass 变量和 Patches
+
+在 ClusterClass 中新增负载均衡器变量：
+
+```yaml
+  variables:
+  - name: loadBalancer
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          provider:
+            type: string
+            default: "haproxy"
+            enum:
+              - "haproxy"
+              - "keepalived"
+              - "f5"
+              - "nginx"
+              - "metal-lb"
+          healthCheck:
+            type: object
+            properties:
+              enabled:
+                type: boolean
+                default: true
+              path:
+                type: string
+                default: "/healthz"
+              interval:
+                type: string
+                default: "5s"
+              timeout:
+                type: string
+                default: "3s"
+          haproxy:
+            type: object
+            properties:
+              adminHost:
+                type: string
+              adminPort:
+                type: integer
+                default: 9999
+              sshHost:
+                type: string
+              sshPort:
+                type: integer
+                default: 22
+              configFile:
+                type: string
+                default: "/etc/haproxy/haproxy.cfg"
+              backendName:
+                type: string
+                default: "k8s-apiserver"
+              reloadCommand:
+                type: string
+                default: "systemctl reload haproxy"
+          keepalived:
+            type: object
+            properties:
+              virtualIP:
+                type: string
+              interface:
+                type: string
+                default: "eth0"
+              virtualRouterID:
+                type: integer
+                default: 51
+              priority:
+                type: integer
+                default: 100
+          f5:
+            type: object
+            properties:
+              host:
+                type: string
+              port:
+                type: integer
+                default: 443
+              partition:
+                type: string
+                default: "Common"
+              poolName:
+                type: string
+              virtualServerName:
+                type: string
+```
+
+Patch 定义：
+
+```yaml
+  patches:
+  - name: loadBalancer
+    enabledIf: "{{ if .loadBalancer }}true{{end}}"
+    definitions:
+    - selector:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        kind: BareMetalClusterTemplate
+        matchResources:
+          infrastructureCluster: true
+      jsonPatches:
+      - op: add
+        path: /spec/template/spec/loadBalancer
+        valueFrom:
+          variable: loadBalancer
+```
+
+#### 6.15.7 用户使用示例
+
+##### 6.15.7.1 HAProxy 方式
+
+```yaml
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  name: my-baremetal-cluster
+spec:
+  topology:
+    classRef:
+      name: baremetal-clusterclass-v0.1.0
+    version: v1.31.0
+    controlPlane:
+      replicas: 3
+    workers:
+      machineDeployments:
+      - class: default-worker
+        name: md-0
+        replicas: 2
+    variables:
+    - name: controlPlaneEndpoint
+      value:
+        host: "10.0.0.100"
+        port: 6443
+    - name: loadBalancer
+      value:
+        provider: "haproxy"
+        healthCheck:
+          enabled: true
+          path: "/healthz"
+          interval: "5s"
+          timeout: "3s"
+        haproxy:
+          adminHost: "10.0.0.50"
+          adminPort: 9999
+          backendName: "k8s-apiserver"
+          reloadCommand: "systemctl reload haproxy"
+```
+
+##### 6.15.7.2 Keepalived + HAProxy 方式 (无外部 LB)
+
+```yaml
+    variables:
+    - name: loadBalancer
+      value:
+        provider: "keepalived"
+        healthCheck:
+          enabled: true
+          path: "/healthz"
+        keepalived:
+          virtualIP: "10.0.0.100"
+          interface: "eth0"
+          virtualRouterID: 51
+          priority: 100
+          advertInterval: 1
+```
+
+##### 6.15.7.3 F5 BIG-IP 方式
+
+```yaml
+    variables:
+    - name: loadBalancer
+      value:
+        provider: "f5"
+        healthCheck:
+          enabled: true
+          path: "/healthz"
+          interval: "5s"
+        f5:
+          host: "f5.example.com"
+          port: 443
+          partition: "Common"
+          poolName: "k8s-apiserver-pool"
+          virtualServerName: "k8s-apiserver-vs"
+```
+
+#### 6.15.8 关键设计决策
+
+| 决策点 | 选项 | 推荐 | 理由 |
+|--------|------|------|------|
+| **注册方式** | Runtime API vs SSH vs 配置文件 | Runtime API 优先，SSH 备选 | Runtime API 无需 reload，零中断 |
+| **健康检查** | LB 内置 vs CAPBM 主动检查 | LB 内置 | 利用 LB 原生能力，更可靠 |
+| **注销时机** | 先注销再删除 vs 先删除再注销 | 先注销再删除 | 避免流量路由到已删除节点 |
+| **多 LB 支持** | 单一 LB 类型 vs 插件化 | 插件化 | 不同环境可能使用不同 LB |
+| **凭证管理** | 明文 vs Secret | Secret | 安全性，支持 RBAC 控制访问 |
+
+### 6.15 API Server 负载均衡注册
+
+#### 6.15.1 问题背景
+
+裸金属集群的控制面节点通常部署为高可用架构（3 或 5 个 control-plane 节点），需要外部负载均衡器将流量分发到所有 API Server 实例。
+
+仅设置 `controlPlaneEndpoint` 是不够的，还需要：
+1. **注册**: 当 control-plane 节点加入集群时，将其 API Server 地址注册到负载均衡器后端
+2. **健康检查**: 定期检查 API Server 健康状态，自动剔除不健康节点
+3. **注销**: 当 control-plane 节点被删除或缩容时，从负载均衡器移除后端
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                    负载均衡架构                               │
+│                                                              │
+│  kubectl / 客户端                                            │
+│       │                                                      │
+│       ▼                                                      │
+│  ┌─────────────────┐                                         │
+│  │  Load Balancer   │  ←  CAPBM 负责注册/注销后端             │
+│  │  VIP: 10.0.0.100 │                                         │
+│  │  Port: 6443      │                                         │
+│  └────┬────┬────┬───┘                                         │
+│       │    │    │                                             │
+│       ▼    ▼    ▼                                             │
+│  ┌──────┐┌──────┐┌──────┐                                    │
+│  │CP-01 ││CP-02 ││CP-03 │                                    │
+│  │:6443 ││:6443 ││:6443 │                                    │
+│  └──────┘└──────┘└──────┘                                    │
+└──────────────────────────────────────────────────────────────┘
+```
+
+#### 6.15.2 支持的负载均衡器类型
+
+| 类型 | 注册方式 | 适用场景 | 健康检查 |
+|------|---------|---------|---------|
+| **HAProxy** | 配置文件 + reload / Runtime API | 中小型集群，软件 LB | HTTP GET /healthz |
+| **Keepalived + HAProxy** | Keepalived VIP + HAProxy 后端 | 无外部 LB 的裸金属 | TCP check + HTTP |
+| **F5 BIG-IP** | iControl REST API | 企业级硬件 LB | HTTP monitor |
+| **Nginx** | 配置文件 + reload / Stream module | 轻量级场景 | TCP check |
+| **云厂商 LB** | Cloud Provider API (AWS/Aliyun/华为云) | 混合云场景 | 云厂商内置 |
+| **MetalLB** | BGP / L2 宣告 | 裸金属 Service LB | 内置 |
+
+CAPBM 采用**插件化设计**，通过 `lbProvider` 变量选择负载均衡器类型。
+
+#### 6.15.3 CRD 设计扩展
+
+在 `BareMetalClusterSpec` 中新增负载均衡器配置：
+
+```yaml
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: BareMetalCluster
+spec:
+  controlPlaneEndpoint:
+    host: "lb.example.com"
+    port: 6443
+  
+  loadBalancer:
+    # 负载均衡器类型
+    provider: "haproxy"        # haproxy | keepalived | f5 | nginx | metal-lb
+    
+    # 通用配置
+    healthCheck:
+      enabled: true
+      path: "/healthz"
+      interval: "5s"
+      timeout: "3s"
+      healthyThreshold: 2
+      unhealthyThreshold: 3
+    
+    # HAProxy 特定配置
+    haproxy:
+      # HAProxy 管理节点地址（Runtime API）
+      adminHost: "10.0.0.50"
+      adminPort: 9999
+      # 或 SSH 方式管理
+      sshHost: "10.0.0.50"
+      sshPort: 22
+      sshCredentialsRef:
+        name: "haproxy-credentials"
+      # 配置文件路径
+      configFile: "/etc/haproxy/haproxy.cfg"
+      backendName: "k8s-apiserver"
+      # reload 命令
+      reloadCommand: "systemctl reload haproxy"
+    
+    # Keepalived 特定配置
+    keepalived:
+      virtualIP: "10.0.0.100"
+      interface: "eth0"
+      virtualRouterID: 51
+      priority: 100
+      advertInterval: 1
+    
+    # F5 特定配置
+    f5:
+      host: "f5.example.com"
+      port: 443
+      credentialsRef:
+        name: "f5-credentials"
+      partition: "Common"
+      poolName: "k8s-apiserver-pool"
+      virtualServerName: "k8s-apiserver-vs"
+    
+    # MetalLB 特定配置
+    metal-lb:
+      ipAddressPool: "apiserver-pool"
+      loadBalancerIP: "10.0.0.100"
+```
+
+**Go 类型定义**:
+
+```go
+type LoadBalancerConfig struct {
+	// Provider is the load balancer type.
+	// +optional
+	// +kubebuilder:default=haproxy
+	Provider string `json:"provider,omitempty"`
+	
+	// HealthCheck defines health check configuration.
+	// +optional
+	HealthCheck HealthCheckConfig `json:"healthCheck,omitempty"`
+	
+	// HAProxy holds HAProxy specific configuration.
+	// +optional
+	HAProxy *HAProxyConfig `json:"haproxy,omitempty"`
+	
+	// Keepalived holds Keepalived specific configuration.
+	// +optional
+	Keepalived *KeepalivedConfig `json:"keepalived,omitempty"`
+	
+	// F5 holds F5 BIG-IP specific configuration.
+	// +optional
+	F5 *F5Config `json:"f5,omitempty"`
+	
+	// MetalLB holds MetalLB specific configuration.
+	// +optional
+	MetalLB *MetalLBConfig `json:"metal-lb,omitempty"`
+}
+
+type HealthCheckConfig struct {
+	// Enabled enables health checking.
+	// +optional
+	// +kubebuilder:default=true
+	Enabled bool `json:"enabled,omitempty"`
+	
+	// Path is the health check endpoint.
+	// +optional
+	// +kubebuilder:default=/healthz
+	Path string `json:"path,omitempty"`
+	
+	// Interval is the check interval.
+	// +optional
+	// +kubebuilder:default="5s"
+	Interval string `json:"interval,omitempty"`
+	
+	// Timeout is the check timeout.
+	// +optional
+	// +kubebuilder:default="3s"
+	Timeout string `json:"timeout,omitempty"`
+	
+	// HealthyThreshold is the number of successful checks to mark as healthy.
+	// +optional
+	// +kubebuilder:default=2
+	HealthyThreshold int `json:"healthyThreshold,omitempty"`
+	
+	// UnhealthyThreshold is the number of failed checks to mark as unhealthy.
+	// +optional
+	// +kubebuilder:default=3
+	UnhealthyThreshold int `json:"unhealthyThreshold,omitempty"`
+}
+
+type HAProxyConfig struct {
+	// AdminHost is the HAProxy Runtime API host.
+	// +optional
+	AdminHost string `json:"adminHost,omitempty"`
+	
+	// AdminPort is the HAProxy Runtime API port.
+	// +optional
+	// +kubebuilder:default=9999
+	AdminPort int `json:"adminPort,omitempty"`
+	
+	// SSHHost is the HAProxy server SSH host (alternative to Runtime API).
+	// +optional
+	SSHHost string `json:"sshHost,omitempty"`
+	
+	// SSHPort is the HAProxy server SSH port.
+	// +optional
+	// +kubebuilder:default=22
+	SSHPort int `json:"sshPort,omitempty"`
+	
+	// SSHCredentialsRef references the SSH credentials secret.
+	// +optional
+	SSHCredentialsRef *corev1.LocalObjectReference `json:"sshCredentialsRef,omitempty"`
+	
+	// ConfigFile is the HAProxy configuration file path.
+	// +optional
+	// +kubebuilder:default=/etc/haproxy/haproxy.cfg
+	ConfigFile string `json:"configFile,omitempty"`
+	
+	// BackendName is the backend name in HAProxy config.
+	// +optional
+	// +kubebuilder:default=k8s-apiserver
+	BackendName string `json:"backendName,omitempty"`
+	
+	// ReloadCommand is the command to reload HAProxy.
+	// +optional
+	// +kubebuilder:default="systemctl reload haproxy"
+	ReloadCommand string `json:"reloadCommand,omitempty"`
+}
+
+type KeepalivedConfig struct {
+	// VirtualIP is the virtual IP address.
+	// +optional
+	VirtualIP string `json:"virtualIP,omitempty"`
+	
+	// Interface is the network interface.
+	// +optional
+	// +kubebuilder:default=eth0
+	Interface string `json:"interface,omitempty"`
+	
+	// VirtualRouterID is the VRRP router ID.
+	// +optional
+	// +kubebuilder:default=51
+	VirtualRouterID int `json:"virtualRouterID,omitempty"`
+	
+	// Priority is the VRRP priority.
+	// +optional
+	// +kubebuilder:default=100
+	Priority int `json:"priority,omitempty"`
+	
+	// AdvertInterval is the advertisement interval in seconds.
+	// +optional
+	// +kubebuilder:default=1
+	AdvertInterval int `json:"advertInterval,omitempty"`
+}
+
+type F5Config struct {
+	// Host is the F5 BIG-IP management host.
+	// +optional
+	Host string `json:"host,omitempty"`
+	
+	// Port is the F5 BIG-IP management port.
+	// +optional
+	// +kubebuilder:default=443
+	Port int `json:"port,omitempty"`
+	
+	// CredentialsRef references the F5 credentials secret.
+	// +optional
+	CredentialsRef *corev1.LocalObjectReference `json:"credentialsRef,omitempty"`
+	
+	// Partition is the F5 partition.
+	// +optional
+	// +kubebuilder:default=Common
+	Partition string `json:"partition,omitempty"`
+	
+	// PoolName is the F5 pool name.
+	// +optional
+	PoolName string `json:"poolName,omitempty"`
+	
+	// VirtualServerName is the F5 virtual server name.
+	// +optional
+	VirtualServerName string `json:"virtualServerName,omitempty"`
+}
+
+type MetalLBConfig struct {
+	// IPAddressPool is the MetalLB IP address pool name.
+	// +optional
+	IPAddressPool string `json:"ipAddressPool,omitempty"`
+	
+	// LoadBalancerIP is the specific IP to assign.
+	// +optional
+	LoadBalancerIP string `json:"loadBalancerIP,omitempty"`
+}
+```
+
+更新 `BareMetalClusterSpec`:
+
+```go
+type BareMetalClusterSpec struct {
+	ControlPlaneEndpoint clusterv1.APIEndpoint `json:"controlPlaneEndpoint,omitempty"`
+	Network              NetworkConfig         `json:"network,omitempty"`
+	LoadBalancer         *LoadBalancerConfig   `json:"loadBalancer,omitempty"`
+}
+```
+
+#### 6.15.4 注册流程
+
+##### 6.15.4.1 注册时机
+
+| 事件 | 操作 | 说明 |
+|------|------|------|
+| 首个 control-plane 初始化 | 创建后端池 + 注册首个节点 | 初始化 HAProxy/F5 配置 |
+| 新 control-plane 加入 | 注册新节点到后端池 | kubeadm join 完成后执行 |
+| control-plane 缩容/删除 | 注销节点从后端池 | 先注销，再删除节点 |
+| 节点健康检查失败 | 临时标记为 unhealthy | 不立即移除，等待恢复 |
+
+##### 6.15.4.2 HAProxy 注册流程 (Runtime API 方式)
+
+```
+control-plane 节点 API Server 启动完成
+    │
+    ▼
+┌─────────────────────────────────────────────────────────┐
+│ 1. 等待 API Server 健康                                  │
+│    ├── curl -sk https://<node-ip>:6443/healthz          │
+│    └── 等待返回 "ok"                                    │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 2. 注册到 HAProxy 后端池                                │
+│    ├── echo "add server <backend>/<server> <ip>:6443    │
+│    │     check inter 5s fall 3 rise 2" |                │
+│    │     socat stdio haproxy-admin:9999                 │
+│    └── 或使用 SSH 执行                                  │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 3. 验证注册结果                                          │
+│    ├── echo "show servers state <backend>" |             │
+│    │     socat stdio haproxy-admin:9999                 │
+│    └── 确认节点状态为 UP                                  │
+└─────────────────────────────────────────────────────────┘
+```
+
+##### 6.15.4.3 HAProxy 注册脚本 (Runtime API)
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+HAPROXY_ADMIN_HOST="${HAPROXY_ADMIN_HOST:-10.0.0.50}"
+HAPROXY_ADMIN_PORT="${HAPROXY_ADMIN_PORT:-9999}"
+BACKEND_NAME="${BACKEND_NAME:-k8s-apiserver}"
+SERVER_NAME="${SERVER_NAME}"
+SERVER_IP="${SERVER_IP}"
+SERVER_PORT="${SERVER_PORT:-6443}"
+
+echo "=== 注册 API Server 到 HAProxy ==="
+
+# 1. 等待 API Server 健康
+wait_for_apiserver() {
+    local max_retries=30
+    local retry=0
+    while [ $retry -lt $max_retries ]; do
+        if curl -sk --connect-timeout 2 "https://${SERVER_IP}:${SERVER_PORT}/healthz" 2>/dev/null | grep -q "ok"; then
+            echo "API Server 健康检查通过"
+            return 0
+        fi
+        retry=$((retry + 1))
+        echo "等待 API Server 启动... ($retry/$max_retries)"
+        sleep 5
+    done
+    echo "ERROR: API Server 未能在超时时间内启动"
+    return 1
+}
+
+# 2. 注册到 HAProxy
+register_to_haproxy() {
+    local cmd="add server ${BACKEND_NAME}/${SERVER_NAME} ${SERVER_IP}:${SERVER_PORT} check inter 5s fall 3 rise 2"
+    echo "$cmd" | socat stdio tcp:${HAPROXY_ADMIN_HOST}:${HAPROXY_ADMIN_PORT}
+    echo "已发送注册命令: $cmd"
+}
+
+# 3. 验证注册结果
+verify_registration() {
+    local max_retries=12
+    local retry=0
+    while [ $retry -lt $max_retries ]; do
+        local status
+        status=$(echo "show servers state ${BACKEND_NAME}" | socat stdio tcp:${HAPROXY_ADMIN_HOST}:${HAPROXY_ADMIN_PORT} 2>/dev/null | grep "${SERVER_NAME}" || true)
+        if echo "$status" | grep -q "UP"; then
+            echo "节点 ${SERVER_NAME} 已注册并健康 (UP)"
+            return 0
+        fi
+        retry=$((retry + 1))
+        echo "等待节点健康... ($retry/$max_retries)"
+        sleep 5
+    done
+    echo "WARNING: 节点 ${SERVER_NAME} 注册成功但尚未 UP"
+    return 0
+}
+
+# 4. 注销函数 (用于缩容)
+unregister_from_haproxy() {
+    local cmd="del server ${BACKEND_NAME}/${SERVER_NAME}"
+    echo "$cmd" | socat stdio tcp:${HAPROXY_ADMIN_HOST}:${HAPROXY_ADMIN_PORT}
+    echo "已发送注销命令: $cmd"
+}
+
+case "${ACTION:-register}" in
+    register)
+        wait_for_apiserver
+        register_to_haproxy
+        verify_registration
+        ;;
+    unregister)
+        unregister_from_haproxy
+        ;;
+    *)
+        echo "ERROR: 不支持的操作: ${ACTION}"
+        exit 1
+        ;;
+esac
+
+echo "=== HAProxy 操作完成 ==="
+```
+
+##### 6.15.4.4 HAProxy 注册脚本 (SSH + 配置文件方式)
+
+适用于不支持 Runtime API 的 HAProxy 版本：
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+HAPROXY_SSH_HOST="${HAPROXY_SSH_HOST:-10.0.0.50}"
+HAPROXY_SSH_PORT="${HAPROXY_SSH_PORT:-22}"
+CONFIG_FILE="${CONFIG_FILE:-/etc/haproxy/haproxy.cfg}"
+BACKEND_NAME="${BACKEND_NAME:-k8s-apiserver}"
+SERVER_NAME="${SERVER_NAME}"
+SERVER_IP="${SERVER_IP}"
+SERVER_PORT="${SERVER_PORT:-6443}"
+RELOAD_CMD="${RELOAD_CMD:-systemctl reload haproxy}"
+
+echo "=== 注册 API Server 到 HAProxy (SSH 方式) ==="
+
+# 1. 等待 API Server 健康
+wait_for_apiserver() {
+    local max_retries=30
+    local retry=0
+    while [ $retry -lt $max_retries ]; do
+        if curl -sk --connect-timeout 2 "https://${SERVER_IP}:${SERVER_PORT}/healthz" 2>/dev/null | grep -q "ok"; then
+            echo "API Server 健康检查通过"
+            return 0
+        fi
+        retry=$((retry + 1))
+        sleep 5
+    done
+    echo "ERROR: API Server 未能在超时时间内启动"
+    return 1
+}
+
+# 2. 通过 SSH 修改 HAProxy 配置
+register_to_haproxy() {
+    ssh -p "$HAPROXY_SSH_PORT" root@"$HAPROXY_SSH_HOST" << EOF
+        # 检查是否已存在
+        if grep -q "server ${SERVER_NAME} ${SERVER_IP}:${SERVER_PORT}" "$CONFIG_FILE"; then
+            echo "节点 ${SERVER_NAME} 已存在于配置中"
+        else
+            # 在 backend 段末尾添加 server
+            sed -i "/^backend ${BACKEND_NAME}/,/^$/ {
+                /^$/ i\\    server ${SERVER_NAME} ${SERVER_IP}:${SERVER_PORT} check inter 5s fall 3 rise 2
+            }" "$CONFIG_FILE"
+            echo "已添加节点 ${SERVER_NAME} 到配置"
+        fi
+        
+        # 验证配置
+        haproxy -c -f "$CONFIG_FILE"
+        
+        # 重新加载
+        $RELOAD_CMD
+EOF
+}
+
+# 3. 注销
+unregister_from_haproxy() {
+    ssh -p "$HAPROXY_SSH_PORT" root@"$HAPROXY_SSH_HOST" << EOF
+        sed -i "/server ${SERVER_NAME} ${SERVER_IP}:${SERVER_PORT}/d" "$CONFIG_FILE"
+        haproxy -c -f "$CONFIG_FILE"
+        $RELOAD_CMD
+        echo "已注销节点 ${SERVER_NAME}"
+EOF
+}
+
+case "${ACTION:-register}" in
+    register)
+        wait_for_apiserver
+        register_to_haproxy
+        ;;
+    unregister)
+        unregister_from_haproxy
+        ;;
+esac
+
+echo "=== HAProxy 操作完成 ==="
+```
+
+##### 6.15.4.5 F5 BIG-IP 注册流程
+
+```
+control-plane 节点 API Server 启动完成
+    │
+    ▼
+┌─────────────────────────────────────────────────────────┐
+│ 1. 等待 API Server 健康                                  │
+│    └── curl -sk https://<node-ip>:6443/healthz          │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 2. 调用 F5 iControl REST API 注册节点                    │
+│    ├── POST /mgmt/tm/ltm/pool/~Common~<pool>/members    │
+│    │   {"address": "<ip>", "port": 6443}                │
+│    └── 认证: Basic Auth (admin/password)                │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 3. 验证注册结果                                          │
+│    ├── GET /mgmt/tm/ltm/pool/~Common~<pool>/members     │
+│    └── 确认节点状态为 available                          │
+└─────────────────────────────────────────────────────────┘
+```
+
+##### 6.15.4.6 F5 注册脚本
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+F5_HOST="${F5_HOST:-f5.example.com}"
+F5_PORT="${F5_PORT:-443}"
+F5_USER="${F5_USER:-admin}"
+F5_PASSWORD="${F5_PASSWORD}"
+PARTITION="${PARTITION:-Common}"
+POOL_NAME="${POOL_NAME:-k8s-apiserver-pool}"
+SERVER_IP="${SERVER_IP}"
+SERVER_PORT="${SERVER_PORT:-6443}"
+
+echo "=== 注册 API Server 到 F5 ==="
+
+F5_URL="https://${F5_HOST}:${F5_PORT}/mgmt/tm"
+
+# 1. 等待 API Server 健康
+wait_for_apiserver() {
+    local max_retries=30
+    local retry=0
+    while [ $retry -lt $max_retries ]; do
+        if curl -sk --connect-timeout 2 "https://${SERVER_IP}:${SERVER_PORT}/healthz" 2>/dev/null | grep -q "ok"; then
+            echo "API Server 健康检查通过"
+            return 0
+        fi
+        retry=$((retry + 1))
+        sleep 5
+    done
+    return 1
+}
+
+# 2. 注册到 F5 Pool
+register_to_f5() {
+    local response
+    response=$(curl -sk -X POST \
+        -u "${F5_USER}:${F5_PASSWORD}" \
+        -H "Content-Type: application/json" \
+        -d "{\"address\":\"${SERVER_IP}\",\"port\":${SERVER_PORT},\"name\":\"${SERVER_IP}:${SERVER_PORT}\"}" \
+        "${F5_URL}/ltm/pool/~${PARTITION}~${POOL_NAME}/members")
+    
+    if echo "$response" | grep -q "kind.*ltm:pool:member"; then
+        echo "节点 ${SERVER_IP}:${SERVER_PORT} 已注册到 F5 Pool"
+    else
+        echo "WARNING: F5 注册响应: $response"
+    fi
+}
+
+# 3. 注销
+unregister_from_f5() {
+    local encoded_member
+    encoded_member=$(echo "${SERVER_IP}:${SERVER_PORT}" | sed 's/:/%3A/g')
+    
+    curl -sk -X DELETE \
+        -u "${F5_USER}:${F5_PASSWORD}" \
+        "${F5_URL}/ltm/pool/~${PARTITION}~${POOL_NAME}/members/~${PARTITION}~${encoded_member}"
+    
+    echo "节点 ${SERVER_IP}:${SERVER_PORT} 已从 F5 Pool 注销"
+}
+
+case "${ACTION:-register}" in
+    register)
+        wait_for_apiserver
+        register_to_f5
+        ;;
+    unregister)
+        unregister_from_f5
+        ;;
+esac
+
+echo "=== F5 操作完成 ==="
+```
+
+#### 6.15.5 Controller 集成
+
+在 `BareMetalCluster Controller` 中集成负载均衡器注册逻辑：
+
+```go
+func (r *BareMetalClusterReconciler) reconcileNormal(ctx context.Context, cluster *infrav1.BareMetalCluster) (ctrl.Result, error) {
+    log := ctrl.LoggerFrom(ctx)
+
+    // 1. 验证配置
+    if cluster.Spec.ControlPlaneEndpoint.Host == "" {
+        conditions.MarkFalse(cluster, infrav1.ReadyCondition, infrav1.EndpointNotSetReason, clusterv1.ConditionSeverityError, "controlPlaneEndpoint is required")
+        return ctrl.Result{}, nil
+    }
+
+    // 2. 获取所有 control-plane 节点
+    cpMachines, err := r.getControlPlaneMachines(ctx, cluster)
+    if err != nil {
+        return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+    }
+
+    // 3. 同步负载均衡器后端
+    if cluster.Spec.LoadBalancer != nil {
+        if err := r.syncLoadBalancerBackends(ctx, cluster, cpMachines); err != nil {
+            log.Error(err, "Failed to sync load balancer backends")
+            conditions.MarkFalse(cluster, infrav1.LoadBalancerReadyCondition, infrav1.LBSyncFailedReason, clusterv1.ConditionSeverityWarning, err.Error())
+            return ctrl.Result{RequeueAfter: 30 * time.Second}, r.Status().Update(ctx, cluster)
+        }
+        conditions.MarkTrue(cluster, infrav1.LoadBalancerReadyCondition)
+    }
+
+    // 4. 设置就绪状态
+    cluster.Status.Ready = true
+    conditions.MarkTrue(cluster, infrav1.ReadyCondition)
+
+    return ctrl.Result{}, r.Status().Update(ctx, cluster)
+}
+
+func (r *BareMetalClusterReconciler) syncLoadBalancerBackends(ctx context.Context, cluster *infrav1.BareMetalCluster, cpMachines []*clusterv1.Machine) error {
+    lbConfig := cluster.Spec.LoadBalancer
+    if lbConfig == nil {
+        return nil
+    }
+
+    // 获取期望的后端列表
+    desiredBackends := make(map[string]string) // name -> ip:port
+    for _, m := range cpMachines {
+        if m.Status.Phase == string(clusterv1.MachinePhaseRunning) {
+            ip := getMachineIP(m)
+            if ip != "" {
+                desiredBackends[m.Name] = fmt.Sprintf("%s:%d", ip, cluster.Spec.ControlPlaneEndpoint.Port)
+            }
+        }
+    }
+
+    // 获取当前后端列表
+    currentBackends, err := r.getLoadBalancerBackends(ctx, lbConfig)
+    if err != nil {
+        return err
+    }
+
+    // 计算差异
+    toAdd := make(map[string]string)
+    toRemove := make(map[string]string)
+
+    for name, addr := range desiredBackends {
+        if _, exists := currentBackends[name]; !exists {
+            toAdd[name] = addr
+        }
+    }
+    for name, addr := range currentBackends {
+        if _, exists := desiredBackends[name]; !exists {
+            toRemove[name] = addr
+        }
+    }
+
+    // 执行注册
+    for name, addr := range toAdd {
+        ip := strings.Split(addr, ":")[0]
+        port := strings.Split(addr, ":")[1]
+        if err := r.registerBackend(ctx, lbConfig, name, ip, port); err != nil {
+            return fmt.Errorf("failed to register backend %s: %w", name, err)
+        }
+    }
+
+    // 执行注销
+    for name, addr := range toRemove {
+        ip := strings.Split(addr, ":")[0]
+        port := strings.Split(addr, ":")[1]
+        if err := r.unregisterBackend(ctx, lbConfig, name, ip, port); err != nil {
+            return fmt.Errorf("failed to unregister backend %s: %w", name, err)
+        }
+    }
+
+    return nil
+}
+
+func (r *BareMetalClusterReconciler) registerBackend(ctx context.Context, lbConfig *infrav1.LoadBalancerConfig, name, ip, port string) error {
+    switch lbConfig.Provider {
+    case "haproxy":
+        return r.registerHAProxy(ctx, lbConfig.HAProxy, name, ip, port)
+    case "f5":
+        return r.registerF5(ctx, lbConfig.F5, name, ip, port)
+    case "keepalived":
+        return r.registerKeepalived(ctx, lbConfig.Keepalived, name, ip, port)
+    default:
+        return fmt.Errorf("unsupported load balancer provider: %s", lbConfig.Provider)
+    }
+}
+
+func (r *BareMetalClusterReconciler) registerHAProxy(ctx context.Context, haproxyConfig *infrav1.HAProxyConfig, name, ip, port string) error {
+    if haproxyConfig.AdminHost != "" {
+        // Runtime API 方式
+        cmd := fmt.Sprintf("add server %s/%s %s:%s check inter 5s fall 3 rise 2",
+            haproxyConfig.BackendName, name, ip, port)
+        return r.execHAProxyRuntimeAPI(ctx, haproxyConfig.AdminHost, haproxyConfig.AdminPort, cmd)
+    } else if haproxyConfig.SSHHost != "" {
+        // SSH 方式
+        return r.execHAProxySSH(ctx, haproxyConfig, name, ip, port, "register")
+    }
+    return fmt.Errorf("HAProxy: neither adminHost nor sshHost configured")
+}
+```
+
+#### 6.15.6 ClusterClass 变量和 Patches
+
+在 ClusterClass 中新增负载均衡器变量：
+
+```yaml
+  variables:
+  - name: loadBalancer
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          provider:
+            type: string
+            default: "haproxy"
+            enum:
+              - "haproxy"
+              - "keepalived"
+              - "f5"
+              - "nginx"
+              - "metal-lb"
+          healthCheck:
+            type: object
+            properties:
+              enabled:
+                type: boolean
+                default: true
+              path:
+                type: string
+                default: "/healthz"
+              interval:
+                type: string
+                default: "5s"
+              timeout:
+                type: string
+                default: "3s"
+          haproxy:
+            type: object
+            properties:
+              adminHost:
+                type: string
+              adminPort:
+                type: integer
+                default: 9999
+              sshHost:
+                type: string
+              sshPort:
+                type: integer
+                default: 22
+              configFile:
+                type: string
+                default: "/etc/haproxy/haproxy.cfg"
+              backendName:
+                type: string
+                default: "k8s-apiserver"
+              reloadCommand:
+                type: string
+                default: "systemctl reload haproxy"
+          keepalived:
+            type: object
+            properties:
+              virtualIP:
+                type: string
+              interface:
+                type: string
+                default: "eth0"
+              virtualRouterID:
+                type: integer
+                default: 51
+              priority:
+                type: integer
+                default: 100
+          f5:
+            type: object
+            properties:
+              host:
+                type: string
+              port:
+                type: integer
+                default: 443
+              partition:
+                type: string
+                default: "Common"
+              poolName:
+                type: string
+              virtualServerName:
+                type: string
+```
+
+Patch 定义：
+
+```yaml
+  patches:
+  - name: loadBalancer
+    enabledIf: "{{ if .loadBalancer }}true{{end}}"
+    definitions:
+    - selector:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        kind: BareMetalClusterTemplate
+        matchResources:
+          infrastructureCluster: true
+      jsonPatches:
+      - op: add
+        path: /spec/template/spec/loadBalancer
+        valueFrom:
+          variable: loadBalancer
+```
+
+#### 6.15.7 用户使用示例
+
+##### 6.15.7.1 HAProxy 方式
+
+```yaml
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  name: my-baremetal-cluster
+spec:
+  topology:
+    classRef:
+      name: baremetal-clusterclass-v0.1.0
+    version: v1.31.0
+    controlPlane:
+      replicas: 3
+    workers:
+      machineDeployments:
+      - class: default-worker
+        name: md-0
+        replicas: 2
+    variables:
+    - name: controlPlaneEndpoint
+      value:
+        host: "10.0.0.100"
+        port: 6443
+    - name: loadBalancer
+      value:
+        provider: "haproxy"
+        healthCheck:
+          enabled: true
+          path: "/healthz"
+          interval: "5s"
+          timeout: "3s"
+        haproxy:
+          adminHost: "10.0.0.50"
+          adminPort: 9999
+          backendName: "k8s-apiserver"
+          reloadCommand: "systemctl reload haproxy"
+```
+
+##### 6.15.7.2 Keepalived + HAProxy 方式 (无外部 LB)
+
+```yaml
+    variables:
+    - name: loadBalancer
+      value:
+        provider: "keepalived"
+        healthCheck:
+          enabled: true
+          path: "/healthz"
+        keepalived:
+          virtualIP: "10.0.0.100"
+          interface: "eth0"
+          virtualRouterID: 51
+          priority: 100
+          advertInterval: 1
+```
+
+##### 6.15.7.3 F5 BIG-IP 方式
+
+```yaml
+    variables:
+    - name: loadBalancer
+      value:
+        provider: "f5"
+        healthCheck:
+          enabled: true
+          path: "/healthz"
+          interval: "5s"
+        f5:
+          host: "f5.example.com"
+          port: 443
+          partition: "Common"
+          poolName: "k8s-apiserver-pool"
+          virtualServerName: "k8s-apiserver-vs"
+```
+
+#### 6.15.8 关键设计决策
+
+| 决策点 | 选项 | 推荐 | 理由 |
+|--------|------|------|------|
+| **注册方式** | Runtime API vs SSH vs 配置文件 | Runtime API 优先，SSH 备选 | Runtime API 无需 reload，零中断 |
+| **健康检查** | LB 内置 vs CAPBM 主动检查 | LB 内置 | 利用 LB 原生能力，更可靠 |
+| **注销时机** | 先注销再删除 vs 先删除再注销 | 先注销再删除 | 避免流量路由到已删除节点 |
+| **多 LB 支持** | 单一 LB 类型 vs 插件化 | 插件化 | 不同环境可能使用不同 LB |
+| **凭证管理** | 明文 vs Secret | Secret | 安全性，支持 RBAC 控制访问 |
+
+### 6.15 API Server 负载均衡注册
+
+#### 6.15.1 问题背景
+
+裸金属集群的控制面节点通常部署为高可用架构（3 或 5 个 control-plane 节点），需要外部负载均衡器将流量分发到所有 API Server 实例。
+
+仅设置 `controlPlaneEndpoint` 是不够的，还需要：
+1. **注册**: 当 control-plane 节点加入集群时，将其 API Server 地址注册到负载均衡器后端
+2. **健康检查**: 定期检查 API Server 健康状态，自动剔除不健康节点
+3. **注销**: 当 control-plane 节点被删除或缩容时，从负载均衡器移除后端
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                    负载均衡架构                               │
+│                                                              │
+│  kubectl / 客户端                                            │
+│       │                                                      │
+│       ▼                                                      │
+│  ┌─────────────────┐                                         │
+│  │  Load Balancer   │  ←  CAPBM 负责注册/注销后端             │
+│  │  VIP: 10.0.0.100 │                                         │
+│  │  Port: 6443      │                                         │
+│  └────┬────┬────┬───┘                                         │
+│       │    │    │                                             │
+│       ▼    ▼    ▼                                             │
+│  ┌──────┐┌──────┐┌──────┐                                    │
+│  │CP-01 ││CP-02 ││CP-03 │                                    │
+│  │:6443 ││:6443 ││:6443 │                                    │
+│  └──────┘└──────┘└──────┘                                    │
+└──────────────────────────────────────────────────────────────┘
+```
+
+#### 6.15.2 支持的负载均衡器类型
+
+| 类型 | 注册方式 | 适用场景 | 健康检查 |
+|------|---------|---------|---------|
+| **HAProxy** | 配置文件 + reload / Runtime API | 中小型集群，软件 LB | HTTP GET /healthz |
+| **Keepalived + HAProxy** | Keepalived VIP + HAProxy 后端 | 无外部 LB 的裸金属 | TCP check + HTTP |
+| **F5 BIG-IP** | iControl REST API | 企业级硬件 LB | HTTP monitor |
+| **Nginx** | 配置文件 + reload / Stream module | 轻量级场景 | TCP check |
+| **云厂商 LB** | Cloud Provider API (AWS/Aliyun/华为云) | 混合云场景 | 云厂商内置 |
+| **MetalLB** | BGP / L2 宣告 | 裸金属 Service LB | 内置 |
+
+CAPBM 采用**插件化设计**，通过 `lbProvider` 变量选择负载均衡器类型。
+
+#### 6.15.3 CRD 设计扩展
+
+在 `BareMetalClusterSpec` 中新增负载均衡器配置：
+
+```yaml
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: BareMetalCluster
+spec:
+  controlPlaneEndpoint:
+    host: "lb.example.com"
+    port: 6443
+  
+  loadBalancer:
+    # 负载均衡器类型
+    provider: "haproxy"        # haproxy | keepalived | f5 | nginx | metal-lb
+    
+    # 通用配置
+    healthCheck:
+      enabled: true
+      path: "/healthz"
+      interval: "5s"
+      timeout: "3s"
+      healthyThreshold: 2
+      unhealthyThreshold: 3
+    
+    # HAProxy 特定配置
+    haproxy:
+      # HAProxy 管理节点地址（Runtime API）
+      adminHost: "10.0.0.50"
+      adminPort: 9999
+      # 或 SSH 方式管理
+      sshHost: "10.0.0.50"
+      sshPort: 22
+      sshCredentialsRef:
+        name: "haproxy-credentials"
+      # 配置文件路径
+      configFile: "/etc/haproxy/haproxy.cfg"
+      backendName: "k8s-apiserver"
+      # reload 命令
+      reloadCommand: "systemctl reload haproxy"
+    
+    # Keepalived 特定配置
+    keepalived:
+      virtualIP: "10.0.0.100"
+      interface: "eth0"
+      virtualRouterID: 51
+      priority: 100
+      advertInterval: 1
+    
+    # F5 特定配置
+    f5:
+      host: "f5.example.com"
+      port: 443
+      credentialsRef:
+        name: "f5-credentials"
+      partition: "Common"
+      poolName: "k8s-apiserver-pool"
+      virtualServerName: "k8s-apiserver-vs"
+    
+    # MetalLB 特定配置
+    metal-lb:
+      ipAddressPool: "apiserver-pool"
+      loadBalancerIP: "10.0.0.100"
+```
+
+**Go 类型定义**:
+
+```go
+type LoadBalancerConfig struct {
+	// Provider is the load balancer type.
+	// +optional
+	// +kubebuilder:default=haproxy
+	Provider string `json:"provider,omitempty"`
+	
+	// HealthCheck defines health check configuration.
+	// +optional
+	HealthCheck HealthCheckConfig `json:"healthCheck,omitempty"`
+	
+	// HAProxy holds HAProxy specific configuration.
+	// +optional
+	HAProxy *HAProxyConfig `json:"haproxy,omitempty"`
+	
+	// Keepalived holds Keepalived specific configuration.
+	// +optional
+	Keepalived *KeepalivedConfig `json:"keepalived,omitempty"`
+	
+	// F5 holds F5 BIG-IP specific configuration.
+	// +optional
+	F5 *F5Config `json:"f5,omitempty"`
+	
+	// MetalLB holds MetalLB specific configuration.
+	// +optional
+	MetalLB *MetalLBConfig `json:"metal-lb,omitempty"`
+}
+
+type HealthCheckConfig struct {
+	// Enabled enables health checking.
+	// +optional
+	// +kubebuilder:default=true
+	Enabled bool `json:"enabled,omitempty"`
+	
+	// Path is the health check endpoint.
+	// +optional
+	// +kubebuilder:default=/healthz
+	Path string `json:"path,omitempty"`
+	
+	// Interval is the check interval.
+	// +optional
+	// +kubebuilder:default="5s"
+	Interval string `json:"interval,omitempty"`
+	
+	// Timeout is the check timeout.
+	// +optional
+	// +kubebuilder:default="3s"
+	Timeout string `json:"timeout,omitempty"`
+	
+	// HealthyThreshold is the number of successful checks to mark as healthy.
+	// +optional
+	// +kubebuilder:default=2
+	HealthyThreshold int `json:"healthyThreshold,omitempty"`
+	
+	// UnhealthyThreshold is the number of failed checks to mark as unhealthy.
+	// +optional
+	// +kubebuilder:default=3
+	UnhealthyThreshold int `json:"unhealthyThreshold,omitempty"`
+}
+
+type HAProxyConfig struct {
+	// AdminHost is the HAProxy Runtime API host.
+	// +optional
+	AdminHost string `json:"adminHost,omitempty"`
+	
+	// AdminPort is the HAProxy Runtime API port.
+	// +optional
+	// +kubebuilder:default=9999
+	AdminPort int `json:"adminPort,omitempty"`
+	
+	// SSHHost is the HAProxy server SSH host (alternative to Runtime API).
+	// +optional
+	SSHHost string `json:"sshHost,omitempty"`
+	
+	// SSHPort is the HAProxy server SSH port.
+	// +optional
+	// +kubebuilder:default=22
+	SSHPort int `json:"sshPort,omitempty"`
+	
+	// SSHCredentialsRef references the SSH credentials secret.
+	// +optional
+	SSHCredentialsRef *corev1.LocalObjectReference `json:"sshCredentialsRef,omitempty"`
+	
+	// ConfigFile is the HAProxy configuration file path.
+	// +optional
+	// +kubebuilder:default=/etc/haproxy/haproxy.cfg
+	ConfigFile string `json:"configFile,omitempty"`
+	
+	// BackendName is the backend name in HAProxy config.
+	// +optional
+	// +kubebuilder:default=k8s-apiserver
+	BackendName string `json:"backendName,omitempty"`
+	
+	// ReloadCommand is the command to reload HAProxy.
+	// +optional
+	// +kubebuilder:default="systemctl reload haproxy"
+	ReloadCommand string `json:"reloadCommand,omitempty"`
+}
+
+type KeepalivedConfig struct {
+	// VirtualIP is the virtual IP address.
+	// +optional
+	VirtualIP string `json:"virtualIP,omitempty"`
+	
+	// Interface is the network interface.
+	// +optional
+	// +kubebuilder:default=eth0
+	Interface string `json:"interface,omitempty"`
+	
+	// VirtualRouterID is the VRRP router ID.
+	// +optional
+	// +kubebuilder:default=51
+	VirtualRouterID int `json:"virtualRouterID,omitempty"`
+	
+	// Priority is the VRRP priority.
+	// +optional
+	// +kubebuilder:default=100
+	Priority int `json:"priority,omitempty"`
+	
+	// AdvertInterval is the advertisement interval in seconds.
+	// +optional
+	// +kubebuilder:default=1
+	AdvertInterval int `json:"advertInterval,omitempty"`
+}
+
+type F5Config struct {
+	// Host is the F5 BIG-IP management host.
+	// +optional
+	Host string `json:"host,omitempty"`
+	
+	// Port is the F5 BIG-IP management port.
+	// +optional
+	// +kubebuilder:default=443
+	Port int `json:"port,omitempty"`
+	
+	// CredentialsRef references the F5 credentials secret.
+	// +optional
+	CredentialsRef *corev1.LocalObjectReference `json:"credentialsRef,omitempty"`
+	
+	// Partition is the F5 partition.
+	// +optional
+	// +kubebuilder:default=Common
+	Partition string `json:"partition,omitempty"`
+	
+	// PoolName is the F5 pool name.
+	// +optional
+	PoolName string `json:"poolName,omitempty"`
+	
+	// VirtualServerName is the F5 virtual server name.
+	// +optional
+	VirtualServerName string `json:"virtualServerName,omitempty"`
+}
+
+type MetalLBConfig struct {
+	// IPAddressPool is the MetalLB IP address pool name.
+	// +optional
+	IPAddressPool string `json:"ipAddressPool,omitempty"`
+	
+	// LoadBalancerIP is the specific IP to assign.
+	// +optional
+	LoadBalancerIP string `json:"loadBalancerIP,omitempty"`
+}
+```
+
+更新 `BareMetalClusterSpec`:
+
+```go
+type BareMetalClusterSpec struct {
+	ControlPlaneEndpoint clusterv1.APIEndpoint `json:"controlPlaneEndpoint,omitempty"`
+	Network              NetworkConfig         `json:"network,omitempty"`
+	LoadBalancer         *LoadBalancerConfig   `json:"loadBalancer,omitempty"`
+}
+```
+
+#### 6.15.4 注册流程
+
+##### 6.15.4.1 注册时机
+
+| 事件 | 操作 | 说明 |
+|------|------|------|
+| 首个 control-plane 初始化 | 创建后端池 + 注册首个节点 | 初始化 HAProxy/F5 配置 |
+| 新 control-plane 加入 | 注册新节点到后端池 | kubeadm join 完成后执行 |
+| control-plane 缩容/删除 | 注销节点从后端池 | 先注销，再删除节点 |
+| 节点健康检查失败 | 临时标记为 unhealthy | 不立即移除，等待恢复 |
+
+##### 6.15.4.2 HAProxy 注册流程 (Runtime API 方式)
+
+```
+control-plane 节点 API Server 启动完成
+    │
+    ▼
+┌─────────────────────────────────────────────────────────┐
+│ 1. 等待 API Server 健康                                  │
+│    ├── curl -sk https://<node-ip>:6443/healthz          │
+│    └── 等待返回 "ok"                                    │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 2. 注册到 HAProxy 后端池                                │
+│    ├── echo "add server <backend>/<server> <ip>:6443    │
+│    │     check inter 5s fall 3 rise 2" |                │
+│    │     socat stdio haproxy-admin:9999                 │
+│    └── 或使用 SSH 执行                                  │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 3. 验证注册结果                                          │
+│    ├── echo "show servers state <backend>" |             │
+│    │     socat stdio haproxy-admin:9999                 │
+│    └── 确认节点状态为 UP                                  │
+└─────────────────────────────────────────────────────────┘
+```
+
+##### 6.15.4.3 HAProxy 注册脚本 (Runtime API)
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+HAPROXY_ADMIN_HOST="${HAPROXY_ADMIN_HOST:-10.0.0.50}"
+HAPROXY_ADMIN_PORT="${HAPROXY_ADMIN_PORT:-9999}"
+BACKEND_NAME="${BACKEND_NAME:-k8s-apiserver}"
+SERVER_NAME="${SERVER_NAME}"
+SERVER_IP="${SERVER_IP}"
+SERVER_PORT="${SERVER_PORT:-6443}"
+
+echo "=== 注册 API Server 到 HAProxy ==="
+
+# 1. 等待 API Server 健康
+wait_for_apiserver() {
+    local max_retries=30
+    local retry=0
+    while [ $retry -lt $max_retries ]; do
+        if curl -sk --connect-timeout 2 "https://${SERVER_IP}:${SERVER_PORT}/healthz" 2>/dev/null | grep -q "ok"; then
+            echo "API Server 健康检查通过"
+            return 0
+        fi
+        retry=$((retry + 1))
+        echo "等待 API Server 启动... ($retry/$max_retries)"
+        sleep 5
+    done
+    echo "ERROR: API Server 未能在超时时间内启动"
+    return 1
+}
+
+# 2. 注册到 HAProxy
+register_to_haproxy() {
+    local cmd="add server ${BACKEND_NAME}/${SERVER_NAME} ${SERVER_IP}:${SERVER_PORT} check inter 5s fall 3 rise 2"
+    echo "$cmd" | socat stdio tcp:${HAPROXY_ADMIN_HOST}:${HAPROXY_ADMIN_PORT}
+    echo "已发送注册命令: $cmd"
+}
+
+# 3. 验证注册结果
+verify_registration() {
+    local max_retries=12
+    local retry=0
+    while [ $retry -lt $max_retries ]; do
+        local status
+        status=$(echo "show servers state ${BACKEND_NAME}" | socat stdio tcp:${HAPROXY_ADMIN_HOST}:${HAPROXY_ADMIN_PORT} 2>/dev/null | grep "${SERVER_NAME}" || true)
+        if echo "$status" | grep -q "UP"; then
+            echo "节点 ${SERVER_NAME} 已注册并健康 (UP)"
+            return 0
+        fi
+        retry=$((retry + 1))
+        echo "等待节点健康... ($retry/$max_retries)"
+        sleep 5
+    done
+    echo "WARNING: 节点 ${SERVER_NAME} 注册成功但尚未 UP"
+    return 0
+}
+
+# 4. 注销函数 (用于缩容)
+unregister_from_haproxy() {
+    local cmd="del server ${BACKEND_NAME}/${SERVER_NAME}"
+    echo "$cmd" | socat stdio tcp:${HAPROXY_ADMIN_HOST}:${HAPROXY_ADMIN_PORT}
+    echo "已发送注销命令: $cmd"
+}
+
+case "${ACTION:-register}" in
+    register)
+        wait_for_apiserver
+        register_to_haproxy
+        verify_registration
+        ;;
+    unregister)
+        unregister_from_haproxy
+        ;;
+    *)
+        echo "ERROR: 不支持的操作: ${ACTION}"
+        exit 1
+        ;;
+esac
+
+echo "=== HAProxy 操作完成 ==="
+```
+
+##### 6.15.4.4 HAProxy 注册脚本 (SSH + 配置文件方式)
+
+适用于不支持 Runtime API 的 HAProxy 版本：
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+HAPROXY_SSH_HOST="${HAPROXY_SSH_HOST:-10.0.0.50}"
+HAPROXY_SSH_PORT="${HAPROXY_SSH_PORT:-22}"
+CONFIG_FILE="${CONFIG_FILE:-/etc/haproxy/haproxy.cfg}"
+BACKEND_NAME="${BACKEND_NAME:-k8s-apiserver}"
+SERVER_NAME="${SERVER_NAME}"
+SERVER_IP="${SERVER_IP}"
+SERVER_PORT="${SERVER_PORT:-6443}"
+RELOAD_CMD="${RELOAD_CMD:-systemctl reload haproxy}"
+
+echo "=== 注册 API Server 到 HAProxy (SSH 方式) ==="
+
+# 1. 等待 API Server 健康
+wait_for_apiserver() {
+    local max_retries=30
+    local retry=0
+    while [ $retry -lt $max_retries ]; do
+        if curl -sk --connect-timeout 2 "https://${SERVER_IP}:${SERVER_PORT}/healthz" 2>/dev/null | grep -q "ok"; then
+            echo "API Server 健康检查通过"
+            return 0
+        fi
+        retry=$((retry + 1))
+        sleep 5
+    done
+    echo "ERROR: API Server 未能在超时时间内启动"
+    return 1
+}
+
+# 2. 通过 SSH 修改 HAProxy 配置
+register_to_haproxy() {
+    ssh -p "$HAPROXY_SSH_PORT" root@"$HAPROXY_SSH_HOST" << EOF
+        # 检查是否已存在
+        if grep -q "server ${SERVER_NAME} ${SERVER_IP}:${SERVER_PORT}" "$CONFIG_FILE"; then
+            echo "节点 ${SERVER_NAME} 已存在于配置中"
+        else
+            # 在 backend 段末尾添加 server
+            sed -i "/^backend ${BACKEND_NAME}/,/^$/ {
+                /^$/ i\\    server ${SERVER_NAME} ${SERVER_IP}:${SERVER_PORT} check inter 5s fall 3 rise 2
+            }" "$CONFIG_FILE"
+            echo "已添加节点 ${SERVER_NAME} 到配置"
+        fi
+        
+        # 验证配置
+        haproxy -c -f "$CONFIG_FILE"
+        
+        # 重新加载
+        $RELOAD_CMD
+EOF
+}
+
+# 3. 注销
+unregister_from_haproxy() {
+    ssh -p "$HAPROXY_SSH_PORT" root@"$HAPROXY_SSH_HOST" << EOF
+        sed -i "/server ${SERVER_NAME} ${SERVER_IP}:${SERVER_PORT}/d" "$CONFIG_FILE"
+        haproxy -c -f "$CONFIG_FILE"
+        $RELOAD_CMD
+        echo "已注销节点 ${SERVER_NAME}"
+EOF
+}
+
+case "${ACTION:-register}" in
+    register)
+        wait_for_apiserver
+        register_to_haproxy
+        ;;
+    unregister)
+        unregister_from_haproxy
+        ;;
+esac
+
+echo "=== HAProxy 操作完成 ==="
+```
+
+##### 6.15.4.5 F5 BIG-IP 注册流程
+
+```
+control-plane 节点 API Server 启动完成
+    │
+    ▼
+┌─────────────────────────────────────────────────────────┐
+│ 1. 等待 API Server 健康                                  │
+│    └── curl -sk https://<node-ip>:6443/healthz          │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 2. 调用 F5 iControl REST API 注册节点                    │
+│    ├── POST /mgmt/tm/ltm/pool/~Common~<pool>/members    │
+│    │   {"address": "<ip>", "port": 6443}                │
+│    └── 认证: Basic Auth (admin/password)                │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 3. 验证注册结果                                          │
+│    ├── GET /mgmt/tm/ltm/pool/~Common~<pool>/members     │
+│    └── 确认节点状态为 available                          │
+└─────────────────────────────────────────────────────────┘
+```
+
+##### 6.15.4.6 F5 注册脚本
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+F5_HOST="${F5_HOST:-f5.example.com}"
+F5_PORT="${F5_PORT:-443}"
+F5_USER="${F5_USER:-admin}"
+F5_PASSWORD="${F5_PASSWORD}"
+PARTITION="${PARTITION:-Common}"
+POOL_NAME="${POOL_NAME:-k8s-apiserver-pool}"
+SERVER_IP="${SERVER_IP}"
+SERVER_PORT="${SERVER_PORT:-6443}"
+
+echo "=== 注册 API Server 到 F5 ==="
+
+F5_URL="https://${F5_HOST}:${F5_PORT}/mgmt/tm"
+
+# 1. 等待 API Server 健康
+wait_for_apiserver() {
+    local max_retries=30
+    local retry=0
+    while [ $retry -lt $max_retries ]; do
+        if curl -sk --connect-timeout 2 "https://${SERVER_IP}:${SERVER_PORT}/healthz" 2>/dev/null | grep -q "ok"; then
+            echo "API Server 健康检查通过"
+            return 0
+        fi
+        retry=$((retry + 1))
+        sleep 5
+    done
+    return 1
+}
+
+# 2. 注册到 F5 Pool
+register_to_f5() {
+    local response
+    response=$(curl -sk -X POST \
+        -u "${F5_USER}:${F5_PASSWORD}" \
+        -H "Content-Type: application/json" \
+        -d "{\"address\":\"${SERVER_IP}\",\"port\":${SERVER_PORT},\"name\":\"${SERVER_IP}:${SERVER_PORT}\"}" \
+        "${F5_URL}/ltm/pool/~${PARTITION}~${POOL_NAME}/members")
+    
+    if echo "$response" | grep -q "kind.*ltm:pool:member"; then
+        echo "节点 ${SERVER_IP}:${SERVER_PORT} 已注册到 F5 Pool"
+    else
+        echo "WARNING: F5 注册响应: $response"
+    fi
+}
+
+# 3. 注销
+unregister_from_f5() {
+    local encoded_member
+    encoded_member=$(echo "${SERVER_IP}:${SERVER_PORT}" | sed 's/:/%3A/g')
+    
+    curl -sk -X DELETE \
+        -u "${F5_USER}:${F5_PASSWORD}" \
+        "${F5_URL}/ltm/pool/~${PARTITION}~${POOL_NAME}/members/~${PARTITION}~${encoded_member}"
+    
+    echo "节点 ${SERVER_IP}:${SERVER_PORT} 已从 F5 Pool 注销"
+}
+
+case "${ACTION:-register}" in
+    register)
+        wait_for_apiserver
+        register_to_f5
+        ;;
+    unregister)
+        unregister_from_f5
+        ;;
+esac
+
+echo "=== F5 操作完成 ==="
+```
+
+#### 6.15.5 Controller 集成
+
+在 `BareMetalCluster Controller` 中集成负载均衡器注册逻辑：
+
+```go
+func (r *BareMetalClusterReconciler) reconcileNormal(ctx context.Context, cluster *infrav1.BareMetalCluster) (ctrl.Result, error) {
+    log := ctrl.LoggerFrom(ctx)
+
+    // 1. 验证配置
+    if cluster.Spec.ControlPlaneEndpoint.Host == "" {
+        conditions.MarkFalse(cluster, infrav1.ReadyCondition, infrav1.EndpointNotSetReason, clusterv1.ConditionSeverityError, "controlPlaneEndpoint is required")
+        return ctrl.Result{}, nil
+    }
+
+    // 2. 获取所有 control-plane 节点
+    cpMachines, err := r.getControlPlaneMachines(ctx, cluster)
+    if err != nil {
+        return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+    }
+
+    // 3. 同步负载均衡器后端
+    if cluster.Spec.LoadBalancer != nil {
+        if err := r.syncLoadBalancerBackends(ctx, cluster, cpMachines); err != nil {
+            log.Error(err, "Failed to sync load balancer backends")
+            conditions.MarkFalse(cluster, infrav1.LoadBalancerReadyCondition, infrav1.LBSyncFailedReason, clusterv1.ConditionSeverityWarning, err.Error())
+            return ctrl.Result{RequeueAfter: 30 * time.Second}, r.Status().Update(ctx, cluster)
+        }
+        conditions.MarkTrue(cluster, infrav1.LoadBalancerReadyCondition)
+    }
+
+    // 4. 设置就绪状态
+    cluster.Status.Ready = true
+    conditions.MarkTrue(cluster, infrav1.ReadyCondition)
+
+    return ctrl.Result{}, r.Status().Update(ctx, cluster)
+}
+
+func (r *BareMetalClusterReconciler) syncLoadBalancerBackends(ctx context.Context, cluster *infrav1.BareMetalCluster, cpMachines []*clusterv1.Machine) error {
+    lbConfig := cluster.Spec.LoadBalancer
+    if lbConfig == nil {
+        return nil
+    }
+
+    // 获取期望的后端列表
+    desiredBackends := make(map[string]string) // name -> ip:port
+    for _, m := range cpMachines {
+        if m.Status.Phase == string(clusterv1.MachinePhaseRunning) {
+            ip := getMachineIP(m)
+            if ip != "" {
+                desiredBackends[m.Name] = fmt.Sprintf("%s:%d", ip, cluster.Spec.ControlPlaneEndpoint.Port)
+            }
+        }
+    }
+
+    // 获取当前后端列表
+    currentBackends, err := r.getLoadBalancerBackends(ctx, lbConfig)
+    if err != nil {
+        return err
+    }
+
+    // 计算差异
+    toAdd := make(map[string]string)
+    toRemove := make(map[string]string)
+
+    for name, addr := range desiredBackends {
+        if _, exists := currentBackends[name]; !exists {
+            toAdd[name] = addr
+        }
+    }
+    for name, addr := range currentBackends {
+        if _, exists := desiredBackends[name]; !exists {
+            toRemove[name] = addr
+        }
+    }
+
+    // 执行注册
+    for name, addr := range toAdd {
+        ip := strings.Split(addr, ":")[0]
+        port := strings.Split(addr, ":")[1]
+        if err := r.registerBackend(ctx, lbConfig, name, ip, port); err != nil {
+            return fmt.Errorf("failed to register backend %s: %w", name, err)
+        }
+    }
+
+    // 执行注销
+    for name, addr := range toRemove {
+        ip := strings.Split(addr, ":")[0]
+        port := strings.Split(addr, ":")[1]
+        if err := r.unregisterBackend(ctx, lbConfig, name, ip, port); err != nil {
+            return fmt.Errorf("failed to unregister backend %s: %w", name, err)
+        }
+    }
+
+    return nil
+}
+
+func (r *BareMetalClusterReconciler) registerBackend(ctx context.Context, lbConfig *infrav1.LoadBalancerConfig, name, ip, port string) error {
+    switch lbConfig.Provider {
+    case "haproxy":
+        return r.registerHAProxy(ctx, lbConfig.HAProxy, name, ip, port)
+    case "f5":
+        return r.registerF5(ctx, lbConfig.F5, name, ip, port)
+    case "keepalived":
+        return r.registerKeepalived(ctx, lbConfig.Keepalived, name, ip, port)
+    default:
+        return fmt.Errorf("unsupported load balancer provider: %s", lbConfig.Provider)
+    }
+}
+
+func (r *BareMetalClusterReconciler) registerHAProxy(ctx context.Context, haproxyConfig *infrav1.HAProxyConfig, name, ip, port string) error {
+    if haproxyConfig.AdminHost != "" {
+        // Runtime API 方式
+        cmd := fmt.Sprintf("add server %s/%s %s:%s check inter 5s fall 3 rise 2",
+            haproxyConfig.BackendName, name, ip, port)
+        return r.execHAProxyRuntimeAPI(ctx, haproxyConfig.AdminHost, haproxyConfig.AdminPort, cmd)
+    } else if haproxyConfig.SSHHost != "" {
+        // SSH 方式
+        return r.execHAProxySSH(ctx, haproxyConfig, name, ip, port, "register")
+    }
+    return fmt.Errorf("HAProxy: neither adminHost nor sshHost configured")
+}
+```
+
+#### 6.15.6 ClusterClass 变量和 Patches
+
+在 ClusterClass 中新增负载均衡器变量：
+
+```yaml
+  variables:
+  - name: loadBalancer
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          provider:
+            type: string
+            default: "haproxy"
+            enum:
+              - "haproxy"
+              - "keepalived"
+              - "f5"
+              - "nginx"
+              - "metal-lb"
+          healthCheck:
+            type: object
+            properties:
+              enabled:
+                type: boolean
+                default: true
+              path:
+                type: string
+                default: "/healthz"
+              interval:
+                type: string
+                default: "5s"
+              timeout:
+                type: string
+                default: "3s"
+          haproxy:
+            type: object
+            properties:
+              adminHost:
+                type: string
+              adminPort:
+                type: integer
+                default: 9999
+              sshHost:
+                type: string
+              sshPort:
+                type: integer
+                default: 22
+              configFile:
+                type: string
+                default: "/etc/haproxy/haproxy.cfg"
+              backendName:
+                type: string
+                default: "k8s-apiserver"
+              reloadCommand:
+                type: string
+                default: "systemctl reload haproxy"
+          keepalived:
+            type: object
+            properties:
+              virtualIP:
+                type: string
+              interface:
+                type: string
+                default: "eth0"
+              virtualRouterID:
+                type: integer
+                default: 51
+              priority:
+                type: integer
+                default: 100
+          f5:
+            type: object
+            properties:
+              host:
+                type: string
+              port:
+                type: integer
+                default: 443
+              partition:
+                type: string
+                default: "Common"
+              poolName:
+                type: string
+              virtualServerName:
+                type: string
+```
+
+Patch 定义：
+
+```yaml
+  patches:
+  - name: loadBalancer
+    enabledIf: "{{ if .loadBalancer }}true{{end}}"
+    definitions:
+    - selector:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        kind: BareMetalClusterTemplate
+        matchResources:
+          infrastructureCluster: true
+      jsonPatches:
+      - op: add
+        path: /spec/template/spec/loadBalancer
+        valueFrom:
+          variable: loadBalancer
+```
+
+#### 6.15.7 用户使用示例
+
+##### 6.15.7.1 HAProxy 方式
+
+```yaml
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  name: my-baremetal-cluster
+spec:
+  topology:
+    classRef:
+      name: baremetal-clusterclass-v0.1.0
+    version: v1.31.0
+    controlPlane:
+      replicas: 3
+    workers:
+      machineDeployments:
+      - class: default-worker
+        name: md-0
+        replicas: 2
+    variables:
+    - name: controlPlaneEndpoint
+      value:
+        host: "10.0.0.100"
+        port: 6443
+    - name: loadBalancer
+      value:
+        provider: "haproxy"
+        healthCheck:
+          enabled: true
+          path: "/healthz"
+          interval: "5s"
+          timeout: "3s"
+        haproxy:
+          adminHost: "10.0.0.50"
+          adminPort: 9999
+          backendName: "k8s-apiserver"
+          reloadCommand: "systemctl reload haproxy"
+```
+
+##### 6.15.7.2 Keepalived + HAProxy 方式 (无外部 LB)
+
+```yaml
+    variables:
+    - name: loadBalancer
+      value:
+        provider: "keepalived"
+        healthCheck:
+          enabled: true
+          path: "/healthz"
+        keepalived:
+          virtualIP: "10.0.0.100"
+          interface: "eth0"
+          virtualRouterID: 51
+          priority: 100
+          advertInterval: 1
+```
+
+##### 6.15.7.3 F5 BIG-IP 方式
+
+```yaml
+    variables:
+    - name: loadBalancer
+      value:
+        provider: "f5"
+        healthCheck:
+          enabled: true
+          path: "/healthz"
+          interval: "5s"
+        f5:
+          host: "f5.example.com"
+          port: 443
+          partition: "Common"
+          poolName: "k8s-apiserver-pool"
+          virtualServerName: "k8s-apiserver-vs"
+```
+
+#### 6.15.8 关键设计决策
+
+| 决策点 | 选项 | 推荐 | 理由 |
+|--------|------|------|------|
+| **注册方式** | Runtime API vs SSH vs 配置文件 | Runtime API 优先，SSH 备选 | Runtime API 无需 reload，零中断 |
+| **健康检查** | LB 内置 vs CAPBM 主动检查 | LB 内置 | 利用 LB 原生能力，更可靠 |
+| **注销时机** | 先注销再删除 vs 先删除再注销 | 先注销再删除 | 避免流量路由到已删除节点 |
+| **多 LB 支持** | 单一 LB 类型 vs 插件化 | 插件化 | 不同环境可能使用不同 LB |
+| **凭证管理** | 明文 vs Secret | Secret | 安全性，支持 RBAC 控制访问 |
+
+### 6.15 API Server 负载均衡注册
+
+#### 6.15.1 问题背景
+
+裸金属集群的控制面节点通常部署为高可用架构（3 或 5 个 control-plane 节点），需要外部负载均衡器将流量分发到所有 API Server 实例。
+
+仅设置 `controlPlaneEndpoint` 是不够的，还需要：
+1. **注册**: 当 control-plane 节点加入集群时，将其 API Server 地址注册到负载均衡器后端
+2. **健康检查**: 定期检查 API Server 健康状态，自动剔除不健康节点
+3. **注销**: 当 control-plane 节点被删除或缩容时，从负载均衡器移除后端
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                    负载均衡架构                               │
+│                                                              │
+│  kubectl / 客户端                                            │
+│       │                                                      │
+│       ▼                                                      │
+│  ┌─────────────────┐                                         │
+│  │  Load Balancer   │  ←  CAPBM 负责注册/注销后端             │
+│  │  VIP: 10.0.0.100 │                                         │
+│  │  Port: 6443      │                                         │
+│  └────┬────┬────┬───┘                                         │
+│       │    │    │                                             │
+│       ▼    ▼    ▼                                             │
+│  ┌──────┐┌──────┐┌──────┐                                    │
+│  │CP-01 ││CP-02 ││CP-03 │                                    │
+│  │:6443 ││:6443 ││:6443 │                                    │
+│  └──────┘└──────┘└──────┘                                    │
+└──────────────────────────────────────────────────────────────┘
+```
+
+#### 6.15.2 支持的负载均衡器类型
+
+| 类型 | 注册方式 | 适用场景 | 健康检查 |
+|------|---------|---------|---------|
+| **HAProxy** | 配置文件 + reload / Runtime API | 中小型集群，软件 LB | HTTP GET /healthz |
+| **Keepalived + HAProxy** | Keepalived VIP + HAProxy 后端 | 无外部 LB 的裸金属 | TCP check + HTTP |
+| **F5 BIG-IP** | iControl REST API | 企业级硬件 LB | HTTP monitor |
+| **Nginx** | 配置文件 + reload / Stream module | 轻量级场景 | TCP check |
+| **云厂商 LB** | Cloud Provider API (AWS/Aliyun/华为云) | 混合云场景 | 云厂商内置 |
+| **MetalLB** | BGP / L2 宣告 | 裸金属 Service LB | 内置 |
+
+CAPBM 采用**插件化设计**，通过 `lbProvider` 变量选择负载均衡器类型。
+
+#### 6.15.3 CRD 设计扩展
+
+在 `BareMetalClusterSpec` 中新增负载均衡器配置：
+
+```yaml
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: BareMetalCluster
+spec:
+  controlPlaneEndpoint:
+    host: "lb.example.com"
+    port: 6443
+  
+  loadBalancer:
+    # 负载均衡器类型
+    provider: "haproxy"        # haproxy | keepalived | f5 | nginx | metal-lb
+    
+    # 通用配置
+    healthCheck:
+      enabled: true
+      path: "/healthz"
+      interval: "5s"
+      timeout: "3s"
+      healthyThreshold: 2
+      unhealthyThreshold: 3
+    
+    # HAProxy 特定配置
+    haproxy:
+      # HAProxy 管理节点地址（Runtime API）
+      adminHost: "10.0.0.50"
+      adminPort: 9999
+      # 或 SSH 方式管理
+      sshHost: "10.0.0.50"
+      sshPort: 22
+      sshCredentialsRef:
+        name: "haproxy-credentials"
+      # 配置文件路径
+      configFile: "/etc/haproxy/haproxy.cfg"
+      backendName: "k8s-apiserver"
+      # reload 命令
+      reloadCommand: "systemctl reload haproxy"
+    
+    # Keepalived 特定配置
+    keepalived:
+      virtualIP: "10.0.0.100"
+      interface: "eth0"
+      virtualRouterID: 51
+      priority: 100
+      advertInterval: 1
+    
+    # F5 特定配置
+    f5:
+      host: "f5.example.com"
+      port: 443
+      credentialsRef:
+        name: "f5-credentials"
+      partition: "Common"
+      poolName: "k8s-apiserver-pool"
+      virtualServerName: "k8s-apiserver-vs"
+    
+    # MetalLB 特定配置
+    metal-lb:
+      ipAddressPool: "apiserver-pool"
+      loadBalancerIP: "10.0.0.100"
+```
+
+**Go 类型定义**:
+
+```go
+type LoadBalancerConfig struct {
+	// Provider is the load balancer type.
+	// +optional
+	// +kubebuilder:default=haproxy
+	Provider string `json:"provider,omitempty"`
+	
+	// HealthCheck defines health check configuration.
+	// +optional
+	HealthCheck HealthCheckConfig `json:"healthCheck,omitempty"`
+	
+	// HAProxy holds HAProxy specific configuration.
+	// +optional
+	HAProxy *HAProxyConfig `json:"haproxy,omitempty"`
+	
+	// Keepalived holds Keepalived specific configuration.
+	// +optional
+	Keepalived *KeepalivedConfig `json:"keepalived,omitempty"`
+	
+	// F5 holds F5 BIG-IP specific configuration.
+	// +optional
+	F5 *F5Config `json:"f5,omitempty"`
+	
+	// MetalLB holds MetalLB specific configuration.
+	// +optional
+	MetalLB *MetalLBConfig `json:"metal-lb,omitempty"`
+}
+
+type HealthCheckConfig struct {
+	Enabled            bool   `json:"enabled,omitempty"`
+	Path               string `json:"path,omitempty"`
+	Interval           string `json:"interval,omitempty"`
+	Timeout            string `json:"timeout,omitempty"`
+	HealthyThreshold   int    `json:"healthyThreshold,omitempty"`
+	UnhealthyThreshold int    `json:"unhealthyThreshold,omitempty"`
+}
+
+type HAProxyConfig struct {
+	AdminHost         string                      `json:"adminHost,omitempty"`
+	AdminPort         int                         `json:"adminPort,omitempty"`
+	SSHHost           string                      `json:"sshHost,omitempty"`
+	SSHPort           int                         `json:"sshPort,omitempty"`
+	SSHCredentialsRef *corev1.LocalObjectReference `json:"sshCredentialsRef,omitempty"`
+	ConfigFile        string                      `json:"configFile,omitempty"`
+	BackendName       string                      `json:"backendName,omitempty"`
+	ReloadCommand     string                      `json:"reloadCommand,omitempty"`
+}
+
+type KeepalivedConfig struct {
+	VirtualIP       string `json:"virtualIP,omitempty"`
+	Interface       string `json:"interface,omitempty"`
+	VirtualRouterID int    `json:"virtualRouterID,omitempty"`
+	Priority        int    `json:"priority,omitempty"`
+	AdvertInterval  int    `json:"advertInterval,omitempty"`
+}
+
+type F5Config struct {
+	Host              string                      `json:"host,omitempty"`
+	Port              int                         `json:"port,omitempty"`
+	CredentialsRef    *corev1.LocalObjectReference `json:"credentialsRef,omitempty"`
+	Partition         string                      `json:"partition,omitempty"`
+	PoolName          string                      `json:"poolName,omitempty"`
+	VirtualServerName string                      `json:"virtualServerName,omitempty"`
+}
+
+type MetalLBConfig struct {
+	IPAddressPool  string `json:"ipAddressPool,omitempty"`
+	LoadBalancerIP string `json:"loadBalancerIP,omitempty"`
+}
+```
+
+更新 `BareMetalClusterSpec`:
+
+```go
+type BareMetalClusterSpec struct {
+	ControlPlaneEndpoint clusterv1.APIEndpoint `json:"controlPlaneEndpoint,omitempty"`
+	Network              NetworkConfig         `json:"network,omitempty"`
+	LoadBalancer         *LoadBalancerConfig   `json:"loadBalancer,omitempty"`
+}
+```
+
+#### 6.15.4 注册流程
+
+##### 6.15.4.1 注册时机
+
+| 事件 | 操作 | 说明 |
+|------|------|------|
+| 首个 control-plane 初始化 | 创建后端池 + 注册首个节点 | 初始化 HAProxy/F5 配置 |
+| 新 control-plane 加入 | 注册新节点到后端池 | kubeadm join 完成后执行 |
+| control-plane 缩容/删除 | 注销节点从后端池 | 先注销，再删除节点 |
+| 节点健康检查失败 | 临时标记为 unhealthy | 不立即移除，等待恢复 |
+
+##### 6.15.4.2 HAProxy 注册流程 (Runtime API 方式)
+
+```
+control-plane 节点 API Server 启动完成
+    │
+    ▼
+┌─────────────────────────────────────────────────────────┐
+│ 1. 等待 API Server 健康                                  │
+│    ├── curl -sk https://<node-ip>:6443/healthz          │
+│    └── 等待返回 "ok"                                    │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 2. 注册到 HAProxy 后端池                                │
+│    ├── echo "add server <backend>/<server> <ip>:6443    │
+│    │     check inter 5s fall 3 rise 2" |                │
+│    │     socat stdio haproxy-admin:9999                 │
+│    └── 或使用 SSH 执行                                  │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 3. 验证注册结果                                          │
+│    ├── echo "show servers state <backend>" |             │
+│    │     socat stdio haproxy-admin:9999                 │
+│    └── 确认节点状态为 UP                                  │
+└─────────────────────────────────────────────────────────┘
+```
+
+##### 6.15.4.3 HAProxy 注册脚本 (Runtime API)
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+HAPROXY_ADMIN_HOST="${HAPROXY_ADMIN_HOST:-10.0.0.50}"
+HAPROXY_ADMIN_PORT="${HAPROXY_ADMIN_PORT:-9999}"
+BACKEND_NAME="${BACKEND_NAME:-k8s-apiserver}"
+SERVER_NAME="${SERVER_NAME}"
+SERVER_IP="${SERVER_IP}"
+SERVER_PORT="${SERVER_PORT:-6443}"
+
+echo "=== 注册 API Server 到 HAProxy ==="
+
+wait_for_apiserver() {
+    local max_retries=30
+    local retry=0
+    while [ $retry -lt $max_retries ]; do
+        if curl -sk --connect-timeout 2 "https://${SERVER_IP}:${SERVER_PORT}/healthz" 2>/dev/null | grep -q "ok"; then
+            echo "API Server 健康检查通过"
+            return 0
+        fi
+        retry=$((retry + 1))
+        echo "等待 API Server 启动... ($retry/$max_retries)"
+        sleep 5
+    done
+    echo "ERROR: API Server 未能在超时时间内启动"
+    return 1
+}
+
+register_to_haproxy() {
+    local cmd="add server ${BACKEND_NAME}/${SERVER_NAME} ${SERVER_IP}:${SERVER_PORT} check inter 5s fall 3 rise 2"
+    echo "$cmd" | socat stdio tcp:${HAPROXY_ADMIN_HOST}:${HAPROXY_ADMIN_PORT}
+    echo "已发送注册命令: $cmd"
+}
+
+verify_registration() {
+    local max_retries=12
+    local retry=0
+    while [ $retry -lt $max_retries ]; do
+        local status
+        status=$(echo "show servers state ${BACKEND_NAME}" | socat stdio tcp:${HAPROXY_ADMIN_HOST}:${HAPROXY_ADMIN_PORT} 2>/dev/null | grep "${SERVER_NAME}" || true)
+        if echo "$status" | grep -q "UP"; then
+            echo "节点 ${SERVER_NAME} 已注册并健康 (UP)"
+            return 0
+        fi
+        retry=$((retry + 1))
+        echo "等待节点健康... ($retry/$max_retries)"
+        sleep 5
+    done
+    echo "WARNING: 节点 ${SERVER_NAME} 注册成功但尚未 UP"
+    return 0
+}
+
+unregister_from_haproxy() {
+    local cmd="del server ${BACKEND_NAME}/${SERVER_NAME}"
+    echo "$cmd" | socat stdio tcp:${HAPROXY_ADMIN_HOST}:${HAPROXY_ADMIN_PORT}
+    echo "已发送注销命令: $cmd"
+}
+
+case "${ACTION:-register}" in
+    register)
+        wait_for_apiserver
+        register_to_haproxy
+        verify_registration
+        ;;
+    unregister)
+        unregister_from_haproxy
+        ;;
+    *)
+        echo "ERROR: 不支持的操作: ${ACTION}"
+        exit 1
+        ;;
+esac
+
+echo "=== HAProxy 操作完成 ==="
+```
+
+##### 6.15.4.4 HAProxy 注册脚本 (SSH + 配置文件方式)
+
+适用于不支持 Runtime API 的 HAProxy 版本：
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+HAPROXY_SSH_HOST="${HAPROXY_SSH_HOST:-10.0.0.50}"
+HAPROXY_SSH_PORT="${HAPROXY_SSH_PORT:-22}"
+CONFIG_FILE="${CONFIG_FILE:-/etc/haproxy/haproxy.cfg}"
+BACKEND_NAME="${BACKEND_NAME:-k8s-apiserver}"
+SERVER_NAME="${SERVER_NAME}"
+SERVER_IP="${SERVER_IP}"
+SERVER_PORT="${SERVER_PORT:-6443}"
+RELOAD_CMD="${RELOAD_CMD:-systemctl reload haproxy}"
+
+echo "=== 注册 API Server 到 HAProxy (SSH 方式) ==="
+
+wait_for_apiserver() {
+    local max_retries=30
+    local retry=0
+    while [ $retry -lt $max_retries ]; do
+        if curl -sk --connect-timeout 2 "https://${SERVER_IP}:${SERVER_PORT}/healthz" 2>/dev/null | grep -q "ok"; then
+            echo "API Server 健康检查通过"
+            return 0
+        fi
+        retry=$((retry + 1))
+        sleep 5
+    done
+    echo "ERROR: API Server 未能在超时时间内启动"
+    return 1
+}
+
+register_to_haproxy() {
+    ssh -p "$HAPROXY_SSH_PORT" root@"$HAPROXY_SSH_HOST" << EOF
+        if grep -q "server ${SERVER_NAME} ${SERVER_IP}:${SERVER_PORT}" "$CONFIG_FILE"; then
+            echo "节点 ${SERVER_NAME} 已存在于配置中"
+        else
+            sed -i "/^backend ${BACKEND_NAME}/,/^$/ {
+                /^$/ i\\    server ${SERVER_NAME} ${SERVER_IP}:${SERVER_PORT} check inter 5s fall 3 rise 2
+            }" "$CONFIG_FILE"
+            echo "已添加节点 ${SERVER_NAME} 到配置"
+        fi
+        
+        haproxy -c -f "$CONFIG_FILE"
+        $RELOAD_CMD
+EOF
+}
+
+unregister_from_haproxy() {
+    ssh -p "$HAPROXY_SSH_PORT" root@"$HAPROXY_SSH_HOST" << EOF
+        sed -i "/server ${SERVER_NAME} ${SERVER_IP}:${SERVER_PORT}/d" "$CONFIG_FILE"
+        haproxy -c -f "$CONFIG_FILE"
+        $RELOAD_CMD
+        echo "已注销节点 ${SERVER_NAME}"
+EOF
+}
+
+case "${ACTION:-register}" in
+    register)
+        wait_for_apiserver
+        register_to_haproxy
+        ;;
+    unregister)
+        unregister_from_haproxy
+        ;;
+esac
+
+echo "=== HAProxy 操作完成 ==="
+```
+
+##### 6.15.4.5 F5 BIG-IP 注册流程
+
+```
+control-plane 节点 API Server 启动完成
+    │
+    ▼
+┌─────────────────────────────────────────────────────────┐
+│ 1. 等待 API Server 健康                                  │
+│    └── curl -sk https://<node-ip>:6443/healthz          │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 2. 调用 F5 iControl REST API 注册节点                    │
+│    ├── POST /mgmt/tm/ltm/pool/~Common~<pool>/members    │
+│    │   {"address": "<ip>", "port": 6443}                │
+│    └── 认证: Basic Auth (admin/password)                │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 3. 验证注册结果                                          │
+│    ├── GET /mgmt/tm/ltm/pool/~Common~<pool>/members     │
+│    └── 确认节点状态为 available                          │
+└─────────────────────────────────────────────────────────┘
+```
+
+##### 6.15.4.6 F5 注册脚本
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+F5_HOST="${F5_HOST:-f5.example.com}"
+F5_PORT="${F5_PORT:-443}"
+F5_USER="${F5_USER:-admin}"
+F5_PASSWORD="${F5_PASSWORD}"
+PARTITION="${PARTITION:-Common}"
+POOL_NAME="${POOL_NAME:-k8s-apiserver-pool}"
+SERVER_IP="${SERVER_IP}"
+SERVER_PORT="${SERVER_PORT:-6443}"
+
+echo "=== 注册 API Server 到 F5 ==="
+
+F5_URL="https://${F5_HOST}:${F5_PORT}/mgmt/tm"
+
+wait_for_apiserver() {
+    local max_retries=30
+    local retry=0
+    while [ $retry -lt $max_retries ]; do
+        if curl -sk --connect-timeout 2 "https://${SERVER_IP}:${SERVER_PORT}/healthz" 2>/dev/null | grep -q "ok"; then
+            echo "API Server 健康检查通过"
+            return 0
+        fi
+        retry=$((retry + 1))
+        sleep 5
+    done
+    return 1
+}
+
+register_to_f5() {
+    local response
+    response=$(curl -sk -X POST \
+        -u "${F5_USER}:${F5_PASSWORD}" \
+        -H "Content-Type: application/json" \
+        -d "{\"address\":\"${SERVER_IP}\",\"port\":${SERVER_PORT},\"name\":\"${SERVER_IP}:${SERVER_PORT}\"}" \
+        "${F5_URL}/ltm/pool/~${PARTITION}~${POOL_NAME}/members")
+    
+    if echo "$response" | grep -q "kind.*ltm:pool:member"; then
+        echo "节点 ${SERVER_IP}:${SERVER_PORT} 已注册到 F5 Pool"
+    else
+        echo "WARNING: F5 注册响应: $response"
+    fi
+}
+
+unregister_from_f5() {
+    local encoded_member
+    encoded_member=$(echo "${SERVER_IP}:${SERVER_PORT}" | sed 's/:/%3A/g')
+    
+    curl -sk -X DELETE \
+        -u "${F5_USER}:${F5_PASSWORD}" \
+        "${F5_URL}/ltm/pool/~${PARTITION}~${POOL_NAME}/members/~${PARTITION}~${encoded_member}"
+    
+    echo "节点 ${SERVER_IP}:${SERVER_PORT} 已从 F5 Pool 注销"
+}
+
+case "${ACTION:-register}" in
+    register)
+        wait_for_apiserver
+        register_to_f5
+        ;;
+    unregister)
+        unregister_from_f5
+        ;;
+esac
+
+echo "=== F5 操作完成 ==="
+```
+
+#### 6.15.5 Controller 集成
+
+在 `BareMetalCluster Controller` 中集成负载均衡器注册逻辑：
+
+```go
+func (r *BareMetalClusterReconciler) reconcileNormal(ctx context.Context, cluster *infrav1.BareMetalCluster) (ctrl.Result, error) {
+    log := ctrl.LoggerFrom(ctx)
+
+    // 1. 验证配置
+    if cluster.Spec.ControlPlaneEndpoint.Host == "" {
+        conditions.MarkFalse(cluster, infrav1.ReadyCondition, infrav1.EndpointNotSetReason, clusterv1.ConditionSeverityError, "controlPlaneEndpoint is required")
+        return ctrl.Result{}, nil
+    }
+
+    // 2. 获取所有 control-plane 节点
+    cpMachines, err := r.getControlPlaneMachines(ctx, cluster)
+    if err != nil {
+        return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+    }
+
+    // 3. 同步负载均衡器后端
+    if cluster.Spec.LoadBalancer != nil {
+        if err := r.syncLoadBalancerBackends(ctx, cluster, cpMachines); err != nil {
+            log.Error(err, "Failed to sync load balancer backends")
+            conditions.MarkFalse(cluster, infrav1.LoadBalancerReadyCondition, infrav1.LBSyncFailedReason, clusterv1.ConditionSeverityWarning, err.Error())
+            return ctrl.Result{RequeueAfter: 30 * time.Second}, r.Status().Update(ctx, cluster)
+        }
+        conditions.MarkTrue(cluster, infrav1.LoadBalancerReadyCondition)
+    }
+
+    // 4. 设置就绪状态
+    cluster.Status.Ready = true
+    conditions.MarkTrue(cluster, infrav1.ReadyCondition)
+
+    return ctrl.Result{}, r.Status().Update(ctx, cluster)
+}
+
+func (r *BareMetalClusterReconciler) syncLoadBalancerBackends(ctx context.Context, cluster *infrav1.BareMetalCluster, cpMachines []*clusterv1.Machine) error {
+    lbConfig := cluster.Spec.LoadBalancer
+    if lbConfig == nil {
+        return nil
+    }
+
+    desiredBackends := make(map[string]string)
+    for _, m := range cpMachines {
+        if m.Status.Phase == string(clusterv1.MachinePhaseRunning) {
+            ip := getMachineIP(m)
+            if ip != "" {
+                desiredBackends[m.Name] = fmt.Sprintf("%s:%d", ip, cluster.Spec.ControlPlaneEndpoint.Port)
+            }
+        }
+    }
+
+    currentBackends, err := r.getLoadBalancerBackends(ctx, lbConfig)
+    if err != nil {
+        return err
+    }
+
+    toAdd := make(map[string]string)
+    toRemove := make(map[string]string)
+
+    for name, addr := range desiredBackends {
+        if _, exists := currentBackends[name]; !exists {
+            toAdd[name] = addr
+        }
+    }
+    for name, addr := range currentBackends {
+        if _, exists := desiredBackends[name]; !exists {
+            toRemove[name] = addr
+        }
+    }
+
+    for name, addr := range toAdd {
+        ip := strings.Split(addr, ":")[0]
+        port := strings.Split(addr, ":")[1]
+        if err := r.registerBackend(ctx, lbConfig, name, ip, port); err != nil {
+            return fmt.Errorf("failed to register backend %s: %w", name, err)
+        }
+    }
+
+    for name, addr := range toRemove {
+        ip := strings.Split(addr, ":")[0]
+        port := strings.Split(addr, ":")[1]
+        if err := r.unregisterBackend(ctx, lbConfig, name, ip, port); err != nil {
+            return fmt.Errorf("failed to unregister backend %s: %w", name, err)
+        }
+    }
+
+    return nil
+}
+
+func (r *BareMetalClusterReconciler) registerBackend(ctx context.Context, lbConfig *infrav1.LoadBalancerConfig, name, ip, port string) error {
+    switch lbConfig.Provider {
+    case "haproxy":
+        return r.registerHAProxy(ctx, lbConfig.HAProxy, name, ip, port)
+    case "f5":
+        return r.registerF5(ctx, lbConfig.F5, name, ip, port)
+    case "keepalived":
+        return r.registerKeepalived(ctx, lbConfig.Keepalived, name, ip, port)
+    default:
+        return fmt.Errorf("unsupported load balancer provider: %s", lbConfig.Provider)
+    }
+}
+
+func (r *BareMetalClusterReconciler) registerHAProxy(ctx context.Context, haproxyConfig *infrav1.HAProxyConfig, name, ip, port string) error {
+    if haproxyConfig.AdminHost != "" {
+        cmd := fmt.Sprintf("add server %s/%s %s:%s check inter 5s fall 3 rise 2",
+            haproxyConfig.BackendName, name, ip, port)
+        return r.execHAProxyRuntimeAPI(ctx, haproxyConfig.AdminHost, haproxyConfig.AdminPort, cmd)
+    } else if haproxyConfig.SSHHost != "" {
+        return r.execHAProxySSH(ctx, haproxyConfig, name, ip, port, "register")
+    }
+    return fmt.Errorf("HAProxy: neither adminHost nor sshHost configured")
+}
+```
+
+#### 6.15.6 ClusterClass 变量和 Patches
+
+在 ClusterClass 中新增负载均衡器变量：
+
+```yaml
+  variables:
+  - name: loadBalancer
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          provider:
+            type: string
+            default: "haproxy"
+            enum:
+              - "haproxy"
+              - "keepalived"
+              - "f5"
+              - "nginx"
+              - "metal-lb"
+          healthCheck:
+            type: object
+            properties:
+              enabled:
+                type: boolean
+                default: true
+              path:
+                type: string
+                default: "/healthz"
+              interval:
+                type: string
+                default: "5s"
+              timeout:
+                type: string
+                default: "3s"
+          haproxy:
+            type: object
+            properties:
+              adminHost:
+                type: string
+              adminPort:
+                type: integer
+                default: 9999
+              sshHost:
+                type: string
+              sshPort:
+                type: integer
+                default: 22
+              configFile:
+                type: string
+                default: "/etc/haproxy/haproxy.cfg"
+              backendName:
+                type: string
+                default: "k8s-apiserver"
+              reloadCommand:
+                type: string
+                default: "systemctl reload haproxy"
+          keepalived:
+            type: object
+            properties:
+              virtualIP:
+                type: string
+              interface:
+                type: string
+                default: "eth0"
+              virtualRouterID:
+                type: integer
+                default: 51
+              priority:
+                type: integer
+                default: 100
+          f5:
+            type: object
+            properties:
+              host:
+                type: string
+              port:
+                type: integer
+                default: 443
+              partition:
+                type: string
+                default: "Common"
+              poolName:
+                type: string
+              virtualServerName:
+                type: string
+```
+
+Patch 定义：
+
+```yaml
+  patches:
+  - name: loadBalancer
+    enabledIf: "{{ if .loadBalancer }}true{{end}}"
+    definitions:
+    - selector:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        kind: BareMetalClusterTemplate
+        matchResources:
+          infrastructureCluster: true
+      jsonPatches:
+      - op: add
+        path: /spec/template/spec/loadBalancer
+        valueFrom:
+          variable: loadBalancer
+```
+
+#### 6.15.7 用户使用示例
+
+##### 6.15.7.1 HAProxy 方式
+
+```yaml
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  name: my-baremetal-cluster
+spec:
+  topology:
+    classRef:
+      name: baremetal-clusterclass-v0.1.0
+    version: v1.31.0
+    controlPlane:
+      replicas: 3
+    workers:
+      machineDeployments:
+      - class: default-worker
+        name: md-0
+        replicas: 2
+    variables:
+    - name: controlPlaneEndpoint
+      value:
+        host: "10.0.0.100"
+        port: 6443
+    - name: loadBalancer
+      value:
+        provider: "haproxy"
+        healthCheck:
+          enabled: true
+          path: "/healthz"
+          interval: "5s"
+          timeout: "3s"
+        haproxy:
+          adminHost: "10.0.0.50"
+          adminPort: 9999
+          backendName: "k8s-apiserver"
+          reloadCommand: "systemctl reload haproxy"
+```
+
+##### 6.15.7.2 Keepalived + HAProxy 方式 (无外部 LB)
+
+```yaml
+    variables:
+    - name: loadBalancer
+      value:
+        provider: "keepalived"
+        healthCheck:
+          enabled: true
+          path: "/healthz"
+        keepalived:
+          virtualIP: "10.0.0.100"
+          interface: "eth0"
+          virtualRouterID: 51
+          priority: 100
+          advertInterval: 1
+```
+
+##### 6.15.7.3 F5 BIG-IP 方式
+
+```yaml
+    variables:
+    - name: loadBalancer
+      value:
+        provider: "f5"
+        healthCheck:
+          enabled: true
+          path: "/healthz"
+          interval: "5s"
+        f5:
+          host: "f5.example.com"
+          port: 443
+          partition: "Common"
+          poolName: "k8s-apiserver-pool"
+          virtualServerName: "k8s-apiserver-vs"
+```
+
+#### 6.15.8 关键设计决策
+
+| 决策点 | 选项 | 推荐 | 理由 |
+|--------|------|------|------|
+| **注册方式** | Runtime API vs SSH vs 配置文件 | Runtime API 优先，SSH 备选 | Runtime API 无需 reload，零中断 |
+| **健康检查** | LB 内置 vs CAPBM 主动检查 | LB 内置 | 利用 LB 原生能力，更可靠 |
+| **注销时机** | 先注销再删除 vs 先删除再注销 | 先注销再删除 | 避免流量路由到已删除节点 |
+| **多 LB 支持** | 单一 LB 类型 vs 插件化 | 插件化 | 不同环境可能使用不同 LB |
+| **凭证管理** | 明文 vs Secret | Secret | 安全性，支持 RBAC 控制访问 |
+
+### 6.15 API Server 负载均衡注册
+
+#### 6.15.1 问题背景
+
+裸金属集群的控制面节点通常部署为高可用架构（3 或 5 个 control-plane 节点），需要外部负载均衡器将流量分发到所有 API Server 实例。
+
+仅设置 `controlPlaneEndpoint` 是不够的，还需要：
+1. **注册**: 当 control-plane 节点加入集群时，将其 API Server 地址注册到负载均衡器后端
+2. **健康检查**: 定期检查 API Server 健康状态，自动剔除不健康节点
+3. **注销**: 当 control-plane 节点被删除或缩容时，从负载均衡器移除后端
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                    负载均衡架构                               │
+│                                                              │
+│  kubectl / 客户端                                            │
+│       │                                                      │
+│       ▼                                                      │
+│  ┌─────────────────┐                                         │
+│  │  Load Balancer   │  ←  CAPBM 负责注册/注销后端             │
+│  │  VIP: 10.0.0.100 │                                         │
+│  │  Port: 6443      │                                         │
+│  └────┬────┬────┬───┘                                         │
+│       │    │    │                                             │
+│       ▼    ▼    ▼                                             │
+│  ┌──────┐┌──────┐┌──────┐                                    │
+│  │CP-01 ││CP-02 ││CP-03 │                                    │
+│  │:6443 ││:6443 ││:6443 │                                    │
+│  └──────┘└──────┘└──────┘                                    │
+└──────────────────────────────────────────────────────────────┘
+```
+
+#### 6.15.2 支持的负载均衡器类型
+
+| 类型 | 注册方式 | 适用场景 | 健康检查 |
+|------|---------|---------|---------|
+| **HAProxy** | 配置文件 + reload / Runtime API | 中小型集群，软件 LB | HTTP GET /healthz |
+| **Keepalived + HAProxy** | Keepalived VIP + HAProxy 后端 | 无外部 LB 的裸金属 | TCP check + HTTP |
+| **F5 BIG-IP** | iControl REST API | 企业级硬件 LB | HTTP monitor |
+| **Nginx** | 配置文件 + reload / Stream module | 轻量级场景 | TCP check |
+| **云厂商 LB** | Cloud Provider API (AWS/Aliyun/华为云) | 混合云场景 | 云厂商内置 |
+| **MetalLB** | BGP / L2 宣告 | 裸金属 Service LB | 内置 |
+
+CAPBM 采用**插件化设计**，通过 `lbProvider` 变量选择负载均衡器类型。
+
+#### 6.15.3 CRD 设计扩展
+
+在 `BareMetalClusterSpec` 中新增负载均衡器配置：
+
+```yaml
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: BareMetalCluster
+spec:
+  controlPlaneEndpoint:
+    host: "lb.example.com"
+    port: 6443
+  
+  loadBalancer:
+    provider: "haproxy"        # haproxy | keepalived | f5 | nginx | metal-lb
+    
+    healthCheck:
+      enabled: true
+      path: "/healthz"
+      interval: "5s"
+      timeout: "3s"
+      healthyThreshold: 2
+      unhealthyThreshold: 3
+    
+    haproxy:
+      adminHost: "10.0.0.50"
+      adminPort: 9999
+      sshHost: "10.0.0.50"
+      sshPort: 22
+      sshCredentialsRef:
+        name: "haproxy-credentials"
+      configFile: "/etc/haproxy/haproxy.cfg"
+      backendName: "k8s-apiserver"
+      reloadCommand: "systemctl reload haproxy"
+    
+    keepalived:
+      virtualIP: "10.0.0.100"
+      interface: "eth0"
+      virtualRouterID: 51
+      priority: 100
+      advertInterval: 1
+    
+    f5:
+      host: "f5.example.com"
+      port: 443
+      credentialsRef:
+        name: "f5-credentials"
+      partition: "Common"
+      poolName: "k8s-apiserver-pool"
+      virtualServerName: "k8s-apiserver-vs"
+    
+    metal-lb:
+      ipAddressPool: "apiserver-pool"
+      loadBalancerIP: "10.0.0.100"
+```
+
+**Go 类型定义**:
+
+```go
+type LoadBalancerConfig struct {
+	Provider    string              `json:"provider,omitempty"`
+	HealthCheck HealthCheckConfig   `json:"healthCheck,omitempty"`
+	HAProxy     *HAProxyConfig      `json:"haproxy,omitempty"`
+	Keepalived  *KeepalivedConfig   `json:"keepalived,omitempty"`
+	F5          *F5Config           `json:"f5,omitempty"`
+	MetalLB     *MetalLBConfig      `json:"metal-lb,omitempty"`
+}
+
+type HealthCheckConfig struct {
+	Enabled            bool   `json:"enabled,omitempty"`
+	Path               string `json:"path,omitempty"`
+	Interval           string `json:"interval,omitempty"`
+	Timeout            string `json:"timeout,omitempty"`
+	HealthyThreshold   int    `json:"healthyThreshold,omitempty"`
+	UnhealthyThreshold int    `json:"unhealthyThreshold,omitempty"`
+}
+
+type HAProxyConfig struct {
+	AdminHost         string                      `json:"adminHost,omitempty"`
+	AdminPort         int                         `json:"adminPort,omitempty"`
+	SSHHost           string                      `json:"sshHost,omitempty"`
+	SSHPort           int                         `json:"sshPort,omitempty"`
+	SSHCredentialsRef *corev1.LocalObjectReference `json:"sshCredentialsRef,omitempty"`
+	ConfigFile        string                      `json:"configFile,omitempty"`
+	BackendName       string                      `json:"backendName,omitempty"`
+	ReloadCommand     string                      `json:"reloadCommand,omitempty"`
+}
+
+type KeepalivedConfig struct {
+	VirtualIP       string `json:"virtualIP,omitempty"`
+	Interface       string `json:"interface,omitempty"`
+	VirtualRouterID int    `json:"virtualRouterID,omitempty"`
+	Priority        int    `json:"priority,omitempty"`
+	AdvertInterval  int    `json:"advertInterval,omitempty"`
+}
+
+type F5Config struct {
+	Host              string                      `json:"host,omitempty"`
+	Port              int                         `json:"port,omitempty"`
+	CredentialsRef    *corev1.LocalObjectReference `json:"credentialsRef,omitempty"`
+	Partition         string                      `json:"partition,omitempty"`
+	PoolName          string                      `json:"poolName,omitempty"`
+	VirtualServerName string                      `json:"virtualServerName,omitempty"`
+}
+
+type MetalLBConfig struct {
+	IPAddressPool  string `json:"ipAddressPool,omitempty"`
+	LoadBalancerIP string `json:"loadBalancerIP,omitempty"`
+}
+```
+
+更新 `BareMetalClusterSpec`:
+
+```go
+type BareMetalClusterSpec struct {
+	ControlPlaneEndpoint clusterv1.APIEndpoint `json:"controlPlaneEndpoint,omitempty"`
+	Network              NetworkConfig         `json:"network,omitempty"`
+	LoadBalancer         *LoadBalancerConfig   `json:"loadBalancer,omitempty"`
+}
+```
+
+#### 6.15.4 注册流程
+
+##### 6.15.4.1 注册时机
+
+| 事件 | 操作 | 说明 |
+|------|------|------|
+| 首个 control-plane 初始化 | 创建后端池 + 注册首个节点 | 初始化 HAProxy/F5 配置 |
+| 新 control-plane 加入 | 注册新节点到后端池 | kubeadm join 完成后执行 |
+| control-plane 缩容/删除 | 注销节点从后端池 | 先注销，再删除节点 |
+| 节点健康检查失败 | 临时标记为 unhealthy | 不立即移除，等待恢复 |
+
+##### 6.15.4.2 HAProxy 注册流程 (Runtime API 方式)
+
+```
+control-plane 节点 API Server 启动完成
+    │
+    ▼
+┌─────────────────────────────────────────────────────────┐
+│ 1. 等待 API Server 健康                                  │
+│    ├── curl -sk https://<node-ip>:6443/healthz          │
+│    └── 等待返回 "ok"                                    │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 2. 注册到 HAProxy 后端池                                │
+│    ├── echo "add server <backend>/<server> <ip>:6443    │
+│    │     check inter 5s fall 3 rise 2" |                │
+│    │     socat stdio haproxy-admin:9999                 │
+│    └── 或使用 SSH 执行                                  │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 3. 验证注册结果                                          │
+│    ├── echo "show servers state <backend>" |             │
+│    │     socat stdio haproxy-admin:9999                 │
+│    └── 确认节点状态为 UP                                  │
+└─────────────────────────────────────────────────────────┘
+```
+
+##### 6.15.4.3 HAProxy 注册脚本 (Runtime API)
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+HAPROXY_ADMIN_HOST="${HAPROXY_ADMIN_HOST:-10.0.0.50}"
+HAPROXY_ADMIN_PORT="${HAPROXY_ADMIN_PORT:-9999}"
+BACKEND_NAME="${BACKEND_NAME:-k8s-apiserver}"
+SERVER_NAME="${SERVER_NAME}"
+SERVER_IP="${SERVER_IP}"
+SERVER_PORT="${SERVER_PORT:-6443}"
+
+echo "=== 注册 API Server 到 HAProxy ==="
+
+wait_for_apiserver() {
+    local max_retries=30
+    local retry=0
+    while [ $retry -lt $max_retries ]; do
+        if curl -sk --connect-timeout 2 "https://${SERVER_IP}:${SERVER_PORT}/healthz" 2>/dev/null | grep -q "ok"; then
+            echo "API Server 健康检查通过"
+            return 0
+        fi
+        retry=$((retry + 1))
+        echo "等待 API Server 启动... ($retry/$max_retries)"
+        sleep 5
+    done
+    echo "ERROR: API Server 未能在超时时间内启动"
+    return 1
+}
+
+register_to_haproxy() {
+    local cmd="add server ${BACKEND_NAME}/${SERVER_NAME} ${SERVER_IP}:${SERVER_PORT} check inter 5s fall 3 rise 2"
+    echo "$cmd" | socat stdio tcp:${HAPROXY_ADMIN_HOST}:${HAPROXY_ADMIN_PORT}
+    echo "已发送注册命令: $cmd"
+}
+
+verify_registration() {
+    local max_retries=12
+    local retry=0
+    while [ $retry -lt $max_retries ]; do
+        local status
+        status=$(echo "show servers state ${BACKEND_NAME}" | socat stdio tcp:${HAPROXY_ADMIN_HOST}:${HAPROXY_ADMIN_PORT} 2>/dev/null | grep "${SERVER_NAME}" || true)
+        if echo "$status" | grep -q "UP"; then
+            echo "节点 ${SERVER_NAME} 已注册并健康 (UP)"
+            return 0
+        fi
+        retry=$((retry + 1))
+        echo "等待节点健康... ($retry/$max_retries)"
+        sleep 5
+    done
+    echo "WARNING: 节点 ${SERVER_NAME} 注册成功但尚未 UP"
+    return 0
+}
+
+unregister_from_haproxy() {
+    local cmd="del server ${BACKEND_NAME}/${SERVER_NAME}"
+    echo "$cmd" | socat stdio tcp:${HAPROXY_ADMIN_HOST}:${HAPROXY_ADMIN_PORT}
+    echo "已发送注销命令: $cmd"
+}
+
+case "${ACTION:-register}" in
+    register)
+        wait_for_apiserver
+        register_to_haproxy
+        verify_registration
+        ;;
+    unregister)
+        unregister_from_haproxy
+        ;;
+    *)
+        echo "ERROR: 不支持的操作: ${ACTION}"
+        exit 1
+        ;;
+esac
+
+echo "=== HAProxy 操作完成 ==="
+```
+
+##### 6.15.4.4 HAProxy 注册脚本 (SSH + 配置文件方式)
+
+适用于不支持 Runtime API 的 HAProxy 版本：
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+HAPROXY_SSH_HOST="${HAPROXY_SSH_HOST:-10.0.0.50}"
+HAPROXY_SSH_PORT="${HAPROXY_SSH_PORT:-22}"
+CONFIG_FILE="${CONFIG_FILE:-/etc/haproxy/haproxy.cfg}"
+BACKEND_NAME="${BACKEND_NAME:-k8s-apiserver}"
+SERVER_NAME="${SERVER_NAME}"
+SERVER_IP="${SERVER_IP}"
+SERVER_PORT="${SERVER_PORT:-6443}"
+RELOAD_CMD="${RELOAD_CMD:-systemctl reload haproxy}"
+
+echo "=== 注册 API Server 到 HAProxy (SSH 方式) ==="
+
+wait_for_apiserver() {
+    local max_retries=30
+    local retry=0
+    while [ $retry -lt $max_retries ]; do
+        if curl -sk --connect-timeout 2 "https://${SERVER_IP}:${SERVER_PORT}/healthz" 2>/dev/null | grep -q "ok"; then
+            echo "API Server 健康检查通过"
+            return 0
+        fi
+        retry=$((retry + 1))
+        sleep 5
+    done
+    echo "ERROR: API Server 未能在超时时间内启动"
+    return 1
+}
+
+register_to_haproxy() {
+    ssh -p "$HAPROXY_SSH_PORT" root@"$HAPROXY_SSH_HOST" << EOF
+        if grep -q "server ${SERVER_NAME} ${SERVER_IP}:${SERVER_PORT}" "$CONFIG_FILE"; then
+            echo "节点 ${SERVER_NAME} 已存在于配置中"
+        else
+            sed -i "/^backend ${BACKEND_NAME}/,/^$/ {
+                /^$/ i\\    server ${SERVER_NAME} ${SERVER_IP}:${SERVER_PORT} check inter 5s fall 3 rise 2
+            }" "$CONFIG_FILE"
+            echo "已添加节点 ${SERVER_NAME} 到配置"
+        fi
+        
+        haproxy -c -f "$CONFIG_FILE"
+        $RELOAD_CMD
+EOF
+}
+
+unregister_from_haproxy() {
+    ssh -p "$HAPROXY_SSH_PORT" root@"$HAPROXY_SSH_HOST" << EOF
+        sed -i "/server ${SERVER_NAME} ${SERVER_IP}:${SERVER_PORT}/d" "$CONFIG_FILE"
+        haproxy -c -f "$CONFIG_FILE"
+        $RELOAD_CMD
+        echo "已注销节点 ${SERVER_NAME}"
+EOF
+}
+
+case "${ACTION:-register}" in
+    register)
+        wait_for_apiserver
+        register_to_haproxy
+        ;;
+    unregister)
+        unregister_from_haproxy
+        ;;
+esac
+
+echo "=== HAProxy 操作完成 ==="
+```
+
+##### 6.15.4.5 F5 BIG-IP 注册流程
+
+```
+control-plane 节点 API Server 启动完成
+    │
+    ▼
+┌─────────────────────────────────────────────────────────┐
+│ 1. 等待 API Server 健康                                  │
+│    └── curl -sk https://<node-ip>:6443/healthz          │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 2. 调用 F5 iControl REST API 注册节点                    │
+│    ├── POST /mgmt/tm/ltm/pool/~Common~<pool>/members    │
+│    │   {"address": "<ip>", "port": 6443}                │
+│    └── 认证: Basic Auth (admin/password)                │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 3. 验证注册结果                                          │
+│    ├── GET /mgmt/tm/ltm/pool/~Common~<pool>/members     │
+│    └── 确认节点状态为 available                          │
+└─────────────────────────────────────────────────────────┘
+```
+
+##### 6.15.4.6 F5 注册脚本
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+F5_HOST="${F5_HOST:-f5.example.com}"
+F5_PORT="${F5_PORT:-443}"
+F5_USER="${F5_USER:-admin}"
+F5_PASSWORD="${F5_PASSWORD}"
+PARTITION="${PARTITION:-Common}"
+POOL_NAME="${POOL_NAME:-k8s-apiserver-pool}"
+SERVER_IP="${SERVER_IP}"
+SERVER_PORT="${SERVER_PORT:-6443}"
+
+echo "=== 注册 API Server 到 F5 ==="
+
+F5_URL="https://${F5_HOST}:${F5_PORT}/mgmt/tm"
+
+wait_for_apiserver() {
+    local max_retries=30
+    local retry=0
+    while [ $retry -lt $max_retries ]; do
+        if curl -sk --connect-timeout 2 "https://${SERVER_IP}:${SERVER_PORT}/healthz" 2>/dev/null | grep -q "ok"; then
+            echo "API Server 健康检查通过"
+            return 0
+        fi
+        retry=$((retry + 1))
+        sleep 5
+    done
+    return 1
+}
+
+register_to_f5() {
+    local response
+    response=$(curl -sk -X POST \
+        -u "${F5_USER}:${F5_PASSWORD}" \
+        -H "Content-Type: application/json" \
+        -d "{\"address\":\"${SERVER_IP}\",\"port\":${SERVER_PORT},\"name\":\"${SERVER_IP}:${SERVER_PORT}\"}" \
+        "${F5_URL}/ltm/pool/~${PARTITION}~${POOL_NAME}/members")
+    
+    if echo "$response" | grep -q "kind.*ltm:pool:member"; then
+        echo "节点 ${SERVER_IP}:${SERVER_PORT} 已注册到 F5 Pool"
+    else
+        echo "WARNING: F5 注册响应: $response"
+    fi
+}
+
+unregister_from_f5() {
+    local encoded_member
+    encoded_member=$(echo "${SERVER_IP}:${SERVER_PORT}" | sed 's/:/%3A/g')
+    
+    curl -sk -X DELETE \
+        -u "${F5_USER}:${F5_PASSWORD}" \
+        "${F5_URL}/ltm/pool/~${PARTITION}~${POOL_NAME}/members/~${PARTITION}~${encoded_member}"
+    
+    echo "节点 ${SERVER_IP}:${SERVER_PORT} 已从 F5 Pool 注销"
+}
+
+case "${ACTION:-register}" in
+    register)
+        wait_for_apiserver
+        register_to_f5
+        ;;
+    unregister)
+        unregister_from_f5
+        ;;
+esac
+
+echo "=== F5 操作完成 ==="
+```
+
+#### 6.15.5 Controller 集成
+
+在 `BareMetalCluster Controller` 中集成负载均衡器注册逻辑：
+
+```go
+func (r *BareMetalClusterReconciler) reconcileNormal(ctx context.Context, cluster *infrav1.BareMetalCluster) (ctrl.Result, error) {
+    log := ctrl.LoggerFrom(ctx)
+
+    // 1. 验证配置
+    if cluster.Spec.ControlPlaneEndpoint.Host == "" {
+        conditions.MarkFalse(cluster, infrav1.ReadyCondition, infrav1.EndpointNotSetReason, clusterv1.ConditionSeverityError, "controlPlaneEndpoint is required")
+        return ctrl.Result{}, nil
+    }
+
+    // 2. 获取所有 control-plane 节点
+    cpMachines, err := r.getControlPlaneMachines(ctx, cluster)
+    if err != nil {
+        return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+    }
+
+    // 3. 同步负载均衡器后端
+    if cluster.Spec.LoadBalancer != nil {
+        if err := r.syncLoadBalancerBackends(ctx, cluster, cpMachines); err != nil {
+            log.Error(err, "Failed to sync load balancer backends")
+            conditions.MarkFalse(cluster, infrav1.LoadBalancerReadyCondition, infrav1.LBSyncFailedReason, clusterv1.ConditionSeverityWarning, err.Error())
+            return ctrl.Result{RequeueAfter: 30 * time.Second}, r.Status().Update(ctx, cluster)
+        }
+        conditions.MarkTrue(cluster, infrav1.LoadBalancerReadyCondition)
+    }
+
+    // 4. 设置就绪状态
+    cluster.Status.Ready = true
+    conditions.MarkTrue(cluster, infrav1.ReadyCondition)
+
+    return ctrl.Result{}, r.Status().Update(ctx, cluster)
+}
+
+func (r *BareMetalClusterReconciler) syncLoadBalancerBackends(ctx context.Context, cluster *infrav1.BareMetalCluster, cpMachines []*clusterv1.Machine) error {
+    lbConfig := cluster.Spec.LoadBalancer
+    if lbConfig == nil {
+        return nil
+    }
+
+    desiredBackends := make(map[string]string)
+    for _, m := range cpMachines {
+        if m.Status.Phase == string(clusterv1.MachinePhaseRunning) {
+            ip := getMachineIP(m)
+            if ip != "" {
+                desiredBackends[m.Name] = fmt.Sprintf("%s:%d", ip, cluster.Spec.ControlPlaneEndpoint.Port)
+            }
+        }
+    }
+
+    currentBackends, err := r.getLoadBalancerBackends(ctx, lbConfig)
+    if err != nil {
+        return err
+    }
+
+    toAdd := make(map[string]string)
+    toRemove := make(map[string]string)
+
+    for name, addr := range desiredBackends {
+        if _, exists := currentBackends[name]; !exists {
+            toAdd[name] = addr
+        }
+    }
+    for name, addr := range currentBackends {
+        if _, exists := desiredBackends[name]; !exists {
+            toRemove[name] = addr
+        }
+    }
+
+    for name, addr := range toAdd {
+        ip := strings.Split(addr, ":")[0]
+        port := strings.Split(addr, ":")[1]
+        if err := r.registerBackend(ctx, lbConfig, name, ip, port); err != nil {
+            return fmt.Errorf("failed to register backend %s: %w", name, err)
+        }
+    }
+
+    for name, addr := range toRemove {
+        ip := strings.Split(addr, ":")[0]
+        port := strings.Split(addr, ":")[1]
+        if err := r.unregisterBackend(ctx, lbConfig, name, ip, port); err != nil {
+            return fmt.Errorf("failed to unregister backend %s: %w", name, err)
+        }
+    }
+
+    return nil
+}
+
+func (r *BareMetalClusterReconciler) registerBackend(ctx context.Context, lbConfig *infrav1.LoadBalancerConfig, name, ip, port string) error {
+    switch lbConfig.Provider {
+    case "haproxy":
+        return r.registerHAProxy(ctx, lbConfig.HAProxy, name, ip, port)
+    case "f5":
+        return r.registerF5(ctx, lbConfig.F5, name, ip, port)
+    case "keepalived":
+        return r.registerKeepalived(ctx, lbConfig.Keepalived, name, ip, port)
+    default:
+        return fmt.Errorf("unsupported load balancer provider: %s", lbConfig.Provider)
+    }
+}
+
+func (r *BareMetalClusterReconciler) registerHAProxy(ctx context.Context, haproxyConfig *infrav1.HAProxyConfig, name, ip, port string) error {
+    if haproxyConfig.AdminHost != "" {
+        cmd := fmt.Sprintf("add server %s/%s %s:%s check inter 5s fall 3 rise 2",
+            haproxyConfig.BackendName, name, ip, port)
+        return r.execHAProxyRuntimeAPI(ctx, haproxyConfig.AdminHost, haproxyConfig.AdminPort, cmd)
+    } else if haproxyConfig.SSHHost != "" {
+        return r.execHAProxySSH(ctx, haproxyConfig, name, ip, port, "register")
+    }
+    return fmt.Errorf("HAProxy: neither adminHost nor sshHost configured")
+}
+```
+
+#### 6.15.6 ClusterClass 变量和 Patches
+
+在 ClusterClass 中新增负载均衡器变量：
+
+```yaml
+  variables:
+  - name: loadBalancer
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          provider:
+            type: string
+            default: "haproxy"
+            enum:
+              - "haproxy"
+              - "keepalived"
+              - "f5"
+              - "nginx"
+              - "metal-lb"
+          healthCheck:
+            type: object
+            properties:
+              enabled:
+                type: boolean
+                default: true
+              path:
+                type: string
+                default: "/healthz"
+              interval:
+                type: string
+                default: "5s"
+              timeout:
+                type: string
+                default: "3s"
+          haproxy:
+            type: object
+            properties:
+              adminHost:
+                type: string
+              adminPort:
+                type: integer
+                default: 9999
+              sshHost:
+                type: string
+              sshPort:
+                type: integer
+                default: 22
+              configFile:
+                type: string
+                default: "/etc/haproxy/haproxy.cfg"
+              backendName:
+                type: string
+                default: "k8s-apiserver"
+              reloadCommand:
+                type: string
+                default: "systemctl reload haproxy"
+          keepalived:
+            type: object
+            properties:
+              virtualIP:
+                type: string
+              interface:
+                type: string
+                default: "eth0"
+              virtualRouterID:
+                type: integer
+                default: 51
+              priority:
+                type: integer
+                default: 100
+          f5:
+            type: object
+            properties:
+              host:
+                type: string
+              port:
+                type: integer
+                default: 443
+              partition:
+                type: string
+                default: "Common"
+              poolName:
+                type: string
+              virtualServerName:
+                type: string
+```
+
+Patch 定义：
+
+```yaml
+  patches:
+  - name: loadBalancer
+    enabledIf: "{{ if .loadBalancer }}true{{end}}"
+    definitions:
+    - selector:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        kind: BareMetalClusterTemplate
+        matchResources:
+          infrastructureCluster: true
+      jsonPatches:
+      - op: add
+        path: /spec/template/spec/loadBalancer
+        valueFrom:
+          variable: loadBalancer
+```
+
+#### 6.15.7 用户使用示例
+
+##### 6.15.7.1 HAProxy 方式
+
+```yaml
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  name: my-baremetal-cluster
+spec:
+  topology:
+    classRef:
+      name: baremetal-clusterclass-v0.1.0
+    version: v1.31.0
+    controlPlane:
+      replicas: 3
+    workers:
+      machineDeployments:
+      - class: default-worker
+        name: md-0
+        replicas: 2
+    variables:
+    - name: controlPlaneEndpoint
+      value:
+        host: "10.0.0.100"
+        port: 6443
+    - name: loadBalancer
+      value:
+        provider: "haproxy"
+        healthCheck:
+          enabled: true
+          path: "/healthz"
+          interval: "5s"
+          timeout: "3s"
+        haproxy:
+          adminHost: "10.0.0.50"
+          adminPort: 9999
+          backendName: "k8s-apiserver"
+          reloadCommand: "systemctl reload haproxy"
+```
+
+##### 6.15.7.2 Keepalived + HAProxy 方式 (无外部 LB)
+
+```yaml
+    variables:
+    - name: loadBalancer
+      value:
+        provider: "keepalived"
+        healthCheck:
+          enabled: true
+          path: "/healthz"
+        keepalived:
+          virtualIP: "10.0.0.100"
+          interface: "eth0"
+          virtualRouterID: 51
+          priority: 100
+          advertInterval: 1
+```
+
+##### 6.15.7.3 F5 BIG-IP 方式
+
+```yaml
+    variables:
+    - name: loadBalancer
+      value:
+        provider: "f5"
+        healthCheck:
+          enabled: true
+          path: "/healthz"
+          interval: "5s"
+        f5:
+          host: "f5.example.com"
+          port: 443
+          partition: "Common"
+          poolName: "k8s-apiserver-pool"
+          virtualServerName: "k8s-apiserver-vs"
+```
+
+#### 6.15.8 关键设计决策
+
+| 决策点 | 选项 | 推荐 | 理由 |
+|--------|------|------|------|
+| **注册方式** | Runtime API vs SSH vs 配置文件 | Runtime API 优先，SSH 备选 | Runtime API 无需 reload，零中断 |
+| **健康检查** | LB 内置 vs CAPBM 主动检查 | LB 内置 | 利用 LB 原生能力，更可靠 |
+| **注销时机** | 先注销再删除 vs 先删除再注销 | 先注销再删除 | 避免流量路由到已删除节点 |
+| **多 LB 支持** | 单一 LB 类型 vs 插件化 | 插件化 | 不同环境可能使用不同 LB |
+| **凭证管理** | 明文 vs Secret | Secret | 安全性，支持 RBAC 控制访问 |
+
+### 6.15 API Server 负载均衡注册
+
+#### 6.15.1 问题背景
+
+裸金属集群的控制面节点通常部署为高可用架构（3 或 5 个 control-plane 节点），需要外部负载均衡器将流量分发到所有 API Server 实例。
+
+仅设置 `controlPlaneEndpoint` 是不够的，还需要：
+1. **注册**: 当 control-plane 节点加入集群时，将其 API Server 地址注册到负载均衡器后端
+2. **健康检查**: 定期检查 API Server 健康状态，自动剔除不健康节点
+3. **注销**: 当 control-plane 节点被删除或缩容时，从负载均衡器移除后端
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                    负载均衡架构                               │
+│                                                              │
+│  kubectl / 客户端                                            │
+│       │                                                      │
+│       ▼                                                      │
+│  ┌─────────────────┐                                         │
+│  │  Load Balancer   │  ←  CAPBM 负责注册/注销后端             │
+│  │  VIP: 10.0.0.100 │                                         │
+│  │  Port: 6443      │                                         │
+│  └────┬────┬────┬───┘                                         │
+│       │    │    │                                             │
+│       ▼    ▼    ▼                                             │
+│  ┌──────┐┌──────┐┌──────┐                                    │
+│  │CP-01 ││CP-02 ││CP-03 │                                    │
+│  │:6443 ││:6443 ││:6443 │                                    │
+│  └──────┘└──────┘└──────┘                                    │
+└──────────────────────────────────────────────────────────────┘
+```
+
+#### 6.15.2 支持的负载均衡器类型
+
+| 类型 | 注册方式 | 适用场景 | 健康检查 |
+|------|---------|---------|---------|
+| **HAProxy** | 配置文件 + reload / Runtime API | 中小型集群，软件 LB | HTTP GET /healthz |
+| **Keepalived + HAProxy** | Keepalived VIP + HAProxy 后端 | 无外部 LB 的裸金属 | TCP check + HTTP |
+| **F5 BIG-IP** | iControl REST API | 企业级硬件 LB | HTTP monitor |
+| **Nginx** | 配置文件 + reload / Stream module | 轻量级场景 | TCP check |
+| **云厂商 LB** | Cloud Provider API (AWS/Aliyun/华为云) | 混合云场景 | 云厂商内置 |
+| **MetalLB** | BGP / L2 宣告 | 裸金属 Service LB | 内置 |
+
+CAPBM 采用**插件化设计**，通过 `lbProvider` 变量选择负载均衡器类型。
+
+#### 6.15.3 CRD 设计扩展
+
+在 `BareMetalClusterSpec` 中新增负载均衡器配置：
+
+```yaml
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: BareMetalCluster
+spec:
+  controlPlaneEndpoint:
+    host: "lb.example.com"
+    port: 6443
+  
+  loadBalancer:
+    provider: "haproxy"        # haproxy | keepalived | f5 | nginx | metal-lb
+    
+    healthCheck:
+      enabled: true
+      path: "/healthz"
+      interval: "5s"
+      timeout: "3s"
+      healthyThreshold: 2
+      unhealthyThreshold: 3
+    
+    haproxy:
+      adminHost: "10.0.0.50"
+      adminPort: 9999
+      sshHost: "10.0.0.50"
+      sshPort: 22
+      sshCredentialsRef:
+        name: "haproxy-credentials"
+      configFile: "/etc/haproxy/haproxy.cfg"
+      backendName: "k8s-apiserver"
+      reloadCommand: "systemctl reload haproxy"
+    
+    keepalived:
+      virtualIP: "10.0.0.100"
+      interface: "eth0"
+      virtualRouterID: 51
+      priority: 100
+      advertInterval: 1
+    
+    f5:
+      host: "f5.example.com"
+      port: 443
+      credentialsRef:
+        name: "f5-credentials"
+      partition: "Common"
+      poolName: "k8s-apiserver-pool"
+      virtualServerName: "k8s-apiserver-vs"
+    
+    metal-lb:
+      ipAddressPool: "apiserver-pool"
+      loadBalancerIP: "10.0.0.100"
+```
+
+**Go 类型定义**:
+
+```go
+type LoadBalancerConfig struct {
+	Provider    string              `json:"provider,omitempty"`
+	HealthCheck HealthCheckConfig   `json:"healthCheck,omitempty"`
+	HAProxy     *HAProxyConfig      `json:"haproxy,omitempty"`
+	Keepalived  *KeepalivedConfig   `json:"keepalived,omitempty"`
+	F5          *F5Config           `json:"f5,omitempty"`
+	MetalLB     *MetalLBConfig      `json:"metal-lb,omitempty"`
+}
+
+type HealthCheckConfig struct {
+	Enabled            bool   `json:"enabled,omitempty"`
+	Path               string `json:"path,omitempty"`
+	Interval           string `json:"interval,omitempty"`
+	Timeout            string `json:"timeout,omitempty"`
+	HealthyThreshold   int    `json:"healthyThreshold,omitempty"`
+	UnhealthyThreshold int    `json:"unhealthyThreshold,omitempty"`
+}
+
+type HAProxyConfig struct {
+	AdminHost         string                      `json:"adminHost,omitempty"`
+	AdminPort         int                         `json:"adminPort,omitempty"`
+	SSHHost           string                      `json:"sshHost,omitempty"`
+	SSHPort           int                         `json:"sshPort,omitempty"`
+	SSHCredentialsRef *corev1.LocalObjectReference `json:"sshCredentialsRef,omitempty"`
+	ConfigFile        string                      `json:"configFile,omitempty"`
+	BackendName       string                      `json:"backendName,omitempty"`
+	ReloadCommand     string                      `json:"reloadCommand,omitempty"`
+}
+
+type KeepalivedConfig struct {
+	VirtualIP       string `json:"virtualIP,omitempty"`
+	Interface       string `json:"interface,omitempty"`
+	VirtualRouterID int    `json:"virtualRouterID,omitempty"`
+	Priority        int    `json:"priority,omitempty"`
+	AdvertInterval  int    `json:"advertInterval,omitempty"`
+}
+
+type F5Config struct {
+	Host              string                      `json:"host,omitempty"`
+	Port              int                         `json:"port,omitempty"`
+	CredentialsRef    *corev1.LocalObjectReference `json:"credentialsRef,omitempty"`
+	Partition         string                      `json:"partition,omitempty"`
+	PoolName          string                      `json:"poolName,omitempty"`
+	VirtualServerName string                      `json:"virtualServerName,omitempty"`
+}
+
+type MetalLBConfig struct {
+	IPAddressPool  string `json:"ipAddressPool,omitempty"`
+	LoadBalancerIP string `json:"loadBalancerIP,omitempty"`
+}
+```
+
+更新 `BareMetalClusterSpec`:
+
+```go
+type BareMetalClusterSpec struct {
+	ControlPlaneEndpoint clusterv1.APIEndpoint `json:"controlPlaneEndpoint,omitempty"`
+	Network              NetworkConfig         `json:"network,omitempty"`
+	LoadBalancer         *LoadBalancerConfig   `json:"loadBalancer,omitempty"`
+}
+```
+
+#### 6.15.4 注册流程
+
+##### 6.15.4.1 注册时机
+
+| 事件 | 操作 | 说明 |
+|------|------|------|
+| 首个 control-plane 初始化 | 创建后端池 + 注册首个节点 | 初始化 HAProxy/F5 配置 |
+| 新 control-plane 加入 | 注册新节点到后端池 | kubeadm join 完成后执行 |
+| control-plane 缩容/删除 | 注销节点从后端池 | 先注销，再删除节点 |
+| 节点健康检查失败 | 临时标记为 unhealthy | 不立即移除，等待恢复 |
+
+##### 6.15.4.2 HAProxy 注册流程 (Runtime API 方式)
+
+```
+control-plane 节点 API Server 启动完成
+    │
+    ▼
+┌─────────────────────────────────────────────────────────┐
+│ 1. 等待 API Server 健康                                  │
+│    ├── curl -sk https://<node-ip>:6443/healthz          │
+│    └── 等待返回 "ok"                                    │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 2. 注册到 HAProxy 后端池                                │
+│    ├── echo "add server <backend>/<server> <ip>:6443    │
+│    │     check inter 5s fall 3 rise 2" |                │
+│    │     socat stdio haproxy-admin:9999                 │
+│    └── 或使用 SSH 执行                                  │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 3. 验证注册结果                                          │
+│    ├── echo "show servers state <backend>" |             │
+│    │     socat stdio haproxy-admin:9999                 │
+│    └── 确认节点状态为 UP                                  │
+└─────────────────────────────────────────────────────────┘
+```
+
+##### 6.15.4.3 HAProxy 注册脚本 (Runtime API)
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+HAPROXY_ADMIN_HOST="${HAPROXY_ADMIN_HOST:-10.0.0.50}"
+HAPROXY_ADMIN_PORT="${HAPROXY_ADMIN_PORT:-9999}"
+BACKEND_NAME="${BACKEND_NAME:-k8s-apiserver}"
+SERVER_NAME="${SERVER_NAME}"
+SERVER_IP="${SERVER_IP}"
+SERVER_PORT="${SERVER_PORT:-6443}"
+
+echo "=== 注册 API Server 到 HAProxy ==="
+
+wait_for_apiserver() {
+    local max_retries=30
+    local retry=0
+    while [ $retry -lt $max_retries ]; do
+        if curl -sk --connect-timeout 2 "https://${SERVER_IP}:${SERVER_PORT}/healthz" 2>/dev/null | grep -q "ok"; then
+            echo "API Server 健康检查通过"
+            return 0
+        fi
+        retry=$((retry + 1))
+        echo "等待 API Server 启动... ($retry/$max_retries)"
+        sleep 5
+    done
+    echo "ERROR: API Server 未能在超时时间内启动"
+    return 1
+}
+
+register_to_haproxy() {
+    local cmd="add server ${BACKEND_NAME}/${SERVER_NAME} ${SERVER_IP}:${SERVER_PORT} check inter 5s fall 3 rise 2"
+    echo "$cmd" | socat stdio tcp:${HAPROXY_ADMIN_HOST}:${HAPROXY_ADMIN_PORT}
+    echo "已发送注册命令: $cmd"
+}
+
+verify_registration() {
+    local max_retries=12
+    local retry=0
+    while [ $retry -lt $max_retries ]; do
+        local status
+        status=$(echo "show servers state ${BACKEND_NAME}" | socat stdio tcp:${HAPROXY_ADMIN_HOST}:${HAPROXY_ADMIN_PORT} 2>/dev/null | grep "${SERVER_NAME}" || true)
+        if echo "$status" | grep -q "UP"; then
+            echo "节点 ${SERVER_NAME} 已注册并健康 (UP)"
+            return 0
+        fi
+        retry=$((retry + 1))
+        echo "等待节点健康... ($retry/$max_retries)"
+        sleep 5
+    done
+    echo "WARNING: 节点 ${SERVER_NAME} 注册成功但尚未 UP"
+    return 0
+}
+
+unregister_from_haproxy() {
+    local cmd="del server ${BACKEND_NAME}/${SERVER_NAME}"
+    echo "$cmd" | socat stdio tcp:${HAPROXY_ADMIN_HOST}:${HAPROXY_ADMIN_PORT}
+    echo "已发送注销命令: $cmd"
+}
+
+case "${ACTION:-register}" in
+    register)
+        wait_for_apiserver
+        register_to_haproxy
+        verify_registration
+        ;;
+    unregister)
+        unregister_from_haproxy
+        ;;
+    *)
+        echo "ERROR: 不支持的操作: ${ACTION}"
+        exit 1
+        ;;
+esac
+
+echo "=== HAProxy 操作完成 ==="
+```
+
+##### 6.15.4.4 HAProxy 注册脚本 (SSH + 配置文件方式)
+
+适用于不支持 Runtime API 的 HAProxy 版本：
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+HAPROXY_SSH_HOST="${HAPROXY_SSH_HOST:-10.0.0.50}"
+HAPROXY_SSH_PORT="${HAPROXY_SSH_PORT:-22}"
+CONFIG_FILE="${CONFIG_FILE:-/etc/haproxy/haproxy.cfg}"
+BACKEND_NAME="${BACKEND_NAME:-k8s-apiserver}"
+SERVER_NAME="${SERVER_NAME}"
+SERVER_IP="${SERVER_IP}"
+SERVER_PORT="${SERVER_PORT:-6443}"
+RELOAD_CMD="${RELOAD_CMD:-systemctl reload haproxy}"
+
+echo "=== 注册 API Server 到 HAProxy (SSH 方式) ==="
+
+wait_for_apiserver() {
+    local max_retries=30
+    local retry=0
+    while [ $retry -lt $max_retries ]; do
+        if curl -sk --connect-timeout 2 "https://${SERVER_IP}:${SERVER_PORT}/healthz" 2>/dev/null | grep -q "ok"; then
+            echo "API Server 健康检查通过"
+            return 0
+        fi
+        retry=$((retry + 1))
+        sleep 5
+    done
+    echo "ERROR: API Server 未能在超时时间内启动"
+    return 1
+}
+
+register_to_haproxy() {
+    ssh -p "$HAPROXY_SSH_PORT" root@"$HAPROXY_SSH_HOST" << EOF
+        if grep -q "server ${SERVER_NAME} ${SERVER_IP}:${SERVER_PORT}" "$CONFIG_FILE"; then
+            echo "节点 ${SERVER_NAME} 已存在于配置中"
+        else
+            sed -i "/^backend ${BACKEND_NAME}/,/^$/ {
+                /^$/ i\\    server ${SERVER_NAME} ${SERVER_IP}:${SERVER_PORT} check inter 5s fall 3 rise 2
+            }" "$CONFIG_FILE"
+            echo "已添加节点 ${SERVER_NAME} 到配置"
+        fi
+        
+        haproxy -c -f "$CONFIG_FILE"
+        $RELOAD_CMD
+EOF
+}
+
+unregister_from_haproxy() {
+    ssh -p "$HAPROXY_SSH_PORT" root@"$HAPROXY_SSH_HOST" << EOF
+        sed -i "/server ${SERVER_NAME} ${SERVER_IP}:${SERVER_PORT}/d" "$CONFIG_FILE"
+        haproxy -c -f "$CONFIG_FILE"
+        $RELOAD_CMD
+        echo "已注销节点 ${SERVER_NAME}"
+EOF
+}
+
+case "${ACTION:-register}" in
+    register)
+        wait_for_apiserver
+        register_to_haproxy
+        ;;
+    unregister)
+        unregister_from_haproxy
+        ;;
+esac
+
+echo "=== HAProxy 操作完成 ==="
+```
+
+##### 6.15.4.5 F5 BIG-IP 注册流程
+
+```
+control-plane 节点 API Server 启动完成
+    │
+    ▼
+┌─────────────────────────────────────────────────────────┐
+│ 1. 等待 API Server 健康                                  │
+│    └── curl -sk https://<node-ip>:6443/healthz          │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 2. 调用 F5 iControl REST API 注册节点                    │
+│    ├── POST /mgmt/tm/ltm/pool/~Common~<pool>/members    │
+│    │   {"address": "<ip>", "port": 6443}                │
+│    └── 认证: Basic Auth (admin/password)                │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 3. 验证注册结果                                          │
+│    ├── GET /mgmt/tm/ltm/pool/~Common~<pool>/members     │
+│    └── 确认节点状态为 available                          │
+└─────────────────────────────────────────────────────────┘
+```
+
+##### 6.15.4.6 F5 注册脚本
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+F5_HOST="${F5_HOST:-f5.example.com}"
+F5_PORT="${F5_PORT:-443}"
+F5_USER="${F5_USER:-admin}"
+F5_PASSWORD="${F5_PASSWORD}"
+PARTITION="${PARTITION:-Common}"
+POOL_NAME="${POOL_NAME:-k8s-apiserver-pool}"
+SERVER_IP="${SERVER_IP}"
+SERVER_PORT="${SERVER_PORT:-6443}"
+
+echo "=== 注册 API Server 到 F5 ==="
+
+F5_URL="https://${F5_HOST}:${F5_PORT}/mgmt/tm"
+
+wait_for_apiserver() {
+    local max_retries=30
+    local retry=0
+    while [ $retry -lt $max_retries ]; do
+        if curl -sk --connect-timeout 2 "https://${SERVER_IP}:${SERVER_PORT}/healthz" 2>/dev/null | grep -q "ok"; then
+            echo "API Server 健康检查通过"
+            return 0
+        fi
+        retry=$((retry + 1))
+        sleep 5
+    done
+    return 1
+}
+
+register_to_f5() {
+    local response
+    response=$(curl -sk -X POST \
+        -u "${F5_USER}:${F5_PASSWORD}" \
+        -H "Content-Type: application/json" \
+        -d "{\"address\":\"${SERVER_IP}\",\"port\":${SERVER_PORT},\"name\":\"${SERVER_IP}:${SERVER_PORT}\"}" \
+        "${F5_URL}/ltm/pool/~${PARTITION}~${POOL_NAME}/members")
+    
+    if echo "$response" | grep -q "kind.*ltm:pool:member"; then
+        echo "节点 ${SERVER_IP}:${SERVER_PORT} 已注册到 F5 Pool"
+    else
+        echo "WARNING: F5 注册响应: $response"
+    fi
+}
+
+unregister_from_f5() {
+    local encoded_member
+    encoded_member=$(echo "${SERVER_IP}:${SERVER_PORT}" | sed 's/:/%3A/g')
+    
+    curl -sk -X DELETE \
+        -u "${F5_USER}:${F5_PASSWORD}" \
+        "${F5_URL}/ltm/pool/~${PARTITION}~${POOL_NAME}/members/~${PARTITION}~${encoded_member}"
+    
+    echo "节点 ${SERVER_IP}:${SERVER_PORT} 已从 F5 Pool 注销"
+}
+
+case "${ACTION:-register}" in
+    register)
+        wait_for_apiserver
+        register_to_f5
+        ;;
+    unregister)
+        unregister_from_f5
+        ;;
+esac
+
+echo "=== F5 操作完成 ==="
+```
+
+#### 6.15.5 Controller 集成
+
+在 `BareMetalCluster Controller` 中集成负载均衡器注册逻辑：
+
+```go
+func (r *BareMetalClusterReconciler) reconcileNormal(ctx context.Context, cluster *infrav1.BareMetalCluster) (ctrl.Result, error) {
+    log := ctrl.LoggerFrom(ctx)
+
+    // 1. 验证配置
+    if cluster.Spec.ControlPlaneEndpoint.Host == "" {
+        conditions.MarkFalse(cluster, infrav1.ReadyCondition, infrav1.EndpointNotSetReason, clusterv1.ConditionSeverityError, "controlPlaneEndpoint is required")
+        return ctrl.Result{}, nil
+    }
+
+    // 2. 获取所有 control-plane 节点
+    cpMachines, err := r.getControlPlaneMachines(ctx, cluster)
+    if err != nil {
+        return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+    }
+
+    // 3. 同步负载均衡器后端
+    if cluster.Spec.LoadBalancer != nil {
+        if err := r.syncLoadBalancerBackends(ctx, cluster, cpMachines); err != nil {
+            log.Error(err, "Failed to sync load balancer backends")
+            conditions.MarkFalse(cluster, infrav1.LoadBalancerReadyCondition, infrav1.LBSyncFailedReason, clusterv1.ConditionSeverityWarning, err.Error())
+            return ctrl.Result{RequeueAfter: 30 * time.Second}, r.Status().Update(ctx, cluster)
+        }
+        conditions.MarkTrue(cluster, infrav1.LoadBalancerReadyCondition)
+    }
+
+    // 4. 设置就绪状态
+    cluster.Status.Ready = true
+    conditions.MarkTrue(cluster, infrav1.ReadyCondition)
+
+    return ctrl.Result{}, r.Status().Update(ctx, cluster)
+}
+
+func (r *BareMetalClusterReconciler) syncLoadBalancerBackends(ctx context.Context, cluster *infrav1.BareMetalCluster, cpMachines []*clusterv1.Machine) error {
+    lbConfig := cluster.Spec.LoadBalancer
+    if lbConfig == nil {
+        return nil
+    }
+
+    desiredBackends := make(map[string]string)
+    for _, m := range cpMachines {
+        if m.Status.Phase == string(clusterv1.MachinePhaseRunning) {
+            ip := getMachineIP(m)
+            if ip != "" {
+                desiredBackends[m.Name] = fmt.Sprintf("%s:%d", ip, cluster.Spec.ControlPlaneEndpoint.Port)
+            }
+        }
+    }
+
+    currentBackends, err := r.getLoadBalancerBackends(ctx, lbConfig)
+    if err != nil {
+        return err
+    }
+
+    toAdd := make(map[string]string)
+    toRemove := make(map[string]string)
+
+    for name, addr := range desiredBackends {
+        if _, exists := currentBackends[name]; !exists {
+            toAdd[name] = addr
+        }
+    }
+    for name, addr := range currentBackends {
+        if _, exists := desiredBackends[name]; !exists {
+            toRemove[name] = addr
+        }
+    }
+
+    for name, addr := range toAdd {
+        ip := strings.Split(addr, ":")[0]
+        port := strings.Split(addr, ":")[1]
+        if err := r.registerBackend(ctx, lbConfig, name, ip, port); err != nil {
+            return fmt.Errorf("failed to register backend %s: %w", name, err)
+        }
+    }
+
+    for name, addr := range toRemove {
+        ip := strings.Split(addr, ":")[0]
+        port := strings.Split(addr, ":")[1]
+        if err := r.unregisterBackend(ctx, lbConfig, name, ip, port); err != nil {
+            return fmt.Errorf("failed to unregister backend %s: %w", name, err)
+        }
+    }
+
+    return nil
+}
+
+func (r *BareMetalClusterReconciler) registerBackend(ctx context.Context, lbConfig *infrav1.LoadBalancerConfig, name, ip, port string) error {
+    switch lbConfig.Provider {
+    case "haproxy":
+        return r.registerHAProxy(ctx, lbConfig.HAProxy, name, ip, port)
+    case "f5":
+        return r.registerF5(ctx, lbConfig.F5, name, ip, port)
+    case "keepalived":
+        return r.registerKeepalived(ctx, lbConfig.Keepalived, name, ip, port)
+    default:
+        return fmt.Errorf("unsupported load balancer provider: %s", lbConfig.Provider)
+    }
+}
+
+func (r *BareMetalClusterReconciler) registerHAProxy(ctx context.Context, haproxyConfig *infrav1.HAProxyConfig, name, ip, port string) error {
+    if haproxyConfig.AdminHost != "" {
+        cmd := fmt.Sprintf("add server %s/%s %s:%s check inter 5s fall 3 rise 2",
+            haproxyConfig.BackendName, name, ip, port)
+        return r.execHAProxyRuntimeAPI(ctx, haproxyConfig.AdminHost, haproxyConfig.AdminPort, cmd)
+    } else if haproxyConfig.SSHHost != "" {
+        return r.execHAProxySSH(ctx, haproxyConfig, name, ip, port, "register")
+    }
+    return fmt.Errorf("HAProxy: neither adminHost nor sshHost configured")
+}
+```
+
+#### 6.15.6 ClusterClass 变量和 Patches
+
+在 ClusterClass 中新增负载均衡器变量：
+
+```yaml
+  variables:
+  - name: loadBalancer
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          provider:
+            type: string
+            default: "haproxy"
+            enum:
+              - "haproxy"
+              - "keepalived"
+              - "f5"
+              - "nginx"
+              - "metal-lb"
+          healthCheck:
+            type: object
+            properties:
+              enabled:
+                type: boolean
+                default: true
+              path:
+                type: string
+                default: "/healthz"
+              interval:
+                type: string
+                default: "5s"
+              timeout:
+                type: string
+                default: "3s"
+          haproxy:
+            type: object
+            properties:
+              adminHost:
+                type: string
+              adminPort:
+                type: integer
+                default: 9999
+              sshHost:
+                type: string
+              sshPort:
+                type: integer
+                default: 22
+              configFile:
+                type: string
+                default: "/etc/haproxy/haproxy.cfg"
+              backendName:
+                type: string
+                default: "k8s-apiserver"
+              reloadCommand:
+                type: string
+                default: "systemctl reload haproxy"
+          keepalived:
+            type: object
+            properties:
+              virtualIP:
+                type: string
+              interface:
+                type: string
+                default: "eth0"
+              virtualRouterID:
+                type: integer
+                default: 51
+              priority:
+                type: integer
+                default: 100
+          f5:
+            type: object
+            properties:
+              host:
+                type: string
+              port:
+                type: integer
+                default: 443
+              partition:
+                type: string
+                default: "Common"
+              poolName:
+                type: string
+              virtualServerName:
+                type: string
+```
+
+Patch 定义：
+
+```yaml
+  patches:
+  - name: loadBalancer
+    enabledIf: "{{ if .loadBalancer }}true{{end}}"
+    definitions:
+    - selector:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        kind: BareMetalClusterTemplate
+        matchResources:
+          infrastructureCluster: true
+      jsonPatches:
+      - op: add
+        path: /spec/template/spec/loadBalancer
+        valueFrom:
+          variable: loadBalancer
+```
+
+#### 6.15.7 用户使用示例
+
+##### 6.15.7.1 HAProxy 方式
+
+```yaml
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  name: my-baremetal-cluster
+spec:
+  topology:
+    classRef:
+      name: baremetal-clusterclass-v0.1.0
+    version: v1.31.0
+    controlPlane:
+      replicas: 3
+    workers:
+      machineDeployments:
+      - class: default-worker
+        name: md-0
+        replicas: 2
+    variables:
+    - name: controlPlaneEndpoint
+      value:
+        host: "10.0.0.100"
+        port: 6443
+    - name: loadBalancer
+      value:
+        provider: "haproxy"
+        healthCheck:
+          enabled: true
+          path: "/healthz"
+          interval: "5s"
+          timeout: "3s"
+        haproxy:
+          adminHost: "10.0.0.50"
+          adminPort: 9999
+          backendName: "k8s-apiserver"
+          reloadCommand: "systemctl reload haproxy"
+```
+
+##### 6.15.7.2 Keepalived + HAProxy 方式 (无外部 LB)
+
+```yaml
+    variables:
+    - name: loadBalancer
+      value:
+        provider: "keepalived"
+        healthCheck:
+          enabled: true
+          path: "/healthz"
+        keepalived:
+          virtualIP: "10.0.0.100"
+          interface: "eth0"
+          virtualRouterID: 51
+          priority: 100
+          advertInterval: 1
+```
+
+##### 6.15.7.3 F5 BIG-IP 方式
+
+```yaml
+    variables:
+    - name: loadBalancer
+      value:
+        provider: "f5"
+        healthCheck:
+          enabled: true
+          path: "/healthz"
+          interval: "5s"
+        f5:
+          host: "f5.example.com"
+          port: 443
+          partition: "Common"
+          poolName: "k8s-apiserver-pool"
+          virtualServerName: "k8s-apiserver-vs"
+```
+
+#### 6.15.8 关键设计决策
+
+| 决策点 | 选项 | 推荐 | 理由 |
+|--------|------|------|------|
+| **注册方式** | Runtime API vs SSH vs 配置文件 | Runtime API 优先，SSH 备选 | Runtime API 无需 reload，零中断 |
+| **健康检查** | LB 内置 vs CAPBM 主动检查 | LB 内置 | 利用 LB 原生能力，更可靠 |
+| **注销时机** | 先注销再删除 vs 先删除再注销 | 先注销再删除 | 避免流量路由到已删除节点 |
+| **多 LB 支持** | 单一 LB 类型 vs 插件化 | 插件化 | 不同环境可能使用不同 LB |
+| **凭证管理** | 明文 vs Secret | Secret | 安全性，支持 RBAC 控制访问 |
+
+### 6.15 API Server 负载均衡注册
+
+#### 6.15.1 问题背景
+
+裸金属集群的控制面节点通常部署为高可用架构（3 或 5 个 control-plane 节点），需要外部负载均衡器将流量分发到所有 API Server 实例。
+
+仅设置 `controlPlaneEndpoint` 是不够的，还需要：
+1. **注册**: 当 control-plane 节点加入集群时，将其 API Server 地址注册到负载均衡器后端
+2. **健康检查**: 定期检查 API Server 健康状态，自动剔除不健康节点
+3. **注销**: 当 control-plane 节点被删除或缩容时，从负载均衡器移除后端
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                    负载均衡架构                               │
+│                                                              │
+│  kubectl / 客户端                                            │
+│       │                                                      │
+│       ▼                                                      │
+│  ┌─────────────────┐                                         │
+│  │  Load Balancer   │  ←  CAPBM 负责注册/注销后端             │
+│  │  VIP: 10.0.0.100 │                                         │
+│  │  Port: 6443      │                                         │
+│  └────┬────┬────┬───┘                                         │
+│       │    │    │                                             │
+│       ▼    ▼    ▼                                             │
+│  ┌──────┐┌──────┐┌──────┐                                    │
+│  │CP-01 ││CP-02 ││CP-03 │                                    │
+│  │:6443 ││:6443 ││:6443 │                                    │
+│  └──────┘└──────┘└──────┘                                    │
+└──────────────────────────────────────────────────────────────┘
+```
+
+#### 6.15.2 支持的负载均衡器类型
+
+| 类型 | 注册方式 | 适用场景 | 健康检查 |
+|------|---------|---------|---------|
+| **HAProxy** | 配置文件 + reload / Runtime API | 中小型集群，软件 LB | HTTP GET /healthz |
+| **Keepalived + HAProxy** | Keepalived VIP + HAProxy 后端 | 无外部 LB 的裸金属 | TCP check + HTTP |
+| **F5 BIG-IP** | iControl REST API | 企业级硬件 LB | HTTP monitor |
+| **Nginx** | 配置文件 + reload / Stream module | 轻量级场景 | TCP check |
+| **云厂商 LB** | Cloud Provider API (AWS/Aliyun/华为云) | 混合云场景 | 云厂商内置 |
+| **MetalLB** | BGP / L2 宣告 | 裸金属 Service LB | 内置 |
+
+CAPBM 采用**插件化设计**，通过 `lbProvider` 变量选择负载均衡器类型。
+
+#### 6.15.3 CRD 设计扩展
+
+在 `BareMetalClusterSpec` 中新增负载均衡器配置：
+
+```yaml
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: BareMetalCluster
+spec:
+  controlPlaneEndpoint:
+    host: "lb.example.com"
+    port: 6443
+  
+  loadBalancer:
+    provider: "haproxy"        # haproxy | keepalived | f5 | nginx | metal-lb
+    
+    healthCheck:
+      enabled: true
+      path: "/healthz"
+      interval: "5s"
+      timeout: "3s"
+      healthyThreshold: 2
+      unhealthyThreshold: 3
+    
+    haproxy:
+      adminHost: "10.0.0.50"
+      adminPort: 9999
+      sshHost: "10.0.0.50"
+      sshPort: 22
+      sshCredentialsRef:
+        name: "haproxy-credentials"
+      configFile: "/etc/haproxy/haproxy.cfg"
+      backendName: "k8s-apiserver"
+      reloadCommand: "systemctl reload haproxy"
+    
+    keepalived:
+      virtualIP: "10.0.0.100"
+      interface: "eth0"
+      virtualRouterID: 51
+      priority: 100
+      advertInterval: 1
+    
+    f5:
+      host: "f5.example.com"
+      port: 443
+      credentialsRef:
+        name: "f5-credentials"
+      partition: "Common"
+      poolName: "k8s-apiserver-pool"
+      virtualServerName: "k8s-apiserver-vs"
+    
+    metal-lb:
+      ipAddressPool: "apiserver-pool"
+      loadBalancerIP: "10.0.0.100"
+```
+
+**Go 类型定义**:
+
+```go
+type LoadBalancerConfig struct {
+	Provider    string              `json:"provider,omitempty"`
+	HealthCheck HealthCheckConfig   `json:"healthCheck,omitempty"`
+	HAProxy     *HAProxyConfig      `json:"haproxy,omitempty"`
+	Keepalived  *KeepalivedConfig   `json:"keepalived,omitempty"`
+	F5          *F5Config           `json:"f5,omitempty"`
+	MetalLB     *MetalLBConfig      `json:"metal-lb,omitempty"`
+}
+
+type HealthCheckConfig struct {
+	Enabled            bool   `json:"enabled,omitempty"`
+	Path               string `json:"path,omitempty"`
+	Interval           string `json:"interval,omitempty"`
+	Timeout            string `json:"timeout,omitempty"`
+	HealthyThreshold   int    `json:"healthyThreshold,omitempty"`
+	UnhealthyThreshold int    `json:"unhealthyThreshold,omitempty"`
+}
+
+type HAProxyConfig struct {
+	AdminHost         string                      `json:"adminHost,omitempty"`
+	AdminPort         int                         `json:"adminPort,omitempty"`
+	SSHHost           string                      `json:"sshHost,omitempty"`
+	SSHPort           int                         `json:"sshPort,omitempty"`
+	SSHCredentialsRef *corev1.LocalObjectReference `json:"sshCredentialsRef,omitempty"`
+	ConfigFile        string                      `json:"configFile,omitempty"`
+	BackendName       string                      `json:"backendName,omitempty"`
+	ReloadCommand     string                      `json:"reloadCommand,omitempty"`
+}
+
+type KeepalivedConfig struct {
+	VirtualIP       string `json:"virtualIP,omitempty"`
+	Interface       string `json:"interface,omitempty"`
+	VirtualRouterID int    `json:"virtualRouterID,omitempty"`
+	Priority        int    `json:"priority,omitempty"`
+	AdvertInterval  int    `json:"advertInterval,omitempty"`
+}
+
+type F5Config struct {
+	Host              string                      `json:"host,omitempty"`
+	Port              int                         `json:"port,omitempty"`
+	CredentialsRef    *corev1.LocalObjectReference `json:"credentialsRef,omitempty"`
+	Partition         string                      `json:"partition,omitempty"`
+	PoolName          string                      `json:"poolName,omitempty"`
+	VirtualServerName string                      `json:"virtualServerName,omitempty"`
+}
+
+type MetalLBConfig struct {
+	IPAddressPool  string `json:"ipAddressPool,omitempty"`
+	LoadBalancerIP string `json:"loadBalancerIP,omitempty"`
+}
+```
+
+更新 `BareMetalClusterSpec`:
+
+```go
+type BareMetalClusterSpec struct {
+	ControlPlaneEndpoint clusterv1.APIEndpoint `json:"controlPlaneEndpoint,omitempty"`
+	Network              NetworkConfig         `json:"network,omitempty"`
+	LoadBalancer         *LoadBalancerConfig   `json:"loadBalancer,omitempty"`
+}
+```
+
+#### 6.15.4 注册流程
+
+##### 6.15.4.1 注册时机
+
+| 事件 | 操作 | 说明 |
+|------|------|------|
+| 首个 control-plane 初始化 | 创建后端池 + 注册首个节点 | 初始化 HAProxy/F5 配置 |
+| 新 control-plane 加入 | 注册新节点到后端池 | kubeadm join 完成后执行 |
+| control-plane 缩容/删除 | 注销节点从后端池 | 先注销，再删除节点 |
+| 节点健康检查失败 | 临时标记为 unhealthy | 不立即移除，等待恢复 |
+
+##### 6.15.4.2 HAProxy 注册流程 (Runtime API 方式)
+
+```
+control-plane 节点 API Server 启动完成
+    │
+    ▼
+┌─────────────────────────────────────────────────────────┐
+│ 1. 等待 API Server 健康                                  │
+│    ├── curl -sk https://<node-ip>:6443/healthz          │
+│    └── 等待返回 "ok"                                    │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 2. 注册到 HAProxy 后端池                                │
+│    ├── echo "add server <backend>/<server> <ip>:6443    │
+│    │     check inter 5s fall 3 rise 2" |                │
+│    │     socat stdio haproxy-admin:9999                 │
+│    └── 或使用 SSH 执行                                  │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 3. 验证注册结果                                          │
+│    ├── echo "show servers state <backend>" |             │
+│    │     socat stdio haproxy-admin:9999                 │
+│    └── 确认节点状态为 UP                                  │
+└─────────────────────────────────────────────────────────┘
+```
+
+##### 6.15.4.3 HAProxy 注册脚本 (Runtime API)
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+HAPROXY_ADMIN_HOST="${HAPROXY_ADMIN_HOST:-10.0.0.50}"
+HAPROXY_ADMIN_PORT="${HAPROXY_ADMIN_PORT:-9999}"
+BACKEND_NAME="${BACKEND_NAME:-k8s-apiserver}"
+SERVER_NAME="${SERVER_NAME}"
+SERVER_IP="${SERVER_IP}"
+SERVER_PORT="${SERVER_PORT:-6443}"
+
+echo "=== 注册 API Server 到 HAProxy ==="
+
+wait_for_apiserver() {
+    local max_retries=30
+    local retry=0
+    while [ $retry -lt $max_retries ]; do
+        if curl -sk --connect-timeout 2 "https://${SERVER_IP}:${SERVER_PORT}/healthz" 2>/dev/null | grep -q "ok"; then
+            echo "API Server 健康检查通过"
+            return 0
+        fi
+        retry=$((retry + 1))
+        echo "等待 API Server 启动... ($retry/$max_retries)"
+        sleep 5
+    done
+    echo "ERROR: API Server 未能在超时时间内启动"
+    return 1
+}
+
+register_to_haproxy() {
+    local cmd="add server ${BACKEND_NAME}/${SERVER_NAME} ${SERVER_IP}:${SERVER_PORT} check inter 5s fall 3 rise 2"
+    echo "$cmd" | socat stdio tcp:${HAPROXY_ADMIN_HOST}:${HAPROXY_ADMIN_PORT}
+    echo "已发送注册命令: $cmd"
+}
+
+verify_registration() {
+    local max_retries=12
+    local retry=0
+    while [ $retry -lt $max_retries ]; do
+        local status
+        status=$(echo "show servers state ${BACKEND_NAME}" | socat stdio tcp:${HAPROXY_ADMIN_HOST}:${HAPROXY_ADMIN_PORT} 2>/dev/null | grep "${SERVER_NAME}" || true)
+        if echo "$status" | grep -q "UP"; then
+            echo "节点 ${SERVER_NAME} 已注册并健康 (UP)"
+            return 0
+        fi
+        retry=$((retry + 1))
+        echo "等待节点健康... ($retry/$max_retries)"
+        sleep 5
+    done
+    echo "WARNING: 节点 ${SERVER_NAME} 注册成功但尚未 UP"
+    return 0
+}
+
+unregister_from_haproxy() {
+    local cmd="del server ${BACKEND_NAME}/${SERVER_NAME}"
+    echo "$cmd" | socat stdio tcp:${HAPROXY_ADMIN_HOST}:${HAPROXY_ADMIN_PORT}
+    echo "已发送注销命令: $cmd"
+}
+
+case "${ACTION:-register}" in
+    register)
+        wait_for_apiserver
+        register_to_haproxy
+        verify_registration
+        ;;
+    unregister)
+        unregister_from_haproxy
+        ;;
+    *)
+        echo "ERROR: 不支持的操作: ${ACTION}"
+        exit 1
+        ;;
+esac
+
+echo "=== HAProxy 操作完成 ==="
+```
+
+##### 6.15.4.4 HAProxy 注册脚本 (SSH + 配置文件方式)
+
+适用于不支持 Runtime API 的 HAProxy 版本：
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+HAPROXY_SSH_HOST="${HAPROXY_SSH_HOST:-10.0.0.50}"
+HAPROXY_SSH_PORT="${HAPROXY_SSH_PORT:-22}"
+CONFIG_FILE="${CONFIG_FILE:-/etc/haproxy/haproxy.cfg}"
+BACKEND_NAME="${BACKEND_NAME:-k8s-apiserver}"
+SERVER_NAME="${SERVER_NAME}"
+SERVER_IP="${SERVER_IP}"
+SERVER_PORT="${SERVER_PORT:-6443}"
+RELOAD_CMD="${RELOAD_CMD:-systemctl reload haproxy}"
+
+echo "=== 注册 API Server 到 HAProxy (SSH 方式) ==="
+
+wait_for_apiserver() {
+    local max_retries=30
+    local retry=0
+    while [ $retry -lt $max_retries ]; do
+        if curl -sk --connect-timeout 2 "https://${SERVER_IP}:${SERVER_PORT}/healthz" 2>/dev/null | grep -q "ok"; then
+            echo "API Server 健康检查通过"
+            return 0
+        fi
+        retry=$((retry + 1))
+        sleep 5
+    done
+    echo "ERROR: API Server 未能在超时时间内启动"
+    return 1
+}
+
+register_to_haproxy() {
+    ssh -p "$HAPROXY_SSH_PORT" root@"$HAPROXY_SSH_HOST" << EOF
+        if grep -q "server ${SERVER_NAME} ${SERVER_IP}:${SERVER_PORT}" "$CONFIG_FILE"; then
+            echo "节点 ${SERVER_NAME} 已存在于配置中"
+        else
+            sed -i "/^backend ${BACKEND_NAME}/,/^$/ {
+                /^$/ i\\    server ${SERVER_NAME} ${SERVER_IP}:${SERVER_PORT} check inter 5s fall 3 rise 2
+            }" "$CONFIG_FILE"
+            echo "已添加节点 ${SERVER_NAME} 到配置"
+        fi
+        
+        haproxy -c -f "$CONFIG_FILE"
+        $RELOAD_CMD
+EOF
+}
+
+unregister_from_haproxy() {
+    ssh -p "$HAPROXY_SSH_PORT" root@"$HAPROXY_SSH_HOST" << EOF
+        sed -i "/server ${SERVER_NAME} ${SERVER_IP}:${SERVER_PORT}/d" "$CONFIG_FILE"
+        haproxy -c -f "$CONFIG_FILE"
+        $RELOAD_CMD
+        echo "已注销节点 ${SERVER_NAME}"
+EOF
+}
+
+case "${ACTION:-register}" in
+    register)
+        wait_for_apiserver
+        register_to_haproxy
+        ;;
+    unregister)
+        unregister_from_haproxy
+        ;;
+esac
+
+echo "=== HAProxy 操作完成 ==="
+```
+
+##### 6.15.4.5 F5 BIG-IP 注册流程
+
+```
+control-plane 节点 API Server 启动完成
+    │
+    ▼
+┌─────────────────────────────────────────────────────────┐
+│ 1. 等待 API Server 健康                                  │
+│    └── curl -sk https://<node-ip>:6443/healthz          │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 2. 调用 F5 iControl REST API 注册节点                    │
+│    ├── POST /mgmt/tm/ltm/pool/~Common~<pool>/members    │
+│    │   {"address": "<ip>", "port": 6443}                │
+│    └── 认证: Basic Auth (admin/password)                │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 3. 验证注册结果                                          │
+│    ├── GET /mgmt/tm/ltm/pool/~Common~<pool>/members     │
+│    └── 确认节点状态为 available                          │
+└─────────────────────────────────────────────────────────┘
+```
+
+##### 6.15.4.6 F5 注册脚本
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+F5_HOST="${F5_HOST:-f5.example.com}"
+F5_PORT="${F5_PORT:-443}"
+F5_USER="${F5_USER:-admin}"
+F5_PASSWORD="${F5_PASSWORD}"
+PARTITION="${PARTITION:-Common}"
+POOL_NAME="${POOL_NAME:-k8s-apiserver-pool}"
+SERVER_IP="${SERVER_IP}"
+SERVER_PORT="${SERVER_PORT:-6443}"
+
+echo "=== 注册 API Server 到 F5 ==="
+
+F5_URL="https://${F5_HOST}:${F5_PORT}/mgmt/tm"
+
+wait_for_apiserver() {
+    local max_retries=30
+    local retry=0
+    while [ $retry -lt $max_retries ]; do
+        if curl -sk --connect-timeout 2 "https://${SERVER_IP}:${SERVER_PORT}/healthz" 2>/dev/null | grep -q "ok"; then
+            echo "API Server 健康检查通过"
+            return 0
+        fi
+        retry=$((retry + 1))
+        sleep 5
+    done
+    return 1
+}
+
+register_to_f5() {
+    local response
+    response=$(curl -sk -X POST \
+        -u "${F5_USER}:${F5_PASSWORD}" \
+        -H "Content-Type: application/json" \
+        -d "{\"address\":\"${SERVER_IP}\",\"port\":${SERVER_PORT},\"name\":\"${SERVER_IP}:${SERVER_PORT}\"}" \
+        "${F5_URL}/ltm/pool/~${PARTITION}~${POOL_NAME}/members")
+    
+    if echo "$response" | grep -q "kind.*ltm:pool:member"; then
+        echo "节点 ${SERVER_IP}:${SERVER_PORT} 已注册到 F5 Pool"
+    else
+        echo "WARNING: F5 注册响应: $response"
+    fi
+}
+
+unregister_from_f5() {
+    local encoded_member
+    encoded_member=$(echo "${SERVER_IP}:${SERVER_PORT}" | sed 's/:/%3A/g')
+    
+    curl -sk -X DELETE \
+        -u "${F5_USER}:${F5_PASSWORD}" \
+        "${F5_URL}/ltm/pool/~${PARTITION}~${POOL_NAME}/members/~${PARTITION}~${encoded_member}"
+    
+    echo "节点 ${SERVER_IP}:${SERVER_PORT} 已从 F5 Pool 注销"
+}
+
+case "${ACTION:-register}" in
+    register)
+        wait_for_apiserver
+        register_to_f5
+        ;;
+    unregister)
+        unregister_from_f5
+        ;;
+esac
+
+echo "=== F5 操作完成 ==="
+```
+
+#### 6.15.5 Controller 集成
+
+在 `BareMetalCluster Controller` 中集成负载均衡器注册逻辑：
+
+```go
+func (r *BareMetalClusterReconciler) reconcileNormal(ctx context.Context, cluster *infrav1.BareMetalCluster) (ctrl.Result, error) {
+    log := ctrl.LoggerFrom(ctx)
+
+    // 1. 验证配置
+    if cluster.Spec.ControlPlaneEndpoint.Host == "" {
+        conditions.MarkFalse(cluster, infrav1.ReadyCondition, infrav1.EndpointNotSetReason, clusterv1.ConditionSeverityError, "controlPlaneEndpoint is required")
+        return ctrl.Result{}, nil
+    }
+
+    // 2. 获取所有 control-plane 节点
+    cpMachines, err := r.getControlPlaneMachines(ctx, cluster)
+    if err != nil {
+        return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+    }
+
+    // 3. 同步负载均衡器后端
+    if cluster.Spec.LoadBalancer != nil {
+        if err := r.syncLoadBalancerBackends(ctx, cluster, cpMachines); err != nil {
+            log.Error(err, "Failed to sync load balancer backends")
+            conditions.MarkFalse(cluster, infrav1.LoadBalancerReadyCondition, infrav1.LBSyncFailedReason, clusterv1.ConditionSeverityWarning, err.Error())
+            return ctrl.Result{RequeueAfter: 30 * time.Second}, r.Status().Update(ctx, cluster)
+        }
+        conditions.MarkTrue(cluster, infrav1.LoadBalancerReadyCondition)
+    }
+
+    // 4. 设置就绪状态
+    cluster.Status.Ready = true
+    conditions.MarkTrue(cluster, infrav1.ReadyCondition)
+
+    return ctrl.Result{}, r.Status().Update(ctx, cluster)
+}
+
+func (r *BareMetalClusterReconciler) syncLoadBalancerBackends(ctx context.Context, cluster *infrav1.BareMetalCluster, cpMachines []*clusterv1.Machine) error {
+    lbConfig := cluster.Spec.LoadBalancer
+    if lbConfig == nil {
+        return nil
+    }
+
+    desiredBackends := make(map[string]string)
+    for _, m := range cpMachines {
+        if m.Status.Phase == string(clusterv1.MachinePhaseRunning) {
+            ip := getMachineIP(m)
+            if ip != "" {
+                desiredBackends[m.Name] = fmt.Sprintf("%s:%d", ip, cluster.Spec.ControlPlaneEndpoint.Port)
+            }
+        }
+    }
+
+    currentBackends, err := r.getLoadBalancerBackends(ctx, lbConfig)
+    if err != nil {
+        return err
+    }
+
+    toAdd := make(map[string]string)
+    toRemove := make(map[string]string)
+
+    for name, addr := range desiredBackends {
+        if _, exists := currentBackends[name]; !exists {
+            toAdd[name] = addr
+        }
+    }
+    for name, addr := range currentBackends {
+        if _, exists := desiredBackends[name]; !exists {
+            toRemove[name] = addr
+        }
+    }
+
+    for name, addr := range toAdd {
+        ip := strings.Split(addr, ":")[0]
+        port := strings.Split(addr, ":")[1]
+        if err := r.registerBackend(ctx, lbConfig, name, ip, port); err != nil {
+            return fmt.Errorf("failed to register backend %s: %w", name, err)
+        }
+    }
+
+    for name, addr := range toRemove {
+        ip := strings.Split(addr, ":")[0]
+        port := strings.Split(addr, ":")[1]
+        if err := r.unregisterBackend(ctx, lbConfig, name, ip, port); err != nil {
+            return fmt.Errorf("failed to unregister backend %s: %w", name, err)
+        }
+    }
+
+    return nil
+}
+
+func (r *BareMetalClusterReconciler) registerBackend(ctx context.Context, lbConfig *infrav1.LoadBalancerConfig, name, ip, port string) error {
+    switch lbConfig.Provider {
+    case "haproxy":
+        return r.registerHAProxy(ctx, lbConfig.HAProxy, name, ip, port)
+    case "f5":
+        return r.registerF5(ctx, lbConfig.F5, name, ip, port)
+    case "keepalived":
+        return r.registerKeepalived(ctx, lbConfig.Keepalived, name, ip, port)
+    default:
+        return fmt.Errorf("unsupported load balancer provider: %s", lbConfig.Provider)
+    }
+}
+
+func (r *BareMetalClusterReconciler) registerHAProxy(ctx context.Context, haproxyConfig *infrav1.HAProxyConfig, name, ip, port string) error {
+    if haproxyConfig.AdminHost != "" {
+        cmd := fmt.Sprintf("add server %s/%s %s:%s check inter 5s fall 3 rise 2",
+            haproxyConfig.BackendName, name, ip, port)
+        return r.execHAProxyRuntimeAPI(ctx, haproxyConfig.AdminHost, haproxyConfig.AdminPort, cmd)
+    } else if haproxyConfig.SSHHost != "" {
+        return r.execHAProxySSH(ctx, haproxyConfig, name, ip, port, "register")
+    }
+    return fmt.Errorf("HAProxy: neither adminHost nor sshHost configured")
+}
+```
+
+#### 6.15.6 ClusterClass 变量和 Patches
+
+在 ClusterClass 中新增负载均衡器变量：
+
+```yaml
+  variables:
+  - name: loadBalancer
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          provider:
+            type: string
+            default: "haproxy"
+            enum:
+              - "haproxy"
+              - "keepalived"
+              - "f5"
+              - "nginx"
+              - "metal-lb"
+          healthCheck:
+            type: object
+            properties:
+              enabled:
+                type: boolean
+                default: true
+              path:
+                type: string
+                default: "/healthz"
+              interval:
+                type: string
+                default: "5s"
+              timeout:
+                type: string
+                default: "3s"
+          haproxy:
+            type: object
+            properties:
+              adminHost:
+                type: string
+              adminPort:
+                type: integer
+                default: 9999
+              sshHost:
+                type: string
+              sshPort:
+                type: integer
+                default: 22
+              configFile:
+                type: string
+                default: "/etc/haproxy/haproxy.cfg"
+              backendName:
+                type: string
+                default: "k8s-apiserver"
+              reloadCommand:
+                type: string
+                default: "systemctl reload haproxy"
+          keepalived:
+            type: object
+            properties:
+              virtualIP:
+                type: string
+              interface:
+                type: string
+                default: "eth0"
+              virtualRouterID:
+                type: integer
+                default: 51
+              priority:
+                type: integer
+                default: 100
+          f5:
+            type: object
+            properties:
+              host:
+                type: string
+              port:
+                type: integer
+                default: 443
+              partition:
+                type: string
+                default: "Common"
+              poolName:
+                type: string
+              virtualServerName:
+                type: string
+```
+
+Patch 定义：
+
+```yaml
+  patches:
+  - name: loadBalancer
+    enabledIf: "{{ if .loadBalancer }}true{{end}}"
+    definitions:
+    - selector:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        kind: BareMetalClusterTemplate
+        matchResources:
+          infrastructureCluster: true
+      jsonPatches:
+      - op: add
+        path: /spec/template/spec/loadBalancer
+        valueFrom:
+          variable: loadBalancer
+```
+
+#### 6.15.7 用户使用示例
+
+##### 6.15.7.1 HAProxy 方式
+
+```yaml
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  name: my-baremetal-cluster
+spec:
+  topology:
+    classRef:
+      name: baremetal-clusterclass-v0.1.0
+    version: v1.31.0
+    controlPlane:
+      replicas: 3
+    workers:
+      machineDeployments:
+      - class: default-worker
+        name: md-0
+        replicas: 2
+    variables:
+    - name: controlPlaneEndpoint
+      value:
+        host: "10.0.0.100"
+        port: 6443
+    - name: loadBalancer
+      value:
+        provider: "haproxy"
+        healthCheck:
+          enabled: true
+          path: "/healthz"
+          interval: "5s"
+          timeout: "3s"
+        haproxy:
+          adminHost: "10.0.0.50"
+          adminPort: 9999
+          backendName: "k8s-apiserver"
+          reloadCommand: "systemctl reload haproxy"
+```
+
+##### 6.15.7.2 Keepalived + HAProxy 方式 (无外部 LB)
+
+```yaml
+    variables:
+    - name: loadBalancer
+      value:
+        provider: "keepalived"
+        healthCheck:
+          enabled: true
+          path: "/healthz"
+        keepalived:
+          virtualIP: "10.0.0.100"
+          interface: "eth0"
+          virtualRouterID: 51
+          priority: 100
+          advertInterval: 1
+```
+
+##### 6.15.7.3 F5 BIG-IP 方式
+
+```yaml
+    variables:
+    - name: loadBalancer
+      value:
+        provider: "f5"
+        healthCheck:
+          enabled: true
+          path: "/healthz"
+          interval: "5s"
+        f5:
+          host: "f5.example.com"
+          port: 443
+          partition: "Common"
+          poolName: "k8s-apiserver-pool"
+          virtualServerName: "k8s-apiserver-vs"
+```
+
+#### 6.15.8 关键设计决策
+
+| 决策点 | 选项 | 推荐 | 理由 |
+|--------|------|------|------|
+| **注册方式** | Runtime API vs SSH vs 配置文件 | Runtime API 优先，SSH 备选 | Runtime API 无需 reload，零中断 |
+| **健康检查** | LB 内置 vs CAPBM 主动检查 | LB 内置 | 利用 LB 原生能力，更可靠 |
+| **注销时机** | 先注销再删除 vs 先删除再注销 | 先注销再删除 | 避免流量路由到已删除节点 |
+| **多 LB 支持** | 单一 LB 类型 vs 插件化 | 插件化 | 不同环境可能使用不同 LB |
+| **凭证管理** | 明文 vs Secret | Secret | 安全性，支持 RBAC 控制访问 |
+
+### 6.15 API Server 负载均衡注册
+
+#### 6.15.1 问题背景
+
+裸金属集群的控制面节点通常部署为高可用架构（3 或 5 个 control-plane 节点），需要外部负载均衡器将流量分发到所有 API Server 实例。
+
+仅设置 `controlPlaneEndpoint` 是不够的，还需要：
+1. **注册**: 当 control-plane 节点加入集群时，将其 API Server 地址注册到负载均衡器后端
+2. **健康检查**: 定期检查 API Server 健康状态，自动剔除不健康节点
+3. **注销**: 当 control-plane 节点被删除或缩容时，从负载均衡器移除后端
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                    负载均衡架构                               │
+│                                                              │
+│  kubectl / 客户端                                            │
+│       │                                                      │
+│       ▼                                                      │
+│  ┌─────────────────┐                                         │
+│  │  Load Balancer   │  ←  CAPBM 负责注册/注销后端             │
+│  │  VIP: 10.0.0.100 │                                         │
+│  │  Port: 6443      │                                         │
+│  └────┬────┬────┬───┘                                         │
+│       │    │    │                                             │
+│       ▼    ▼    ▼                                             │
+│  ┌──────┐┌──────┐┌──────┐                                    │
+│  │CP-01 ││CP-02 ││CP-03 │                                    │
+│  │:6443 ││:6443 ││:6443 │                                    │
+│  └──────┘└──────┘└──────┘                                    │
+└──────────────────────────────────────────────────────────────┘
+```
+
+#### 6.15.2 支持的负载均衡器类型
+
+| 类型 | 注册方式 | 适用场景 | 健康检查 |
+|------|---------|---------|---------|
+| **HAProxy** | 配置文件 + reload / Runtime API | 中小型集群，软件 LB | HTTP GET /healthz |
+| **Keepalived + HAProxy** | Keepalived VIP + HAProxy 后端 | 无外部 LB 的裸金属 | TCP check + HTTP |
+| **F5 BIG-IP** | iControl REST API | 企业级硬件 LB | HTTP monitor |
+| **Nginx** | 配置文件 + reload / Stream module | 轻量级场景 | TCP check |
+| **云厂商 LB** | Cloud Provider API (AWS/Aliyun/华为云) | 混合云场景 | 云厂商内置 |
+| **MetalLB** | BGP / L2 宣告 | 裸金属 Service LB | 内置 |
+
+CAPBM 采用**插件化设计**，通过 `lbProvider` 变量选择负载均衡器类型。
+
+#### 6.15.3 CRD 设计扩展
+
+在 `BareMetalClusterSpec` 中新增负载均衡器配置：
+
+```yaml
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: BareMetalCluster
+spec:
+  controlPlaneEndpoint:
+    host: "lb.example.com"
+    port: 6443
+  
+  loadBalancer:
+    provider: "haproxy"        # haproxy | keepalived | f5 | nginx | metal-lb
+    
+    healthCheck:
+      enabled: true
+      path: "/healthz"
+      interval: "5s"
+      timeout: "3s"
+      healthyThreshold: 2
+      unhealthyThreshold: 3
+    
+    haproxy:
+      adminHost: "10.0.0.50"
+      adminPort: 9999
+      sshHost: "10.0.0.50"
+      sshPort: 22
+      sshCredentialsRef:
+        name: "haproxy-credentials"
+      configFile: "/etc/haproxy/haproxy.cfg"
+      backendName: "k8s-apiserver"
+      reloadCommand: "systemctl reload haproxy"
+    
+    keepalived:
+      virtualIP: "10.0.0.100"
+      interface: "eth0"
+      virtualRouterID: 51
+      priority: 100
+      advertInterval: 1
+    
+    f5:
+      host: "f5.example.com"
+      port: 443
+      credentialsRef:
+        name: "f5-credentials"
+      partition: "Common"
+      poolName: "k8s-apiserver-pool"
+      virtualServerName: "k8s-apiserver-vs"
+    
+    metal-lb:
+      ipAddressPool: "apiserver-pool"
+      loadBalancerIP: "10.0.0.100"
+```
+
+**Go 类型定义**:
+
+```go
+type LoadBalancerConfig struct {
+	Provider    string              `json:"provider,omitempty"`
+	HealthCheck HealthCheckConfig   `json:"healthCheck,omitempty"`
+	HAProxy     *HAProxyConfig      `json:"haproxy,omitempty"`
+	Keepalived  *KeepalivedConfig   `json:"keepalived,omitempty"`
+	F5          *F5Config           `json:"f5,omitempty"`
+	MetalLB     *MetalLBConfig      `json:"metal-lb,omitempty"`
+}
+
+type HealthCheckConfig struct {
+	Enabled            bool   `json:"enabled,omitempty"`
+	Path               string `json:"path,omitempty"`
+	Interval           string `json:"interval,omitempty"`
+	Timeout            string `json:"timeout,omitempty"`
+	HealthyThreshold   int    `json:"healthyThreshold,omitempty"`
+	UnhealthyThreshold int    `json:"unhealthyThreshold,omitempty"`
+}
+
+type HAProxyConfig struct {
+	AdminHost         string                      `json:"adminHost,omitempty"`
+	AdminPort         int                         `json:"adminPort,omitempty"`
+	SSHHost           string                      `json:"sshHost,omitempty"`
+	SSHPort           int                         `json:"sshPort,omitempty"`
+	SSHCredentialsRef *corev1.LocalObjectReference `json:"sshCredentialsRef,omitempty"`
+	ConfigFile        string                      `json:"configFile,omitempty"`
+	BackendName       string                      `json:"backendName,omitempty"`
+	ReloadCommand     string                      `json:"reloadCommand,omitempty"`
+}
+
+type KeepalivedConfig struct {
+	VirtualIP       string `json:"virtualIP,omitempty"`
+	Interface       string `json:"interface,omitempty"`
+	VirtualRouterID int    `json:"virtualRouterID,omitempty"`
+	Priority        int    `json:"priority,omitempty"`
+	AdvertInterval  int    `json:"advertInterval,omitempty"`
+}
+
+type F5Config struct {
+	Host              string                      `json:"host,omitempty"`
+	Port              int                         `json:"port,omitempty"`
+	CredentialsRef    *corev1.LocalObjectReference `json:"credentialsRef,omitempty"`
+	Partition         string                      `json:"partition,omitempty"`
+	PoolName          string                      `json:"poolName,omitempty"`
+	VirtualServerName string                      `json:"virtualServerName,omitempty"`
+}
+
+type MetalLBConfig struct {
+	IPAddressPool  string `json:"ipAddressPool,omitempty"`
+	LoadBalancerIP string `json:"loadBalancerIP,omitempty"`
+}
+```
+
+更新 `BareMetalClusterSpec`:
+
+```go
+type BareMetalClusterSpec struct {
+	ControlPlaneEndpoint clusterv1.APIEndpoint `json:"controlPlaneEndpoint,omitempty"`
+	Network              NetworkConfig         `json:"network,omitempty"`
+	LoadBalancer         *LoadBalancerConfig   `json:"loadBalancer,omitempty"`
+}
+```
+
+#### 6.15.4 注册流程
+
+##### 6.15.4.1 注册时机
+
+| 事件 | 操作 | 说明 |
+|------|------|------|
+| 首个 control-plane 初始化 | 创建后端池 + 注册首个节点 | 初始化 HAProxy/F5 配置 |
+| 新 control-plane 加入 | 注册新节点到后端池 | kubeadm join 完成后执行 |
+| control-plane 缩容/删除 | 注销节点从后端池 | 先注销，再删除节点 |
+| 节点健康检查失败 | 临时标记为 unhealthy | 不立即移除，等待恢复 |
+
+##### 6.15.4.2 HAProxy 注册流程 (Runtime API 方式)
+
+```
+control-plane 节点 API Server 启动完成
+    │
+    ▼
+┌─────────────────────────────────────────────────────────┐
+│ 1. 等待 API Server 健康                                  │
+│    ├── curl -sk https://<node-ip>:6443/healthz          │
+│    └── 等待返回 "ok"                                    │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 2. 注册到 HAProxy 后端池                                │
+│    ├── echo "add server <backend>/<server> <ip>:6443    │
+│    │     check inter 5s fall 3 rise 2" |                │
+│    │     socat stdio haproxy-admin:9999                 │
+│    └── 或使用 SSH 执行                                  │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 3. 验证注册结果                                          │
+│    ├── echo "show servers state <backend>" |             │
+│    │     socat stdio haproxy-admin:9999                 │
+│    └── 确认节点状态为 UP                                  │
+└─────────────────────────────────────────────────────────┘
+```
+
+##### 6.15.4.3 HAProxy 注册脚本 (Runtime API)
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+HAPROXY_ADMIN_HOST="${HAPROXY_ADMIN_HOST:-10.0.0.50}"
+HAPROXY_ADMIN_PORT="${HAPROXY_ADMIN_PORT:-9999}"
+BACKEND_NAME="${BACKEND_NAME:-k8s-apiserver}"
+SERVER_NAME="${SERVER_NAME}"
+SERVER_IP="${SERVER_IP}"
+SERVER_PORT="${SERVER_PORT:-6443}"
+
+echo "=== 注册 API Server 到 HAProxy ==="
+
+wait_for_apiserver() {
+    local max_retries=30
+    local retry=0
+    while [ $retry -lt $max_retries ]; do
+        if curl -sk --connect-timeout 2 "https://${SERVER_IP}:${SERVER_PORT}/healthz" 2>/dev/null | grep -q "ok"; then
+            echo "API Server 健康检查通过"
+            return 0
+        fi
+        retry=$((retry + 1))
+        echo "等待 API Server 启动... ($retry/$max_retries)"
+        sleep 5
+    done
+    echo "ERROR: API Server 未能在超时时间内启动"
+    return 1
+}
+
+register_to_haproxy() {
+    local cmd="add server ${BACKEND_NAME}/${SERVER_NAME} ${SERVER_IP}:${SERVER_PORT} check inter 5s fall 3 rise 2"
+    echo "$cmd" | socat stdio tcp:${HAPROXY_ADMIN_HOST}:${HAPROXY_ADMIN_PORT}
+    echo "已发送注册命令: $cmd"
+}
+
+verify_registration() {
+    local max_retries=12
+    local retry=0
+    while [ $retry -lt $max_retries ]; do
+        local status
+        status=$(echo "show servers state ${BACKEND_NAME}" | socat stdio tcp:${HAPROXY_ADMIN_HOST}:${HAPROXY_ADMIN_PORT} 2>/dev/null | grep "${SERVER_NAME}" || true)
+        if echo "$status" | grep -q "UP"; then
+            echo "节点 ${SERVER_NAME} 已注册并健康 (UP)"
+            return 0
+        fi
+        retry=$((retry + 1))
+        echo "等待节点健康... ($retry/$max_retries)"
+        sleep 5
+    done
+    echo "WARNING: 节点 ${SERVER_NAME} 注册成功但尚未 UP"
+    return 0
+}
+
+unregister_from_haproxy() {
+    local cmd="del server ${BACKEND_NAME}/${SERVER_NAME}"
+    echo "$cmd" | socat stdio tcp:${HAPROXY_ADMIN_HOST}:${HAPROXY_ADMIN_PORT}
+    echo "已发送注销命令: $cmd"
+}
+
+case "${ACTION:-register}" in
+    register)
+        wait_for_apiserver
+        register_to_haproxy
+        verify_registration
+        ;;
+    unregister)
+        unregister_from_haproxy
+        ;;
+    *)
+        echo "ERROR: 不支持的操作: ${ACTION}"
+        exit 1
+        ;;
+esac
+
+echo "=== HAProxy 操作完成 ==="
+```
+
+##### 6.15.4.4 HAProxy 注册脚本 (SSH + 配置文件方式)
+
+适用于不支持 Runtime API 的 HAProxy 版本：
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+HAPROXY_SSH_HOST="${HAPROXY_SSH_HOST:-10.0.0.50}"
+HAPROXY_SSH_PORT="${HAPROXY_SSH_PORT:-22}"
+CONFIG_FILE="${CONFIG_FILE:-/etc/haproxy/haproxy.cfg}"
+BACKEND_NAME="${BACKEND_NAME:-k8s-apiserver}"
+SERVER_NAME="${SERVER_NAME}"
+SERVER_IP="${SERVER_IP}"
+SERVER_PORT="${SERVER_PORT:-6443}"
+RELOAD_CMD="${RELOAD_CMD:-systemctl reload haproxy}"
+
+echo "=== 注册 API Server 到 HAProxy (SSH 方式) ==="
+
+wait_for_apiserver() {
+    local max_retries=30
+    local retry=0
+    while [ $retry -lt $max_retries ]; do
+        if curl -sk --connect-timeout 2 "https://${SERVER_IP}:${SERVER_PORT}/healthz" 2>/dev/null | grep -q "ok"; then
+            echo "API Server 健康检查通过"
+            return 0
+        fi
+        retry=$((retry + 1))
+        sleep 5
+    done
+    echo "ERROR: API Server 未能在超时时间内启动"
+    return 1
+}
+
+register_to_haproxy() {
+    ssh -p "$HAPROXY_SSH_PORT" root@"$HAPROXY_SSH_HOST" << EOF
+        if grep -q "server ${SERVER_NAME} ${SERVER_IP}:${SERVER_PORT}" "$CONFIG_FILE"; then
+            echo "节点 ${SERVER_NAME} 已存在于配置中"
+        else
+            sed -i "/^backend ${BACKEND_NAME}/,/^$/ {
+                /^$/ i\\    server ${SERVER_NAME} ${SERVER_IP}:${SERVER_PORT} check inter 5s fall 3 rise 2
+            }" "$CONFIG_FILE"
+            echo "已添加节点 ${SERVER_NAME} 到配置"
+        fi
+        
+        haproxy -c -f "$CONFIG_FILE"
+        $RELOAD_CMD
+EOF
+}
+
+unregister_from_haproxy() {
+    ssh -p "$HAPROXY_SSH_PORT" root@"$HAPROXY_SSH_HOST" << EOF
+        sed -i "/server ${SERVER_NAME} ${SERVER_IP}:${SERVER_PORT}/d" "$CONFIG_FILE"
+        haproxy -c -f "$CONFIG_FILE"
+        $RELOAD_CMD
+        echo "已注销节点 ${SERVER_NAME}"
+EOF
+}
+
+case "${ACTION:-register}" in
+    register)
+        wait_for_apiserver
+        register_to_haproxy
+        ;;
+    unregister)
+        unregister_from_haproxy
+        ;;
+esac
+
+echo "=== HAProxy 操作完成 ==="
+```
+
+##### 6.15.4.5 F5 BIG-IP 注册流程
+
+```
+control-plane 节点 API Server 启动完成
+    │
+    ▼
+┌─────────────────────────────────────────────────────────┐
+│ 1. 等待 API Server 健康                                  │
+│    └── curl -sk https://<node-ip>:6443/healthz          │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 2. 调用 F5 iControl REST API 注册节点                    │
+│    ├── POST /mgmt/tm/ltm/pool/~Common~<pool>/members    │
+│    │   {"address": "<ip>", "port": 6443}                │
+│    └── 认证: Basic Auth (admin/password)                │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 3. 验证注册结果                                          │
+│    ├── GET /mgmt/tm/ltm/pool/~Common~<pool>/members     │
+│    └── 确认节点状态为 available                          │
+└─────────────────────────────────────────────────────────┘
+```
+
+##### 6.15.4.6 F5 注册脚本
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+F5_HOST="${F5_HOST:-f5.example.com}"
+F5_PORT="${F5_PORT:-443}"
+F5_USER="${F5_USER:-admin}"
+F5_PASSWORD="${F5_PASSWORD}"
+PARTITION="${PARTITION:-Common}"
+POOL_NAME="${POOL_NAME:-k8s-apiserver-pool}"
+SERVER_IP="${SERVER_IP}"
+SERVER_PORT="${SERVER_PORT:-6443}"
+
+echo "=== 注册 API Server 到 F5 ==="
+
+F5_URL="https://${F5_HOST}:${F5_PORT}/mgmt/tm"
+
+wait_for_apiserver() {
+    local max_retries=30
+    local retry=0
+    while [ $retry -lt $max_retries ]; do
+        if curl -sk --connect-timeout 2 "https://${SERVER_IP}:${SERVER_PORT}/healthz" 2>/dev/null | grep -q "ok"; then
+            echo "API Server 健康检查通过"
+            return 0
+        fi
+        retry=$((retry + 1))
+        sleep 5
+    done
+    return 1
+}
+
+register_to_f5() {
+    local response
+    response=$(curl -sk -X POST \
+        -u "${F5_USER}:${F5_PASSWORD}" \
+        -H "Content-Type: application/json" \
+        -d "{\"address\":\"${SERVER_IP}\",\"port\":${SERVER_PORT},\"name\":\"${SERVER_IP}:${SERVER_PORT}\"}" \
+        "${F5_URL}/ltm/pool/~${PARTITION}~${POOL_NAME}/members")
+    
+    if echo "$response" | grep -q "kind.*ltm:pool:member"; then
+        echo "节点 ${SERVER_IP}:${SERVER_PORT} 已注册到 F5 Pool"
+    else
+        echo "WARNING: F5 注册响应: $response"
+    fi
+}
+
+unregister_from_f5() {
+    local encoded_member
+    encoded_member=$(echo "${SERVER_IP}:${SERVER_PORT}" | sed 's/:/%3A/g')
+    
+    curl -sk -X DELETE \
+        -u "${F5_USER}:${F5_PASSWORD}" \
+        "${F5_URL}/ltm/pool/~${PARTITION}~${POOL_NAME}/members/~${PARTITION}~${encoded_member}"
+    
+    echo "节点 ${SERVER_IP}:${SERVER_PORT} 已从 F5 Pool 注销"
+}
+
+case "${ACTION:-register}" in
+    register)
+        wait_for_apiserver
+        register_to_f5
+        ;;
+    unregister)
+        unregister_from_f5
+        ;;
+esac
+
+echo "=== F5 操作完成 ==="
+```
+
+#### 6.15.5 Controller 集成
+
+在 `BareMetalCluster Controller` 中集成负载均衡器注册逻辑：
+
+```go
+func (r *BareMetalClusterReconciler) reconcileNormal(ctx context.Context, cluster *infrav1.BareMetalCluster) (ctrl.Result, error) {
+    log := ctrl.LoggerFrom(ctx)
+
+    // 1. 验证配置
+    if cluster.Spec.ControlPlaneEndpoint.Host == "" {
+        conditions.MarkFalse(cluster, infrav1.ReadyCondition, infrav1.EndpointNotSetReason, clusterv1.ConditionSeverityError, "controlPlaneEndpoint is required")
+        return ctrl.Result{}, nil
+    }
+
+    // 2. 获取所有 control-plane 节点
+    cpMachines, err := r.getControlPlaneMachines(ctx, cluster)
+    if err != nil {
+        return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+    }
+
+    // 3. 同步负载均衡器后端
+    if cluster.Spec.LoadBalancer != nil {
+        if err := r.syncLoadBalancerBackends(ctx, cluster, cpMachines); err != nil {
+            log.Error(err, "Failed to sync load balancer backends")
+            conditions.MarkFalse(cluster, infrav1.LoadBalancerReadyCondition, infrav1.LBSyncFailedReason, clusterv1.ConditionSeverityWarning, err.Error())
+            return ctrl.Result{RequeueAfter: 30 * time.Second}, r.Status().Update(ctx, cluster)
+        }
+        conditions.MarkTrue(cluster, infrav1.LoadBalancerReadyCondition)
+    }
+
+    // 4. 设置就绪状态
+    cluster.Status.Ready = true
+    conditions.MarkTrue(cluster, infrav1.ReadyCondition)
+
+    return ctrl.Result{}, r.Status().Update(ctx, cluster)
+}
+
+func (r *BareMetalClusterReconciler) syncLoadBalancerBackends(ctx context.Context, cluster *infrav1.BareMetalCluster, cpMachines []*clusterv1.Machine) error {
+    lbConfig := cluster.Spec.LoadBalancer
+    if lbConfig == nil {
+        return nil
+    }
+
+    desiredBackends := make(map[string]string)
+    for _, m := range cpMachines {
+        if m.Status.Phase == string(clusterv1.MachinePhaseRunning) {
+            ip := getMachineIP(m)
+            if ip != "" {
+                desiredBackends[m.Name] = fmt.Sprintf("%s:%d", ip, cluster.Spec.ControlPlaneEndpoint.Port)
+            }
+        }
+    }
+
+    currentBackends, err := r.getLoadBalancerBackends(ctx, lbConfig)
+    if err != nil {
+        return err
+    }
+
+    toAdd := make(map[string]string)
+    toRemove := make(map[string]string)
+
+    for name, addr := range desiredBackends {
+        if _, exists := currentBackends[name]; !exists {
+            toAdd[name] = addr
+        }
+    }
+    for name, addr := range currentBackends {
+        if _, exists := desiredBackends[name]; !exists {
+            toRemove[name] = addr
+        }
+    }
+
+    for name, addr := range toAdd {
+        ip := strings.Split(addr, ":")[0]
+        port := strings.Split(addr, ":")[1]
+        if err := r.registerBackend(ctx, lbConfig, name, ip, port); err != nil {
+            return fmt.Errorf("failed to register backend %s: %w", name, err)
+        }
+    }
+
+    for name, addr := range toRemove {
+        ip := strings.Split(addr, ":")[0]
+        port := strings.Split(addr, ":")[1]
+        if err := r.unregisterBackend(ctx, lbConfig, name, ip, port); err != nil {
+            return fmt.Errorf("failed to unregister backend %s: %w", name, err)
+        }
+    }
+
+    return nil
+}
+
+func (r *BareMetalClusterReconciler) registerBackend(ctx context.Context, lbConfig *infrav1.LoadBalancerConfig, name, ip, port string) error {
+    switch lbConfig.Provider {
+    case "haproxy":
+        return r.registerHAProxy(ctx, lbConfig.HAProxy, name, ip, port)
+    case "f5":
+        return r.registerF5(ctx, lbConfig.F5, name, ip, port)
+    case "keepalived":
+        return r.registerKeepalived(ctx, lbConfig.Keepalived, name, ip, port)
+    default:
+        return fmt.Errorf("unsupported load balancer provider: %s", lbConfig.Provider)
+    }
+}
+
+func (r *BareMetalClusterReconciler) registerHAProxy(ctx context.Context, haproxyConfig *infrav1.HAProxyConfig, name, ip, port string) error {
+    if haproxyConfig.AdminHost != "" {
+        cmd := fmt.Sprintf("add server %s/%s %s:%s check inter 5s fall 3 rise 2",
+            haproxyConfig.BackendName, name, ip, port)
+        return r.execHAProxyRuntimeAPI(ctx, haproxyConfig.AdminHost, haproxyConfig.AdminPort, cmd)
+    } else if haproxyConfig.SSHHost != "" {
+        return r.execHAProxySSH(ctx, haproxyConfig, name, ip, port, "register")
+    }
+    return fmt.Errorf("HAProxy: neither adminHost nor sshHost configured")
+}
+```
+
+#### 6.15.6 ClusterClass 变量和 Patches
+
+在 ClusterClass 中新增负载均衡器变量：
+
+```yaml
+  variables:
+  - name: loadBalancer
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          provider:
+            type: string
+            default: "haproxy"
+            enum:
+              - "haproxy"
+              - "keepalived"
+              - "f5"
+              - "nginx"
+              - "metal-lb"
+          healthCheck:
+            type: object
+            properties:
+              enabled:
+                type: boolean
+                default: true
+              path:
+                type: string
+                default: "/healthz"
+              interval:
+                type: string
+                default: "5s"
+              timeout:
+                type: string
+                default: "3s"
+          haproxy:
+            type: object
+            properties:
+              adminHost:
+                type: string
+              adminPort:
+                type: integer
+                default: 9999
+              sshHost:
+                type: string
+              sshPort:
+                type: integer
+                default: 22
+              configFile:
+                type: string
+                default: "/etc/haproxy/haproxy.cfg"
+              backendName:
+                type: string
+                default: "k8s-apiserver"
+              reloadCommand:
+                type: string
+                default: "systemctl reload haproxy"
+          keepalived:
+            type: object
+            properties:
+              virtualIP:
+                type: string
+              interface:
+                type: string
+                default: "eth0"
+              virtualRouterID:
+                type: integer
+                default: 51
+              priority:
+                type: integer
+                default: 100
+          f5:
+            type: object
+            properties:
+              host:
+                type: string
+              port:
+                type: integer
+                default: 443
+              partition:
+                type: string
+                default: "Common"
+              poolName:
+                type: string
+              virtualServerName:
+                type: string
+```
+
+Patch 定义：
+
+```yaml
+  patches:
+  - name: loadBalancer
+    enabledIf: "{{ if .loadBalancer }}true{{end}}"
+    definitions:
+    - selector:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        kind: BareMetalClusterTemplate
+        matchResources:
+          infrastructureCluster: true
+      jsonPatches:
+      - op: add
+        path: /spec/template/spec/loadBalancer
+        valueFrom:
+          variable: loadBalancer
+```
+
+#### 6.15.7 用户使用示例
+
+##### 6.15.7.1 HAProxy 方式
+
+```yaml
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  name: my-baremetal-cluster
+spec:
+  topology:
+    classRef:
+      name: baremetal-clusterclass-v0.1.0
+    version: v1.31.0
+    controlPlane:
+      replicas: 3
+    workers:
+      machineDeployments:
+      - class: default-worker
+        name: md-0
+        replicas: 2
+    variables:
+    - name: controlPlaneEndpoint
+      value:
+        host: "10.0.0.100"
+        port: 6443
+    - name: loadBalancer
+      value:
+        provider: "haproxy"
+        healthCheck:
+          enabled: true
+          path: "/healthz"
+          interval: "5s"
+          timeout: "3s"
+        haproxy:
+          adminHost: "10.0.0.50"
+          adminPort: 9999
+          backendName: "k8s-apiserver"
+          reloadCommand: "systemctl reload haproxy"
+```
+
+##### 6.15.7.2 Keepalived + HAProxy 方式 (无外部 LB)
+
+```yaml
+    variables:
+    - name: loadBalancer
+      value:
+        provider: "keepalived"
+        healthCheck:
+          enabled: true
+          path: "/healthz"
+        keepalived:
+          virtualIP: "10.0.0.100"
+          interface: "eth0"
+          virtualRouterID: 51
+          priority: 100
+          advertInterval: 1
+```
+
+##### 6.15.7.3 F5 BIG-IP 方式
+
+```yaml
+    variables:
+    - name: loadBalancer
+      value:
+        provider: "f5"
+        healthCheck:
+          enabled: true
+          path: "/healthz"
+          interval: "5s"
+        f5:
+          host: "f5.example.com"
+          port: 443
+          partition: "Common"
+          poolName: "k8s-apiserver-pool"
+          virtualServerName: "k8s-apiserver-vs"
+```
+
+#### 6.15.8 关键设计决策
+
+| 决策点 | 选项 | 推荐 | 理由 |
+|--------|------|------|------|
+| **注册方式** | Runtime API vs SSH vs 配置文件 | Runtime API 优先，SSH 备选 | Runtime API 无需 reload，零中断 |
+| **健康检查** | LB 内置 vs CAPBM 主动检查 | LB 内置 | 利用 LB 原生能力，更可靠 |
+| **注销时机** | 先注销再删除 vs 先删除再注销 | 先注销再删除 | 避免流量路由到已删除节点 |
+| **多 LB 支持** | 单一 LB 类型 vs 插件化 | 插件化 | 不同环境可能使用不同 LB |
+| **凭证管理** | 明文 vs Secret | Secret | 安全性，支持 RBAC 控制访问 |
+
+### 6.15 API Server 负载均衡注册
+
+#### 6.15.1 问题背景
+
+裸金属集群的控制面节点通常部署为高可用架构（3 或 5 个 control-plane 节点），需要外部负载均衡器将流量分发到所有 API Server 实例。
+
+仅设置 `controlPlaneEndpoint` 是不够的，还需要：
+1. **注册**: 当 control-plane 节点加入集群时，将其 API Server 地址注册到负载均衡器后端
+2. **健康检查**: 定期检查 API Server 健康状态，自动剔除不健康节点
+3. **注销**: 当 control-plane 节点被删除或缩容时，从负载均衡器移除后端
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                    负载均衡架构                               │
+│                                                              │
+│  kubectl / 客户端                                            │
+│       │                                                      │
+│       ▼                                                      │
+│  ┌─────────────────┐                                         │
+│  │  Load Balancer   │  ←  CAPBM 负责注册/注销后端             │
+│  │  VIP: 10.0.0.100 │                                         │
+│  │  Port: 6443      │                                         │
+│  └────┬────┬────┬───┘                                         │
+│       │    │    │                                             │
+│       ▼    ▼    ▼                                             │
+│  ┌──────┐┌──────┐┌──────┐                                    │
+│  │CP-01 ││CP-02 ││CP-03 │                                    │
+│  │:6443 ││:6443 ││:6443 │                                    │
+│  └──────┘└──────┘└──────┘                                    │
+└──────────────────────────────────────────────────────────────┘
+```
+
+#### 6.15.2 支持的负载均衡器类型
+
+| 类型 | 注册方式 | 适用场景 | 健康检查 |
+|------|---------|---------|---------|
+| **HAProxy** | 配置文件 + reload / Runtime API | 中小型集群，软件 LB | HTTP GET /healthz |
+| **Keepalived + HAProxy** | Keepalived VIP + HAProxy 后端 | 无外部 LB 的裸金属 | TCP check + HTTP |
+| **F5 BIG-IP** | iControl REST API | 企业级硬件 LB | HTTP monitor |
+| **Nginx** | 配置文件 + reload / Stream module | 轻量级场景 | TCP check |
+| **云厂商 LB** | Cloud Provider API (AWS/Aliyun/华为云) | 混合云场景 | 云厂商内置 |
+| **MetalLB** | BGP / L2 宣告 | 裸金属 Service LB | 内置 |
+
+CAPBM 采用**插件化设计**，通过 `lbProvider` 变量选择负载均衡器类型。
+
+#### 6.15.3 CRD 设计扩展
+
+在 `BareMetalClusterSpec` 中新增负载均衡器配置：
+
+```yaml
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: BareMetalCluster
+spec:
+  controlPlaneEndpoint:
+    host: "lb.example.com"
+    port: 6443
+  
+  loadBalancer:
+    provider: "haproxy"        # haproxy | keepalived | f5 | nginx | metal-lb
+    
+    healthCheck:
+      enabled: true
+      path: "/healthz"
+      interval: "5s"
+      timeout: "3s"
+      healthyThreshold: 2
+      unhealthyThreshold: 3
+    
+    haproxy:
+      adminHost: "10.0.0.50"
+      adminPort: 9999
+      sshHost: "10.0.0.50"
+      sshPort: 22
+      sshCredentialsRef:
+        name: "haproxy-credentials"
+      configFile: "/etc/haproxy/haproxy.cfg"
+      backendName: "k8s-apiserver"
+      reloadCommand: "systemctl reload haproxy"
+    
+    keepalived:
+      virtualIP: "10.0.0.100"
+      interface: "eth0"
+      virtualRouterID: 51
+      priority: 100
+      advertInterval: 1
+    
+    f5:
+      host: "f5.example.com"
+      port: 443
+      credentialsRef:
+        name: "f5-credentials"
+      partition: "Common"
+      poolName: "k8s-apiserver-pool"
+      virtualServerName: "k8s-apiserver-vs"
+    
+    metal-lb:
+      ipAddressPool: "apiserver-pool"
+      loadBalancerIP: "10.0.0.100"
+```
+
+**Go 类型定义**:
+
+```go
+type LoadBalancerConfig struct {
+	Provider    string              `json:"provider,omitempty"`
+	HealthCheck HealthCheckConfig   `json:"healthCheck,omitempty"`
+	HAProxy     *HAProxyConfig      `json:"haproxy,omitempty"`
+	Keepalived  *KeepalivedConfig   `json:"keepalived,omitempty"`
+	F5          *F5Config           `json:"f5,omitempty"`
+	MetalLB     *MetalLBConfig      `json:"metal-lb,omitempty"`
+}
+
+type HealthCheckConfig struct {
+	Enabled            bool   `json:"enabled,omitempty"`
+	Path               string `json:"path,omitempty"`
+	Interval           string `json:"interval,omitempty"`
+	Timeout            string `json:"timeout,omitempty"`
+	HealthyThreshold   int    `json:"healthyThreshold,omitempty"`
+	UnhealthyThreshold int    `json:"unhealthyThreshold,omitempty"`
+}
+
+type HAProxyConfig struct {
+	AdminHost         string                      `json:"adminHost,omitempty"`
+	AdminPort         int                         `json:"adminPort,omitempty"`
+	SSHHost           string                      `json:"sshHost,omitempty"`
+	SSHPort           int                         `json:"sshPort,omitempty"`
+	SSHCredentialsRef *corev1.LocalObjectReference `json:"sshCredentialsRef,omitempty"`
+	ConfigFile        string                      `json:"configFile,omitempty"`
+	BackendName       string                      `json:"backendName,omitempty"`
+	ReloadCommand     string                      `json:"reloadCommand,omitempty"`
+}
+
+type KeepalivedConfig struct {
+	VirtualIP       string `json:"virtualIP,omitempty"`
+	Interface       string `json:"interface,omitempty"`
+	VirtualRouterID int    `json:"virtualRouterID,omitempty"`
+	Priority        int    `json:"priority,omitempty"`
+	AdvertInterval  int    `json:"advertInterval,omitempty"`
+}
+
+type F5Config struct {
+	Host              string                      `json:"host,omitempty"`
+	Port              int                         `json:"port,omitempty"`
+	CredentialsRef    *corev1.LocalObjectReference `json:"credentialsRef,omitempty"`
+	Partition         string                      `json:"partition,omitempty"`
+	PoolName          string                      `json:"poolName,omitempty"`
+	VirtualServerName string                      `json:"virtualServerName,omitempty"`
+}
+
+type MetalLBConfig struct {
+	IPAddressPool  string `json:"ipAddressPool,omitempty"`
+	LoadBalancerIP string `json:"loadBalancerIP,omitempty"`
+}
+```
+
+更新 `BareMetalClusterSpec`:
+
+```go
+type BareMetalClusterSpec struct {
+	ControlPlaneEndpoint clusterv1.APIEndpoint `json:"controlPlaneEndpoint,omitempty"`
+	Network              NetworkConfig         `json:"network,omitempty"`
+	LoadBalancer         *LoadBalancerConfig   `json:"loadBalancer,omitempty"`
+}
+```
+
+#### 6.15.4 注册流程
+
+##### 6.15.4.1 注册时机
+
+| 事件 | 操作 | 说明 |
+|------|------|------|
+| 首个 control-plane 初始化 | 创建后端池 + 注册首个节点 | 初始化 HAProxy/F5 配置 |
+| 新 control-plane 加入 | 注册新节点到后端池 | kubeadm join 完成后执行 |
+| control-plane 缩容/删除 | 注销节点从后端池 | 先注销，再删除节点 |
+| 节点健康检查失败 | 临时标记为 unhealthy | 不立即移除，等待恢复 |
+
+##### 6.15.4.2 HAProxy 注册流程 (Runtime API 方式)
+
+```
+control-plane 节点 API Server 启动完成
+    │
+    ▼
+┌─────────────────────────────────────────────────────────┐
+│ 1. 等待 API Server 健康                                  │
+│    ├── curl -sk https://<node-ip>:6443/healthz          │
+│    └── 等待返回 "ok"                                    │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 2. 注册到 HAProxy 后端池                                │
+│    ├── echo "add server <backend>/<server> <ip>:6443    │
+│    │     check inter 5s fall 3 rise 2" |                │
+│    │     socat stdio haproxy-admin:9999                 │
+│    └── 或使用 SSH 执行                                  │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 3. 验证注册结果                                          │
+│    ├── echo "show servers state <backend>" |             │
+│    │     socat stdio haproxy-admin:9999                 │
+│    └── 确认节点状态为 UP                                  │
+└─────────────────────────────────────────────────────────┘
+```
+
+##### 6.15.4.3 HAProxy 注册脚本 (Runtime API)
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+HAPROXY_ADMIN_HOST="${HAPROXY_ADMIN_HOST:-10.0.0.50}"
+HAPROXY_ADMIN_PORT="${HAPROXY_ADMIN_PORT:-9999}"
+BACKEND_NAME="${BACKEND_NAME:-k8s-apiserver}"
+SERVER_NAME="${SERVER_NAME}"
+SERVER_IP="${SERVER_IP}"
+SERVER_PORT="${SERVER_PORT:-6443}"
+
+echo "=== 注册 API Server 到 HAProxy ==="
+
+wait_for_apiserver() {
+    local max_retries=30
+    local retry=0
+    while [ $retry -lt $max_retries ]; do
+        if curl -sk --connect-timeout 2 "https://${SERVER_IP}:${SERVER_PORT}/healthz" 2>/dev/null | grep -q "ok"; then
+            echo "API Server 健康检查通过"
+            return 0
+        fi
+        retry=$((retry + 1))
+        echo "等待 API Server 启动... ($retry/$max_retries)"
+        sleep 5
+    done
+    echo "ERROR: API Server 未能在超时时间内启动"
+    return 1
+}
+
+register_to_haproxy() {
+    local cmd="add server ${BACKEND_NAME}/${SERVER_NAME} ${SERVER_IP}:${SERVER_PORT} check inter 5s fall 3 rise 2"
+    echo "$cmd" | socat stdio tcp:${HAPROXY_ADMIN_HOST}:${HAPROXY_ADMIN_PORT}
+    echo "已发送注册命令: $cmd"
+}
+
+verify_registration() {
+    local max_retries=12
+    local retry=0
+    while [ $retry -lt $max_retries ]; do
+        local status
+        status=$(echo "show servers state ${BACKEND_NAME}" | socat stdio tcp:${HAPROXY_ADMIN_HOST}:${HAPROXY_ADMIN_PORT} 2>/dev/null | grep "${SERVER_NAME}" || true)
+        if echo "$status" | grep -q "UP"; then
+            echo "节点 ${SERVER_NAME} 已注册并健康 (UP)"
+            return 0
+        fi
+        retry=$((retry + 1))
+        echo "等待节点健康... ($retry/$max_retries)"
+        sleep 5
+    done
+    echo "WARNING: 节点 ${SERVER_NAME} 注册成功但尚未 UP"
+    return 0
+}
+
+unregister_from_haproxy() {
+    local cmd="del server ${BACKEND_NAME}/${SERVER_NAME}"
+    echo "$cmd" | socat stdio tcp:${HAPROXY_ADMIN_HOST}:${HAPROXY_ADMIN_PORT}
+    echo "已发送注销命令: $cmd"
+}
+
+case "${ACTION:-register}" in
+    register)
+        wait_for_apiserver
+        register_to_haproxy
+        verify_registration
+        ;;
+    unregister)
+        unregister_from_haproxy
+        ;;
+    *)
+        echo "ERROR: 不支持的操作: ${ACTION}"
+        exit 1
+        ;;
+esac
+
+echo "=== HAProxy 操作完成 ==="
+```
+
+##### 6.15.4.4 HAProxy 注册脚本 (SSH + 配置文件方式)
+
+适用于不支持 Runtime API 的 HAProxy 版本：
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+HAPROXY_SSH_HOST="${HAPROXY_SSH_HOST:-10.0.0.50}"
+HAPROXY_SSH_PORT="${HAPROXY_SSH_PORT:-22}"
+CONFIG_FILE="${CONFIG_FILE:-/etc/haproxy/haproxy.cfg}"
+BACKEND_NAME="${BACKEND_NAME:-k8s-apiserver}"
+SERVER_NAME="${SERVER_NAME}"
+SERVER_IP="${SERVER_IP}"
+SERVER_PORT="${SERVER_PORT:-6443}"
+RELOAD_CMD="${RELOAD_CMD:-systemctl reload haproxy}"
+
+echo "=== 注册 API Server 到 HAProxy (SSH 方式) ==="
+
+wait_for_apiserver() {
+    local max_retries=30
+    local retry=0
+    while [ $retry -lt $max_retries ]; do
+        if curl -sk --connect-timeout 2 "https://${SERVER_IP}:${SERVER_PORT}/healthz" 2>/dev/null | grep -q "ok"; then
+            echo "API Server 健康检查通过"
+            return 0
+        fi
+        retry=$((retry + 1))
+        sleep 5
+    done
+    echo "ERROR: API Server 未能在超时时间内启动"
+    return 1
+}
+
+register_to_haproxy() {
+    ssh -p "$HAPROXY_SSH_PORT" root@"$HAPROXY_SSH_HOST" << EOF
+        if grep -q "server ${SERVER_NAME} ${SERVER_IP}:${SERVER_PORT}" "$CONFIG_FILE"; then
+            echo "节点 ${SERVER_NAME} 已存在于配置中"
+        else
+            sed -i "/^backend ${BACKEND_NAME}/,/^$/ {
+                /^$/ i\\    server ${SERVER_NAME} ${SERVER_IP}:${SERVER_PORT} check inter 5s fall 3 rise 2
+            }" "$CONFIG_FILE"
+            echo "已添加节点 ${SERVER_NAME} 到配置"
+        fi
+        
+        haproxy -c -f "$CONFIG_FILE"
+        $RELOAD_CMD
+EOF
+}
+
+unregister_from_haproxy() {
+    ssh -p "$HAPROXY_SSH_PORT" root@"$HAPROXY_SSH_HOST" << EOF
+        sed -i "/server ${SERVER_NAME} ${SERVER_IP}:${SERVER_PORT}/d" "$CONFIG_FILE"
+        haproxy -c -f "$CONFIG_FILE"
+        $RELOAD_CMD
+        echo "已注销节点 ${SERVER_NAME}"
+EOF
+}
+
+case "${ACTION:-register}" in
+    register)
+        wait_for_apiserver
+        register_to_haproxy
+        ;;
+    unregister)
+        unregister_from_haproxy
+        ;;
+esac
+
+echo "=== HAProxy 操作完成 ==="
+```
+
+##### 6.15.4.5 F5 BIG-IP 注册流程
+
+```
+control-plane 节点 API Server 启动完成
+    │
+    ▼
+┌─────────────────────────────────────────────────────────┐
+│ 1. 等待 API Server 健康                                  │
+│    └── curl -sk https://<node-ip>:6443/healthz          │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 2. 调用 F5 iControl REST API 注册节点                    │
+│    ├── POST /mgmt/tm/ltm/pool/~Common~<pool>/members    │
+│    │   {"address": "<ip>", "port": 6443}                │
+│    └── 认证: Basic Auth (admin/password)                │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 3. 验证注册结果                                          │
+│    ├── GET /mgmt/tm/ltm/pool/~Common~<pool>/members     │
+│    └── 确认节点状态为 available                          │
+└─────────────────────────────────────────────────────────┘
+```
+
+##### 6.15.4.6 F5 注册脚本
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+F5_HOST="${F5_HOST:-f5.example.com}"
+F5_PORT="${F5_PORT:-443}"
+F5_USER="${F5_USER:-admin}"
+F5_PASSWORD="${F5_PASSWORD}"
+PARTITION="${PARTITION:-Common}"
+POOL_NAME="${POOL_NAME:-k8s-apiserver-pool}"
+SERVER_IP="${SERVER_IP}"
+SERVER_PORT="${SERVER_PORT:-6443}"
+
+echo "=== 注册 API Server 到 F5 ==="
+
+F5_URL="https://${F5_HOST}:${F5_PORT}/mgmt/tm"
+
+wait_for_apiserver() {
+    local max_retries=30
+    local retry=0
+    while [ $retry -lt $max_retries ]; do
+        if curl -sk --connect-timeout 2 "https://${SERVER_IP}:${SERVER_PORT}/healthz" 2>/dev/null | grep -q "ok"; then
+            echo "API Server 健康检查通过"
+            return 0
+        fi
+        retry=$((retry + 1))
+        sleep 5
+    done
+    return 1
+}
+
+register_to_f5() {
+    local response
+    response=$(curl -sk -X POST \
+        -u "${F5_USER}:${F5_PASSWORD}" \
+        -H "Content-Type: application/json" \
+        -d "{\"address\":\"${SERVER_IP}\",\"port\":${SERVER_PORT},\"name\":\"${SERVER_IP}:${SERVER_PORT}\"}" \
+        "${F5_URL}/ltm/pool/~${PARTITION}~${POOL_NAME}/members")
+    
+    if echo "$response" | grep -q "kind.*ltm:pool:member"; then
+        echo "节点 ${SERVER_IP}:${SERVER_PORT} 已注册到 F5 Pool"
+    else
+        echo "WARNING: F5 注册响应: $response"
+    fi
+}
+
+unregister_from_f5() {
+    local encoded_member
+    encoded_member=$(echo "${SERVER_IP}:${SERVER_PORT}" | sed 's/:/%3A/g')
+    
+    curl -sk -X DELETE \
+        -u "${F5_USER}:${F5_PASSWORD}" \
+        "${F5_URL}/ltm/pool/~${PARTITION}~${POOL_NAME}/members/~${PARTITION}~${encoded_member}"
+    
+    echo "节点 ${SERVER_IP}:${SERVER_PORT} 已从 F5 Pool 注销"
+}
+
+case "${ACTION:-register}" in
+    register)
+        wait_for_apiserver
+        register_to_f5
+        ;;
+    unregister)
+        unregister_from_f5
+        ;;
+esac
+
+echo "=== F5 操作完成 ==="
+```
+
+#### 6.15.5 Controller 集成
+
+在 `BareMetalCluster Controller` 中集成负载均衡器注册逻辑：
+
+```go
+func (r *BareMetalClusterReconciler) reconcileNormal(ctx context.Context, cluster *infrav1.BareMetalCluster) (ctrl.Result, error) {
+    log := ctrl.LoggerFrom(ctx)
+
+    // 1. 验证配置
+    if cluster.Spec.ControlPlaneEndpoint.Host == "" {
+        conditions.MarkFalse(cluster, infrav1.ReadyCondition, infrav1.EndpointNotSetReason, clusterv1.ConditionSeverityError, "controlPlaneEndpoint is required")
+        return ctrl.Result{}, nil
+    }
+
+    // 2. 获取所有 control-plane 节点
+    cpMachines, err := r.getControlPlaneMachines(ctx, cluster)
+    if err != nil {
+        return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+    }
+
+    // 3. 同步负载均衡器后端
+    if cluster.Spec.LoadBalancer != nil {
+        if err := r.syncLoadBalancerBackends(ctx, cluster, cpMachines); err != nil {
+            log.Error(err, "Failed to sync load balancer backends")
+            conditions.MarkFalse(cluster, infrav1.LoadBalancerReadyCondition, infrav1.LBSyncFailedReason, clusterv1.ConditionSeverityWarning, err.Error())
+            return ctrl.Result{RequeueAfter: 30 * time.Second}, r.Status().Update(ctx, cluster)
+        }
+        conditions.MarkTrue(cluster, infrav1.LoadBalancerReadyCondition)
+    }
+
+    // 4. 设置就绪状态
+    cluster.Status.Ready = true
+    conditions.MarkTrue(cluster, infrav1.ReadyCondition)
+
+    return ctrl.Result{}, r.Status().Update(ctx, cluster)
+}
+
+func (r *BareMetalClusterReconciler) syncLoadBalancerBackends(ctx context.Context, cluster *infrav1.BareMetalCluster, cpMachines []*clusterv1.Machine) error {
+    lbConfig := cluster.Spec.LoadBalancer
+    if lbConfig == nil {
+        return nil
+    }
+
+    desiredBackends := make(map[string]string)
+    for _, m := range cpMachines {
+        if m.Status.Phase == string(clusterv1.MachinePhaseRunning) {
+            ip := getMachineIP(m)
+            if ip != "" {
+                desiredBackends[m.Name] = fmt.Sprintf("%s:%d", ip, cluster.Spec.ControlPlaneEndpoint.Port)
+            }
+        }
+    }
+
+    currentBackends, err := r.getLoadBalancerBackends(ctx, lbConfig)
+    if err != nil {
+        return err
+    }
+
+    toAdd := make(map[string]string)
+    toRemove := make(map[string]string)
+
+    for name, addr := range desiredBackends {
+        if _, exists := currentBackends[name]; !exists {
+            toAdd[name] = addr
+        }
+    }
+    for name, addr := range currentBackends {
+        if _, exists := desiredBackends[name]; !exists {
+            toRemove[name] = addr
+        }
+    }
+
+    for name, addr := range toAdd {
+        ip := strings.Split(addr, ":")[0]
+        port := strings.Split(addr, ":")[1]
+        if err := r.registerBackend(ctx, lbConfig, name, ip, port); err != nil {
+            return fmt.Errorf("failed to register backend %s: %w", name, err)
+        }
+    }
+
+    for name, addr := range toRemove {
+        ip := strings.Split(addr, ":")[0]
+        port := strings.Split(addr, ":")[1]
+        if err := r.unregisterBackend(ctx, lbConfig, name, ip, port); err != nil {
+            return fmt.Errorf("failed to unregister backend %s: %w", name, err)
+        }
+    }
+
+    return nil
+}
+
+func (r *BareMetalClusterReconciler) registerBackend(ctx context.Context, lbConfig *infrav1.LoadBalancerConfig, name, ip, port string) error {
+    switch lbConfig.Provider {
+    case "haproxy":
+        return r.registerHAProxy(ctx, lbConfig.HAProxy, name, ip, port)
+    case "f5":
+        return r.registerF5(ctx, lbConfig.F5, name, ip, port)
+    case "keepalived":
+        return r.registerKeepalived(ctx, lbConfig.Keepalived, name, ip, port)
+    default:
+        return fmt.Errorf("unsupported load balancer provider: %s", lbConfig.Provider)
+    }
+}
+
+func (r *BareMetalClusterReconciler) registerHAProxy(ctx context.Context, haproxyConfig *infrav1.HAProxyConfig, name, ip, port string) error {
+    if haproxyConfig.AdminHost != "" {
+        cmd := fmt.Sprintf("add server %s/%s %s:%s check inter 5s fall 3 rise 2",
+            haproxyConfig.BackendName, name, ip, port)
+        return r.execHAProxyRuntimeAPI(ctx, haproxyConfig.AdminHost, haproxyConfig.AdminPort, cmd)
+    } else if haproxyConfig.SSHHost != "" {
+        return r.execHAProxySSH(ctx, haproxyConfig, name, ip, port, "register")
+    }
+    return fmt.Errorf("HAProxy: neither adminHost nor sshHost configured")
+}
+```
+
+#### 6.15.6 ClusterClass 变量和 Patches
+
+在 ClusterClass 中新增负载均衡器变量：
+
+```yaml
+  variables:
+  - name: loadBalancer
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          provider:
+            type: string
+            default: "haproxy"
+            enum:
+              - "haproxy"
+              - "keepalived"
+              - "f5"
+              - "nginx"
+              - "metal-lb"
+          healthCheck:
+            type: object
+            properties:
+              enabled:
+                type: boolean
+                default: true
+              path:
+                type: string
+                default: "/healthz"
+              interval:
+                type: string
+                default: "5s"
+              timeout:
+                type: string
+                default: "3s"
+          haproxy:
+            type: object
+            properties:
+              adminHost:
+                type: string
+              adminPort:
+                type: integer
+                default: 9999
+              sshHost:
+                type: string
+              sshPort:
+                type: integer
+                default: 22
+              configFile:
+                type: string
+                default: "/etc/haproxy/haproxy.cfg"
+              backendName:
+                type: string
+                default: "k8s-apiserver"
+              reloadCommand:
+                type: string
+                default: "systemctl reload haproxy"
+          keepalived:
+            type: object
+            properties:
+              virtualIP:
+                type: string
+              interface:
+                type: string
+                default: "eth0"
+              virtualRouterID:
+                type: integer
+                default: 51
+              priority:
+                type: integer
+                default: 100
+          f5:
+            type: object
+            properties:
+              host:
+                type: string
+              port:
+                type: integer
+                default: 443
+              partition:
+                type: string
+                default: "Common"
+              poolName:
+                type: string
+              virtualServerName:
+                type: string
+```
+
+Patch 定义：
+
+```yaml
+  patches:
+  - name: loadBalancer
+    enabledIf: "{{ if .loadBalancer }}true{{end}}"
+    definitions:
+    - selector:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        kind: BareMetalClusterTemplate
+        matchResources:
+          infrastructureCluster: true
+      jsonPatches:
+      - op: add
+        path: /spec/template/spec/loadBalancer
+        valueFrom:
+          variable: loadBalancer
+```
+
+#### 6.15.7 用户使用示例
+
+##### 6.15.7.1 HAProxy 方式
+
+```yaml
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  name: my-baremetal-cluster
+spec:
+  topology:
+    classRef:
+      name: baremetal-clusterclass-v0.1.0
+    version: v1.31.0
+    controlPlane:
+      replicas: 3
+    workers:
+      machineDeployments:
+      - class: default-worker
+        name: md-0
+        replicas: 2
+    variables:
+    - name: controlPlaneEndpoint
+      value:
+        host: "10.0.0.100"
+        port: 6443
+    - name: loadBalancer
+      value:
+        provider: "haproxy"
+        healthCheck:
+          enabled: true
+          path: "/healthz"
+          interval: "5s"
+          timeout: "3s"
+        haproxy:
+          adminHost: "10.0.0.50"
+          adminPort: 9999
+          backendName: "k8s-apiserver"
+          reloadCommand: "systemctl reload haproxy"
+```
+
+##### 6.15.7.2 Keepalived + HAProxy 方式 (无外部 LB)
+
+```yaml
+    variables:
+    - name: loadBalancer
+      value:
+        provider: "keepalived"
+        healthCheck:
+          enabled: true
+          path: "/healthz"
+        keepalived:
+          virtualIP: "10.0.0.100"
+          interface: "eth0"
+          virtualRouterID: 51
+          priority: 100
+          advertInterval: 1
+```
+
+##### 6.15.7.3 F5 BIG-IP 方式
+
+```yaml
+    variables:
+    - name: loadBalancer
+      value:
+        provider: "f5"
+        healthCheck:
+          enabled: true
+          path: "/healthz"
+          interval: "5s"
+        f5:
+          host: "f5.example.com"
+          port: 443
+          partition: "Common"
+          poolName: "k8s-apiserver-pool"
+          virtualServerName: "k8s-apiserver-vs"
+```
+
+#### 6.15.8 关键设计决策
+
+| 决策点 | 选项 | 推荐 | 理由 |
+|--------|------|------|------|
+| **注册方式** | Runtime API vs SSH vs 配置文件 | Runtime API 优先，SSH 备选 | Runtime API 无需 reload，零中断 |
+| **健康检查** | LB 内置 vs CAPBM 主动检查 | LB 内置 | 利用 LB 原生能力，更可靠 |
+| **注销时机** | 先注销再删除 vs 先删除再注销 | 先注销再删除 | 避免流量路由到已删除节点 |
+| **多 LB 支持** | 单一 LB 类型 vs 插件化 | 插件化 | 不同环境可能使用不同 LB |
+| **凭证管理** | 明文 vs Secret | Secret | 安全性，支持 RBAC 控制访问 |
+
+### 6.15 API Server 负载均衡注册
+
+#### 6.15.1 问题背景
+
+裸金属集群的控制面节点通常部署为高可用架构（3 或 5 个 control-plane 节点），需要外部负载均衡器将流量分发到所有 API Server 实例。
+
+仅设置 `controlPlaneEndpoint` 是不够的，还需要：
+1. **注册**: 当 control-plane 节点加入集群时，将其 API Server 地址注册到负载均衡器后端
+2. **健康检查**: 定期检查 API Server 健康状态，自动剔除不健康节点
+3. **注销**: 当 control-plane 节点被删除或缩容时，从负载均衡器移除后端
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                    负载均衡架构                               │
+│                                                              │
+│  kubectl / 客户端                                            │
+│       │                                                      │
+│       ▼                                                      │
+│  ┌─────────────────┐                                         │
+│  │  Load Balancer   │  ←  CAPBM 负责注册/注销后端             │
+│  │  VIP: 10.0.0.100 │                                         │
+│  │  Port: 6443      │                                         │
+│  └────┬────┬────┬───┘                                         │
+│       │    │    │                                             │
+│       ▼    ▼    ▼                                             │
+│  ┌──────┐┌──────┐┌──────┐                                    │
+│  │CP-01 ││CP-02 ││CP-03 │                                    │
+│  │:6443 ││:6443 ││:6443 │                                    │
+│  └──────┘└──────┘└──────┘                                    │
+└──────────────────────────────────────────────────────────────┘
+```
+
+#### 6.15.2 支持的负载均衡器类型
+
+| 类型 | 注册方式 | 适用场景 | 健康检查 |
+|------|---------|---------|---------|
+| **HAProxy** | 配置文件 + reload / Runtime API | 中小型集群，软件 LB | HTTP GET /healthz |
+| **Keepalived + HAProxy** | Keepalived VIP + HAProxy 后端 | 无外部 LB 的裸金属 | TCP check + HTTP |
+| **F5 BIG-IP** | iControl REST API | 企业级硬件 LB | HTTP monitor |
+| **Nginx** | 配置文件 + reload / Stream module | 轻量级场景 | TCP check |
+| **云厂商 LB** | Cloud Provider API (AWS/Aliyun/华为云) | 混合云场景 | 云厂商内置 |
+| **MetalLB** | BGP / L2 宣告 | 裸金属 Service LB | 内置 |
+
+CAPBM 采用**插件化设计**，通过 `lbProvider` 变量选择负载均衡器类型。
+
+#### 6.15.3 CRD 设计扩展
+
+在 `BareMetalClusterSpec` 中新增负载均衡器配置：
+
+```yaml
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: BareMetalCluster
+spec:
+  controlPlaneEndpoint:
+    host: "lb.example.com"
+    port: 6443
+  
+  loadBalancer:
+    provider: "haproxy"        # haproxy | keepalived | f5 | nginx | metal-lb
+    
+    healthCheck:
+      enabled: true
+      path: "/healthz"
+      interval: "5s"
+      timeout: "3s"
+      healthyThreshold: 2
+      unhealthyThreshold: 3
+    
+    haproxy:
+      adminHost: "10.0.0.50"
+      adminPort: 9999
+      sshHost: "10.0.0.50"
+      sshPort: 22
+      sshCredentialsRef:
+        name: "haproxy-credentials"
+      configFile: "/etc/haproxy/haproxy.cfg"
+      backendName: "k8s-apiserver"
+      reloadCommand: "systemctl reload haproxy"
+    
+    keepalived:
+      virtualIP: "10.0.0.100"
+      interface: "eth0"
+      virtualRouterID: 51
+      priority: 100
+      advertInterval: 1
+    
+    f5:
+      host: "f5.example.com"
+      port: 443
+      credentialsRef:
+        name: "f5-credentials"
+      partition: "Common"
+      poolName: "k8s-apiserver-pool"
+      virtualServerName: "k8s-apiserver-vs"
+    
+    metal-lb:
+      ipAddressPool: "apiserver-pool"
+      loadBalancerIP: "10.0.0.100"
+```
+
+**Go 类型定义**:
+
+```go
+type LoadBalancerConfig struct {
+	Provider    string              `json:"provider,omitempty"`
+	HealthCheck HealthCheckConfig   `json:"healthCheck,omitempty"`
+	HAProxy     *HAProxyConfig      `json:"haproxy,omitempty"`
+	Keepalived  *KeepalivedConfig   `json:"keepalived,omitempty"`
+	F5          *F5Config           `json:"f5,omitempty"`
+	MetalLB     *MetalLBConfig      `json:"metal-lb,omitempty"`
+}
+
+type HealthCheckConfig struct {
+	Enabled            bool   `json:"enabled,omitempty"`
+	Path               string `json:"path,omitempty"`
+	Interval           string `json:"interval,omitempty"`
+	Timeout            string `json:"timeout,omitempty"`
+	HealthyThreshold   int    `json:"healthyThreshold,omitempty"`
+	UnhealthyThreshold int    `json:"unhealthyThreshold,omitempty"`
+}
+
+type HAProxyConfig struct {
+	AdminHost         string                      `json:"adminHost,omitempty"`
+	AdminPort         int                         `json:"adminPort,omitempty"`
+	SSHHost           string                      `json:"sshHost,omitempty"`
+	SSHPort           int                         `json:"sshPort,omitempty"`
+	SSHCredentialsRef *corev1.LocalObjectReference `json:"sshCredentialsRef,omitempty"`
+	ConfigFile        string                      `json:"configFile,omitempty"`
+	BackendName       string                      `json:"backendName,omitempty"`
+	ReloadCommand     string                      `json:"reloadCommand,omitempty"`
+}
+
+type KeepalivedConfig struct {
+	VirtualIP       string `json:"virtualIP,omitempty"`
+	Interface       string `json:"interface,omitempty"`
+	VirtualRouterID int    `json:"virtualRouterID,omitempty"`
+	Priority        int    `json:"priority,omitempty"`
+	AdvertInterval  int    `json:"advertInterval,omitempty"`
+}
+
+type F5Config struct {
+	Host              string                      `json:"host,omitempty"`
+	Port              int                         `json:"port,omitempty"`
+	CredentialsRef    *corev1.LocalObjectReference `json:"credentialsRef,omitempty"`
+	Partition         string                      `json:"partition,omitempty"`
+	PoolName          string                      `json:"poolName,omitempty"`
+	VirtualServerName string                      `json:"virtualServerName,omitempty"`
+}
+
+type MetalLBConfig struct {
+	IPAddressPool  string `json:"ipAddressPool,omitempty"`
+	LoadBalancerIP string `json:"loadBalancerIP,omitempty"`
+}
+```
+
+更新 `BareMetalClusterSpec`:
+
+```go
+type BareMetalClusterSpec struct {
+	ControlPlaneEndpoint clusterv1.APIEndpoint `json:"controlPlaneEndpoint,omitempty"`
+	Network              NetworkConfig         `json:"network,omitempty"`
+	LoadBalancer         *LoadBalancerConfig   `json:"loadBalancer,omitempty"`
+}
+```
+
+#### 6.15.4 注册流程
+
+##### 6.15.4.1 注册时机
+
+| 事件 | 操作 | 说明 |
+|------|------|------|
+| 首个 control-plane 初始化 | 创建后端池 + 注册首个节点 | 初始化 HAProxy/F5 配置 |
+| 新 control-plane 加入 | 注册新节点到后端池 | kubeadm join 完成后执行 |
+| control-plane 缩容/删除 | 注销节点从后端池 | 先注销，再删除节点 |
+| 节点健康检查失败 | 临时标记为 unhealthy | 不立即移除，等待恢复 |
+
+##### 6.15.4.2 HAProxy 注册流程 (Runtime API 方式)
+
+```
+control-plane 节点 API Server 启动完成
+    │
+    ▼
+┌─────────────────────────────────────────────────────────┐
+│ 1. 等待 API Server 健康                                  │
+│    ├── curl -sk https://<node-ip>:6443/healthz          │
+│    └── 等待返回 "ok"                                    │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 2. 注册到 HAProxy 后端池                                │
+│    ├── echo "add server <backend>/<server> <ip>:6443    │
+│    │     check inter 5s fall 3 rise 2" |                │
+│    │     socat stdio haproxy-admin:9999                 │
+│    └── 或使用 SSH 执行                                  │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 3. 验证注册结果                                          │
+│    ├── echo "show servers state <backend>" |             │
+│    │     socat stdio haproxy-admin:9999                 │
+│    └── 确认节点状态为 UP                                  │
+└─────────────────────────────────────────────────────────┘
+```
+
+##### 6.15.4.3 HAProxy 注册脚本 (Runtime API)
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+HAPROXY_ADMIN_HOST="${HAPROXY_ADMIN_HOST:-10.0.0.50}"
+HAPROXY_ADMIN_PORT="${HAPROXY_ADMIN_PORT:-9999}"
+BACKEND_NAME="${BACKEND_NAME:-k8s-apiserver}"
+SERVER_NAME="${SERVER_NAME}"
+SERVER_IP="${SERVER_IP}"
+SERVER_PORT="${SERVER_PORT:-6443}"
+
+echo "=== 注册 API Server 到 HAProxy ==="
+
+wait_for_apiserver() {
+    local max_retries=30
+    local retry=0
+    while [ $retry -lt $max_retries ]; do
+        if curl -sk --connect-timeout 2 "https://${SERVER_IP}:${SERVER_PORT}/healthz" 2>/dev/null | grep -q "ok"; then
+            echo "API Server 健康检查通过"
+            return 0
+        fi
+        retry=$((retry + 1))
+        echo "等待 API Server 启动... ($retry/$max_retries)"
+        sleep 5
+    done
+    echo "ERROR: API Server 未能在超时时间内启动"
+    return 1
+}
+
+register_to_haproxy() {
+    local cmd="add server ${BACKEND_NAME}/${SERVER_NAME} ${SERVER_IP}:${SERVER_PORT} check inter 5s fall 3 rise 2"
+    echo "$cmd" | socat stdio tcp:${HAPROXY_ADMIN_HOST}:${HAPROXY_ADMIN_PORT}
+    echo "已发送注册命令: $cmd"
+}
+
+verify_registration() {
+    local max_retries=12
+    local retry=0
+    while [ $retry -lt $max_retries ]; do
+        local status
+        status=$(echo "show servers state ${BACKEND_NAME}" | socat stdio tcp:${HAPROXY_ADMIN_HOST}:${HAPROXY_ADMIN_PORT} 2>/dev/null | grep "${SERVER_NAME}" || true)
+        if echo "$status" | grep -q "UP"; then
+            echo "节点 ${SERVER_NAME} 已注册并健康 (UP)"
+            return 0
+        fi
+        retry=$((retry + 1))
+        echo "等待节点健康... ($retry/$max_retries)"
+        sleep 5
+    done
+    echo "WARNING: 节点 ${SERVER_NAME} 注册成功但尚未 UP"
+    return 0
+}
+
+unregister_from_haproxy() {
+    local cmd="del server ${BACKEND_NAME}/${SERVER_NAME}"
+    echo "$cmd" | socat stdio tcp:${HAPROXY_ADMIN_HOST}:${HAPROXY_ADMIN_PORT}
+    echo "已发送注销命令: $cmd"
+}
+
+case "${ACTION:-register}" in
+    register)
+        wait_for_apiserver
+        register_to_haproxy
+        verify_registration
+        ;;
+    unregister)
+        unregister_from_haproxy
+        ;;
+    *)
+        echo "ERROR: 不支持的操作: ${ACTION}"
+        exit 1
+        ;;
+esac
+
+echo "=== HAProxy 操作完成 ==="
+```
+
+##### 6.15.4.4 HAProxy 注册脚本 (SSH + 配置文件方式)
+
+适用于不支持 Runtime API 的 HAProxy 版本：
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+HAPROXY_SSH_HOST="${HAPROXY_SSH_HOST:-10.0.0.50}"
+HAPROXY_SSH_PORT="${HAPROXY_SSH_PORT:-22}"
+CONFIG_FILE="${CONFIG_FILE:-/etc/haproxy/haproxy.cfg}"
+BACKEND_NAME="${BACKEND_NAME:-k8s-apiserver}"
+SERVER_NAME="${SERVER_NAME}"
+SERVER_IP="${SERVER_IP}"
+SERVER_PORT="${SERVER_PORT:-6443}"
+RELOAD_CMD="${RELOAD_CMD:-systemctl reload haproxy}"
+
+echo "=== 注册 API Server 到 HAProxy (SSH 方式) ==="
+
+wait_for_apiserver() {
+    local max_retries=30
+    local retry=0
+    while [ $retry -lt $max_retries ]; do
+        if curl -sk --connect-timeout 2 "https://${SERVER_IP}:${SERVER_PORT}/healthz" 2>/dev/null | grep -q "ok"; then
+            echo "API Server 健康检查通过"
+            return 0
+        fi
+        retry=$((retry + 1))
+        sleep 5
+    done
+    echo "ERROR: API Server 未能在超时时间内启动"
+    return 1
+}
+
+register_to_haproxy() {
+    ssh -p "$HAPROXY_SSH_PORT" root@"$HAPROXY_SSH_HOST" << EOF
+        if grep -q "server ${SERVER_NAME} ${SERVER_IP}:${SERVER_PORT}" "$CONFIG_FILE"; then
+            echo "节点 ${SERVER_NAME} 已存在于配置中"
+        else
+            sed -i "/^backend ${BACKEND_NAME}/,/^$/ {
+                /^$/ i\\    server ${SERVER_NAME} ${SERVER_IP}:${SERVER_PORT} check inter 5s fall 3 rise 2
+            }" "$CONFIG_FILE"
+            echo "已添加节点 ${SERVER_NAME} 到配置"
+        fi
+        
+        haproxy -c -f "$CONFIG_FILE"
+        $RELOAD_CMD
+EOF
+}
+
+unregister_from_haproxy() {
+    ssh -p "$HAPROXY_SSH_PORT" root@"$HAPROXY_SSH_HOST" << EOF
+        sed -i "/server ${SERVER_NAME} ${SERVER_IP}:${SERVER_PORT}/d" "$CONFIG_FILE"
+        haproxy -c -f "$CONFIG_FILE"
+        $RELOAD_CMD
+        echo "已注销节点 ${SERVER_NAME}"
+EOF
+}
+
+case "${ACTION:-register}" in
+    register)
+        wait_for_apiserver
+        register_to_haproxy
+        ;;
+    unregister)
+        unregister_from_haproxy
+        ;;
+esac
+
+echo "=== HAProxy 操作完成 ==="
+```
+
+##### 6.15.4.5 F5 BIG-IP 注册流程
+
+```
+control-plane 节点 API Server 启动完成
+    │
+    ▼
+┌─────────────────────────────────────────────────────────┐
+│ 1. 等待 API Server 健康                                  │
+│    └── curl -sk https://<node-ip>:6443/healthz          │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 2. 调用 F5 iControl REST API 注册节点                    │
+│    ├── POST /mgmt/tm/ltm/pool/~Common~<pool>/members    │
+│    │   {"address": "<ip>", "port": 6443}                │
+│    └── 认证: Basic Auth (admin/password)                │
+└─────────────────┬───────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────┐
+│ 3. 验证注册结果                                          │
+│    ├── GET /mgmt/tm/ltm/pool/~Common~<pool>/members     │
+│    └── 确认节点状态为 available                          │
+└─────────────────────────────────────────────────────────┘
+```
+
+##### 6.15.4.6 F5 注册脚本
+
+```bash
+#!/bin/bash
+set -euo pipefail
+
+F5_HOST="${F5_HOST:-f5.example.com}"
+F5_PORT="${F5_PORT:-443}"
+F5_USER="${F5_USER:-admin}"
+F5_PASSWORD="${F5_PASSWORD}"
+PARTITION="${PARTITION:-Common}"
+POOL_NAME="${POOL_NAME:-k8s-apiserver-pool}"
+SERVER_IP="${SERVER_IP}"
+SERVER_PORT="${SERVER_PORT:-6443}"
+
+echo "=== 注册 API Server 到 F5 ==="
+
+F5_URL="https://${F5_HOST}:${F5_PORT}/mgmt/tm"
+
+wait_for_apiserver() {
+    local max_retries=30
+    local retry=0
+    while [ $retry -lt $max_retries ]; do
+        if curl -sk --connect-timeout 2 "https://${SERVER_IP}:${SERVER_PORT}/healthz" 2>/dev/null | grep -q "ok"; then
+            echo "API Server 健康检查通过"
+            return 0
+        fi
+        retry=$((retry + 1))
+        sleep 5
+    done
+    return 1
+}
+
+register_to_f5() {
+    local response
+    response=$(curl -sk -X POST \
+        -u "${F5_USER}:${F5_PASSWORD}" \
+        -H "Content-Type: application/json" \
+        -d "{\"address\":\"${SERVER_IP}\",\"port\":${SERVER_PORT},\"name\":\"${SERVER_IP}:${SERVER_PORT}\"}" \
+        "${F5_URL}/ltm/pool/~${PARTITION}~${POOL_NAME}/members")
+    
+    if echo "$response" | grep -q "kind.*ltm:pool:member"; then
+        echo "节点 ${SERVER_IP}:${SERVER_PORT} 已注册到 F5 Pool"
+    else
+        echo "WARNING: F5 注册响应: $response"
+    fi
+}
+
+unregister_from_f5() {
+    local encoded_member
+    encoded_member=$(echo "${SERVER_IP}:${SERVER_PORT}" | sed 's/:/%3A/g')
+    
+    curl -sk -X DELETE \
+        -u "${F5_USER}:${F5_PASSWORD}" \
+        "${F5_URL}/ltm/pool/~${PARTITION}~${POOL_NAME}/members/~${PARTITION}~${encoded_member}"
+    
+    echo "节点 ${SERVER_IP}:${SERVER_PORT} 已从 F5 Pool 注销"
+}
+
+case "${ACTION:-register}" in
+    register)
+        wait_for_apiserver
+        register_to_f5
+        ;;
+    unregister)
+        unregister_from_f5
+        ;;
+esac
+
+echo "=== F5 操作完成 ==="
+```
+
+#### 6.15.5 Controller 集成
+
+在 `BareMetalCluster Controller` 中集成负载均衡器注册逻辑：
+
+```go
+func (r *BareMetalClusterReconciler) reconcileNormal(ctx context.Context, cluster *infrav1.BareMetalCluster) (ctrl.Result, error) {
+    log := ctrl.LoggerFrom(ctx)
+
+    // 1. 验证配置
+    if cluster.Spec.ControlPlaneEndpoint.Host == "" {
+        conditions.MarkFalse(cluster, infrav1.ReadyCondition, infrav1.EndpointNotSetReason, clusterv1.ConditionSeverityError, "controlPlaneEndpoint is required")
+        return ctrl.Result{}, nil
+    }
+
+    // 2. 获取所有 control-plane 节点
+    cpMachines, err := r.getControlPlaneMachines(ctx, cluster)
+    if err != nil {
+        return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+    }
+
+    // 3. 同步负载均衡器后端
+    if cluster.Spec.LoadBalancer != nil {
+        if err := r.syncLoadBalancerBackends(ctx, cluster, cpMachines); err != nil {
+            log.Error(err, "Failed to sync load balancer backends")
+            conditions.MarkFalse(cluster, infrav1.LoadBalancerReadyCondition, infrav1.LBSyncFailedReason, clusterv1.ConditionSeverityWarning, err.Error())
+            return ctrl.Result{RequeueAfter: 30 * time.Second}, r.Status().Update(ctx, cluster)
+        }
+        conditions.MarkTrue(cluster, infrav1.LoadBalancerReadyCondition)
+    }
+
+    // 4. 设置就绪状态
+    cluster.Status.Ready = true
+    conditions.MarkTrue(cluster, infrav1.ReadyCondition)
+
+    return ctrl.Result{}, r.Status().Update(ctx, cluster)
+}
+
+func (r *BareMetalClusterReconciler) syncLoadBalancerBackends(ctx context.Context, cluster *infrav1.BareMetalCluster, cpMachines []*clusterv1.Machine) error {
+    lbConfig := cluster.Spec.LoadBalancer
+    if lbConfig == nil {
+        return nil
+    }
+
+    desiredBackends := make(map[string]string)
+    for _, m := range cpMachines {
+        if m.Status.Phase == string(clusterv1.MachinePhaseRunning) {
+            ip := getMachineIP(m)
+            if ip != "" {
+                desiredBackends[m.Name] = fmt.Sprintf("%s:%d", ip, cluster.Spec.ControlPlaneEndpoint.Port)
+            }
+        }
+    }
+
+    currentBackends, err := r.getLoadBalancerBackends(ctx, lbConfig)
+    if err != nil {
+        return err
+    }
+
+    toAdd := make(map[string]string)
+    toRemove := make(map[string]string)
+
+    for name, addr := range desiredBackends {
+        if _, exists := currentBackends[name]; !exists {
+            toAdd[name] = addr
+        }
+    }
+    for name, addr := range currentBackends {
+        if _, exists := desiredBackends[name]; !exists {
+            toRemove[name] = addr
+        }
+    }
+
+    for name, addr := range toAdd {
+        ip := strings.Split(addr, ":")[0]
+        port := strings.Split(addr, ":")[1]
+        if err := r.registerBackend(ctx, lbConfig, name, ip, port); err != nil {
+            return fmt.Errorf("failed to register backend %s: %w", name, err)
+        }
+    }
+
+    for name, addr := range toRemove {
+        ip := strings.Split(addr, ":")[0]
+        port := strings.Split(addr, ":")[1]
+        if err := r.unregisterBackend(ctx, lbConfig, name, ip, port); err != nil {
+            return fmt.Errorf("failed to unregister backend %s: %w", name, err)
+        }
+    }
+
+    return nil
+}
+
+func (r *BareMetalClusterReconciler) registerBackend(ctx context.Context, lbConfig *infrav1.LoadBalancerConfig, name, ip, port string) error {
+    switch lbConfig.Provider {
+    case "haproxy":
+        return r.registerHAProxy(ctx, lbConfig.HAProxy, name, ip, port)
+    case "f5":
+        return r.registerF5(ctx, lbConfig.F5, name, ip, port)
+    case "keepalived":
+        return r.registerKeepalived(ctx, lbConfig.Keepalived, name, ip, port)
+    default:
+        return fmt.Errorf("unsupported load balancer provider: %s", lbConfig.Provider)
+    }
+}
+
+func (r *BareMetalClusterReconciler) registerHAProxy(ctx context.Context, haproxyConfig *infrav1.HAProxyConfig, name, ip, port string) error {
+    if haproxyConfig.AdminHost != "" {
+        cmd := fmt.Sprintf("add server %s/%s %s:%s check inter 5s fall 3 rise 2",
+            haproxyConfig.BackendName, name, ip, port)
+        return r.execHAProxyRuntimeAPI(ctx, haproxyConfig.AdminHost, haproxyConfig.AdminPort, cmd)
+    } else if haproxyConfig.SSHHost != "" {
+        return r.execHAProxySSH(ctx, haproxyConfig, name, ip, port, "register")
+    }
+    return fmt.Errorf("HAProxy: neither adminHost nor sshHost configured")
+}
+```
+
+#### 6.15.6 ClusterClass 变量和 Patches
+
+在 ClusterClass 中新增负载均衡器变量：
+
+```yaml
+  variables:
+  - name: loadBalancer
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          provider:
+            type: string
+            default: "haproxy"
+            enum:
+              - "haproxy"
+              - "keepalived"
+              - "f5"
+              - "nginx"
+              - "metal-lb"
+          healthCheck:
+            type: object
+            properties:
+              enabled:
+                type: boolean
+                default: true
+              path:
+                type: string
+                default: "/healthz"
+              interval:
+                type: string
+                default: "5s"
+              timeout:
+                type: string
+                default: "3s"
+          haproxy:
+            type: object
+            properties:
+              adminHost:
+                type: string
+              adminPort:
+                type: integer
+                default: 9999
+              sshHost:
+                type: string
+              sshPort:
+                type: integer
+                default: 22
+              configFile:
+                type: string
+                default: "/etc/haproxy/haproxy.cfg"
+              backendName:
+                type: string
+                default: "k8s-apiserver"
+              reloadCommand:
+                type: string
+                default: "systemctl reload haproxy"
+          keepalived:
+            type: object
+            properties:
+              virtualIP:
+                type: string
+              interface:
+                type: string
+                default: "eth0"
+              virtualRouterID:
+                type: integer
+                default: 51
+              priority:
+                type: integer
+                default: 100
+          f5:
+            type: object
+            properties:
+              host:
+                type: string
+              port:
+                type: integer
+                default: 443
+              partition:
+                type: string
+                default: "Common"
+              poolName:
+                type: string
+              virtualServerName:
+                type: string
+```
+
+Patch 定义：
+
+```yaml
+  patches:
+  - name: loadBalancer
+    enabledIf: "{{ if .loadBalancer }}true{{end}}"
+    definitions:
+    - selector:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        kind: BareMetalClusterTemplate
+        matchResources:
+          infrastructureCluster: true
+      jsonPatches:
+      - op: add
+        path: /spec/template/spec/loadBalancer
+        valueFrom:
+          variable: loadBalancer
+```
+
+#### 6.15.7 用户使用示例
+
+##### 6.15.7.1 HAProxy 方式
+
+```yaml
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  name: my-baremetal-cluster
+spec:
+  topology:
+    classRef:
+      name: baremetal-clusterclass-v0.1.0
+    version: v1.31.0
+    controlPlane:
+      replicas: 3
+    workers:
+      machineDeployments:
+      - class: default-worker
+        name: md-0
+        replicas: 2
+    variables:
+    - name: controlPlaneEndpoint
+      value:
+        host: "10.0.0.100"
+        port: 6443
+    - name: loadBalancer
+      value:
+        provider: "haproxy"
+        healthCheck:
+          enabled: true
+          path: "/healthz"
+          interval: "5s"
+          timeout: "3s"
+        haproxy:
+          adminHost: "10.0.0.50"
+          adminPort: 9999
+          backendName: "k8s-apiserver"
+          reloadCommand: "systemctl reload haproxy"
+```
+
+##### 6.15.7.2 Keepalived + HAProxy 方式 (无外部 LB)
+
+```yaml
+    variables:
+    - name: loadBalancer
+      value:
+        provider: "keepalived"
+        healthCheck:
+          enabled: true
+          path: "/healthz"
+        keepalived:
+          virtualIP: "10.0.0.100"
+          interface: "eth0"
+          virtualRouterID: 51
+          priority: 100
+          advertInterval: 1
+```
+
+##### 6.15.7.3 F5 BIG-IP 方式
+
+```yaml
+    variables:
+    - name: loadBalancer
+      value:
+        provider: "f5"
+        healthCheck:
+          enabled: true
+          path: "/healthz"
+          interval: "5s"
+        f5:
+          host: "f5.example.com"
+          port: 443
+          partition: "Common"
+          poolName: "k8s-apiserver-pool"
+          virtualServerName: "k8s-apiserver-vs"
+```
+
+#### 6.15.8 关键设计决策
+
+| 决策点 | 选项 | 推荐 | 理由 |
+|--------|------|------|------|
+| **注册方式** | Runtime API vs SSH vs 配置文件 | Runtime API 优先，SSH 备选 | Runtime API 无需 reload，零中断 |
+| **健康检查** | LB 内置 vs CAPBM 主动检查 | LB 内置 | 利用 LB 原生能力，更可靠 |
+| **注销时机** | 先注销再删除 vs 先删除再注销 | 先注销再删除 | 避免流量路由到已删除节点 |
+| **多 LB 支持** | 单一 LB 类型 vs 插件化 | 插件化 | 不同环境可能使用不同 LB |
+| **凭证管理** | 明文 vs Secret | Secret | 安全性，支持 RBAC 控制访问 |
+
 ### 6.16 CNI/CSI 安装与升级设计
 
 #### 6.16.1 问题背景
