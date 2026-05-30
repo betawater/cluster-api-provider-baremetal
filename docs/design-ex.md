@@ -4504,6 +4504,511 @@ spec:
 | **多 LB 支持** | 单一 LB 类型 vs 插件化 | 插件化 | 不同环境可能使用不同 LB |
 | **凭证管理** | 明文 vs Secret | Secret | 安全性，支持 RBAC 控制访问 |
 
+#### 6.16.9 Ingress 负载均衡器设计
+
+##### 6.16.9.1 问题背景
+
+API Server 负载均衡器负责将 kubectl 流量分发到 control-plane 节点 (6443 端口)。而 Ingress 负载均衡器负责将用户流量 (HTTP/HTTPS) 分发到 worker 节点的 Ingress Controller。
+
+两者的区别：
+
+| 维度 | API Server LB | Ingress LB |
+|------|--------------|------------|
+| **用途** | kubectl 访问控制面 (6443) | 用户流量访问工作负载 (80/443) |
+| **就绪时机** | kubeadm init 前必须就绪 | 集群初始化后，Ingress Controller 部署时 |
+| **后端** | control-plane 节点 IP:6443 | worker 节点 IP:NodePort |
+| **协议** | TCP (HTTPS 透传) | HTTP (L7) + HTTPS (L4 透传) |
+| **端口** | 固定 6443 | HTTP 80, HTTPS 443 |
+
+CAPBM 通过**复用 LB Provider 接口**支持 Ingress 负载均衡器，与 API Server LB 共享同一套注册/注销逻辑。
+
+##### 6.16.9.2 架构设计
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                    Ingress LB 架构                           │
+│                                                              │
+│  用户浏览器                                                    │
+│       │                                                      │
+│       ▼                                                      │
+│  ┌─────────────────┐                                         │
+│  │  Load Balancer   │  ←  CAPBM 负责注册 worker 节点          │
+│  │  VIP: 10.0.0.200 │                                         │
+│  │  Port: 80/443    │                                         │
+│  └────┬────────┬────┘                                         │
+│       │        │                                              │
+│       ▼        ▼                                              │
+│  ┌─────────┐┌─────────┐                                      │
+│  │Worker-01││Worker-02│                                      │
+│  │:30080   ││:30080   │  ←  NodePort (HTTP)                  │
+│  │:30443   ││:30443   │  ←  NodePort (HTTPS)                 │
+│  └─────────┘└─────────┘                                      │
+│       │        │                                              │
+│       ▼        ▼                                              │
+│  ┌─────────────────────────────────────────┐                 │
+│  │         Ingress Controller               │                 │
+│  │  (Nginx / HAProxy / Traefik / Envoy)     │                 │
+│  └─────────────────────────────────────────┘                 │
+└──────────────────────────────────────────────────────────────┘
+```
+
+**关键设计原则**:
+1. **复用 Provider 接口**: Ingress LB 使用与 API Server LB 相同的 `lb.Provider` 接口
+2. **独立配置**: Ingress LB 可以与 API Server LB 共用同一个 LB 实例，也可以使用不同的实例
+3. **NodePort 固定**: Ingress LB 需要知道固定的 NodePort 值（如 30080/30443）
+
+##### 6.16.9.3 CRD 设计扩展
+
+在 `BareMetalClusterSpec` 中新增 Ingress 负载均衡器配置：
+
+```yaml
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: BareMetalCluster
+spec:
+  controlPlaneEndpoint:
+    host: "lb.example.com"
+    port: 6443
+  
+  # API Server LB 配置
+  loadBalancer:
+    provider: "haproxy"
+    haproxy:
+      adminHost: "10.0.0.50"
+      adminPort: 9999
+      backendName: "k8s-apiserver"
+  
+  # Ingress LB 配置 (新增)
+  ingressLoadBalancer:
+    enabled: true
+    provider: "haproxy"        # 可以与 API Server 共用同一个 LB
+    haproxy:
+      adminHost: "10.0.0.50"   # 同一个 HAProxy 实例
+      adminPort: 9999
+      backendName: "k8s-ingress"
+      httpPort: 30080          # worker 节点 HTTP NodePort
+      httpsPort: 30443         # worker 节点 HTTPS NodePort
+```
+
+**Go 类型定义**:
+
+```go
+type BareMetalClusterSpec struct {
+	ControlPlaneEndpoint  clusterv1.APIEndpoint      `json:"controlPlaneEndpoint,omitempty"`
+	Network               NetworkConfig              `json:"network,omitempty"`
+	LoadBalancer          *LoadBalancerConfig        `json:"loadBalancer,omitempty"`
+	IngressLoadBalancer   *IngressLoadBalancerConfig `json:"ingressLoadBalancer,omitempty"`
+}
+
+type IngressLoadBalancerConfig struct {
+	// Enabled enables ingress load balancer management.
+	// +optional
+	// +kubebuilder:default=false
+	Enabled bool `json:"enabled,omitempty"`
+	
+	// Provider is the load balancer type.
+	// +optional
+	Provider string `json:"provider,omitempty"`
+	
+	// HAProxy holds HAProxy specific configuration.
+	// +optional
+	HAProxy *IngressHAProxyConfig `json:"haproxy,omitempty"`
+	
+	// F5 holds F5 BIG-IP specific configuration.
+	// +optional
+	F5 *IngressF5Config `json:"f5,omitempty"`
+	
+	// MetalLB holds MetalLB specific configuration.
+	// +optional
+	MetalLB *IngressMetalLBConfig `json:"metal-lb,omitempty"`
+}
+
+type IngressHAProxyConfig struct {
+	// AdminHost is the HAProxy Runtime API host.
+	// +optional
+	AdminHost string `json:"adminHost,omitempty"`
+	
+	// AdminPort is the HAProxy Runtime API port.
+	// +optional
+	// +kubebuilder:default=9999
+	AdminPort int `json:"adminPort,omitempty"`
+	
+	// SSHHost is the HAProxy server SSH host.
+	// +optional
+	SSHHost string `json:"sshHost,omitempty"`
+	
+	// SSHPort is the HAProxy server SSH port.
+	// +optional
+	// +kubebuilder:default=22
+	SSHPort int `json:"sshPort,omitempty"`
+	
+	// BackendName is the backend name in HAProxy config.
+	// +optional
+	// +kubebuilder:default=k8s-ingress
+	BackendName string `json:"backendName,omitempty"`
+	
+	// HTTPPort is the NodePort for HTTP traffic on worker nodes.
+	// +optional
+	// +kubebuilder:default=30080
+	HTTPPort int `json:"httpPort,omitempty"`
+	
+	// HTTPSPort is the NodePort for HTTPS traffic on worker nodes.
+	// +optional
+	// +kubebuilder:default=30443
+	HTTPSPort int `json:"httpsPort,omitempty"`
+}
+
+type IngressF5Config struct {
+	// Host is the F5 BIG-IP management host.
+	// +optional
+	Host string `json:"host,omitempty"`
+	
+	// Port is the F5 BIG-IP management port.
+	// +optional
+	// +kubebuilder:default=443
+	Port int `json:"port,omitempty"`
+	
+	// CredentialsRef references the F5 credentials secret.
+	// +optional
+	CredentialsRef *corev1.LocalObjectReference `json:"credentialsRef,omitempty"`
+	
+	// Partition is the F5 partition.
+	// +optional
+	// +kubebuilder:default=Common
+	Partition string `json:"partition,omitempty"`
+	
+	// HTTPPoolName is the F5 pool name for HTTP traffic.
+	// +optional
+	HTTPPoolName string `json:"httpPoolName,omitempty"`
+	
+	// HTTPSPoolName is the F5 pool name for HTTPS traffic.
+	// +optional
+	HTTPSPoolName string `json:"httpsPoolName,omitempty"`
+	
+	// HTTPPort is the NodePort for HTTP traffic.
+	// +optional
+	// +kubebuilder:default=30080
+	HTTPPort int `json:"httpPort,omitempty"`
+	
+	// HTTPSPort is the NodePort for HTTPS traffic.
+	// +optional
+	// +kubebuilder:default=30443
+	HTTPSPort int `json:"httpsPort,omitempty"`
+}
+
+type IngressMetalLBConfig struct {
+	// IPAddressPool is the MetalLB IP address pool name.
+	// +optional
+	IPAddressPool string `json:"ipAddressPool,omitempty"`
+	
+	// LoadBalancerIP is the VIP for ingress traffic.
+	// +optional
+	LoadBalancerIP string `json:"loadBalancerIP,omitempty"`
+}
+```
+
+##### 6.16.9.4 HAProxy 配置示例
+
+同一个 HAProxy 实例，多个 backend pool：
+
+```
+# API Server backend (现有)
+backend k8s-apiserver
+    mode tcp
+    server cp-01 10.0.0.101:6443 check
+    server cp-02 10.0.0.102:6443 check
+    server cp-03 10.0.0.103:6443 check
+
+# Ingress HTTP backend (新增)
+backend k8s-ingress-http
+    mode http
+    server worker-01-http 10.0.0.104:30080 check
+    server worker-02-http 10.0.0.105:30080 check
+
+# Ingress HTTPS backend (新增)
+backend k8s-ingress-https
+    mode tcp
+    server worker-01-https 10.0.0.104:30443 check
+    server worker-02-https 10.0.0.105:30443 check
+
+frontend k8s-ingress-http
+    bind *:80
+    default_backend k8s-ingress-http
+
+frontend k8s-ingress-https
+    bind *:443
+    default_backend k8s-ingress-https
+```
+
+##### 6.16.9.5 Controller 集成
+
+在 `BareMetalCluster Controller` 中新增 Ingress LB 同步逻辑：
+
+```go
+func (r *BareMetalClusterReconciler) reconcileNormal(ctx context.Context, bmCluster *infrav1.BareMetalCluster) (ctrl.Result, error) {
+    // ... 现有逻辑 ...
+    
+    // 同步 API Server LB
+    if err := r.reconcileLoadBalancer(ctx, bmCluster, capiCluster); err != nil {
+        // ... 错误处理 ...
+    }
+    
+    // 同步 Ingress LB (新增)
+    if err := r.reconcileIngressLoadBalancer(ctx, bmCluster, capiCluster); err != nil {
+        log.Error(err, "failed to sync ingress load balancer backends")
+        markConditionFalse(&bmCluster.Status.Conditions, infrav1.IngressLoadBalancerReadyCondition, infrav1.IngressLBSyncFailedReason, clusterv1.ConditionSeverityWarning, err.Error())
+        return ctrl.Result{RequeueAfter: 30 * time.Second}, r.Status().Update(ctx, bmCluster)
+    }
+    
+    if bmCluster.Spec.IngressLoadBalancer != nil && bmCluster.Spec.IngressLoadBalancer.Enabled {
+        markConditionTrue(&bmCluster.Status.Conditions, infrav1.IngressLoadBalancerReadyCondition, "Ingress load balancer backends are synced")
+    }
+    
+    // ... 其余逻辑 ...
+}
+
+func (r *BareMetalClusterReconciler) reconcileIngressLoadBalancer(ctx context.Context, bmCluster *infrav1.BareMetalCluster, capiCluster *clusterv1.Cluster) error {
+    ingressConfig := bmCluster.Spec.IngressLoadBalancer
+    if ingressConfig == nil || !ingressConfig.Enabled {
+        return nil
+    }
+    
+    // 获取 worker 节点
+    workerMachines, err := r.getWorkerMachines(ctx, capiCluster)
+    if err != nil {
+        return fmt.Errorf("failed to get worker machines: %w", err)
+    }
+    
+    switch ingressConfig.Provider {
+    case "haproxy":
+        return r.syncIngressHAProxy(ctx, ingressConfig.HAProxy, workerMachines)
+    case "f5":
+        return r.syncIngressF5(ctx, ingressConfig.F5, workerMachines)
+    case "metal-lb":
+        return r.syncIngressMetalLB(ctx, ingressConfig.MetalLB, workerMachines)
+    default:
+        return fmt.Errorf("unsupported ingress load balancer provider: %s", ingressConfig.Provider)
+    }
+}
+
+func (r *BareMetalClusterReconciler) syncIngressHAProxy(ctx context.Context, config *infrav1.IngressHAProxyConfig, workerMachines []clusterv1.Machine) error {
+    if config == nil {
+        return nil
+    }
+    
+    httpPort := config.HTTPPort
+    if httpPort == 0 {
+        httpPort = 30080
+    }
+    httpsPort := config.HTTPSPort
+    if httpsPort == 0 {
+        httpsPort = 30443
+    }
+    
+    backendName := config.BackendName
+    if backendName == "" {
+        backendName = "k8s-ingress"
+    }
+    
+    // 构建期望的后端列表 (HTTP + HTTPS)
+    desiredBackends := make(map[string]lb.Backend)
+    for _, m := range workerMachines {
+        if m.Status.Phase != string(clusterv1.MachinePhaseRunning) {
+            continue
+        }
+        ip := getMachineIP(m)
+        if ip == "" {
+            continue
+        }
+        desiredBackends[m.Name+"-http"] = lb.Backend{
+            Name: m.Name + "-http",
+            IP:   ip,
+            Port: httpPort,
+        }
+        desiredBackends[m.Name+"-https"] = lb.Backend{
+            Name: m.Name + "-https",
+            IP:   ip,
+            Port: httpsPort,
+        }
+    }
+    
+    // 复用 HAProxy Provider 同步后端
+    haproxyConfig := &infrav1.HAProxyConfig{
+        AdminHost:     config.AdminHost,
+        AdminPort:     config.AdminPort,
+        SSHHost:       config.SSHHost,
+        SSHPort:       config.SSHPort,
+        BackendName:   backendName + "-http",  // HTTP backend
+    }
+    
+    provider, err := lb.NewHAProxyProvider(haproxyConfig)
+    if err != nil {
+        return err
+    }
+    
+    // 同步 HTTP backend
+    if err := r.syncBackends(ctx, provider, desiredBackends); err != nil {
+        return fmt.Errorf("failed to sync HTTP backends: %w", err)
+    }
+    
+    // 同步 HTTPS backend
+    haproxyConfig.BackendName = backendName + "-https"
+    provider, err = lb.NewHAProxyProvider(haproxyConfig)
+    if err != nil {
+        return err
+    }
+    
+    return r.syncBackends(ctx, provider, desiredBackends)
+}
+```
+
+##### 6.16.9.6 MetalLB 集成
+
+如果使用 MetalLB，Ingress LB 配置更简单：
+
+```yaml
+    - name: ingressLoadBalancer
+      value:
+        enabled: true
+        provider: "metal-lb"
+        metal-lb:
+          ipAddressPool: "ingress-pool"
+          loadBalancerIP: "10.0.0.200"   # Ingress VIP
+```
+
+MetalLB 会自动将 `type: LoadBalancer` 的 Ingress Service 绑定到指定 IP，无需 CAPBM 手动注册后端。
+
+##### 6.16.9.7 ClusterClass 变量和 Patches
+
+在 ClusterClass 中新增 Ingress LB 变量：
+
+```yaml
+  variables:
+  - name: ingressLoadBalancer
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          enabled:
+            type: boolean
+            default: false
+          provider:
+            type: string
+            default: "haproxy"
+            enum:
+              - "haproxy"
+              - "f5"
+              - "metal-lb"
+          haproxy:
+            type: object
+            properties:
+              adminHost:
+                type: string
+              adminPort:
+                type: integer
+                default: 9999
+              backendName:
+                type: string
+                default: "k8s-ingress"
+              httpPort:
+                type: integer
+                default: 30080
+              httpsPort:
+                type: integer
+                default: 30443
+          metal-lb:
+            type: object
+            properties:
+              ipAddressPool:
+                type: string
+              loadBalancerIP:
+                type: string
+```
+
+Patch 定义：
+
+```yaml
+  patches:
+  - name: ingressLoadBalancer
+    enabledIf: "{{ if .ingressLoadBalancer.enabled }}true{{end}}"
+    definitions:
+    - selector:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        kind: BareMetalClusterTemplate
+        matchResources:
+          infrastructureCluster: true
+      jsonPatches:
+      - op: add
+        path: /spec/template/spec/ingressLoadBalancer
+        valueFrom:
+          variable: ingressLoadBalancer
+```
+
+##### 6.16.9.8 用户使用示例
+
+###### HAProxy 方式 (与 API Server 共用 LB)
+
+```yaml
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  name: my-baremetal-cluster
+spec:
+  topology:
+    classRef:
+      name: baremetal-clusterclass-v0.1.0
+    version: v1.31.0
+    controlPlane:
+      replicas: 3
+    workers:
+      machineDeployments:
+      - class: default-worker
+        name: md-0
+        replicas: 3
+    variables:
+    - name: controlPlaneEndpoint
+      value:
+        host: "10.0.0.100"
+        port: 6443
+    - name: loadBalancer
+      value:
+        provider: "haproxy"
+        haproxy:
+          adminHost: "10.0.0.50"
+          adminPort: 9999
+          backendName: "k8s-apiserver"
+    - name: ingressLoadBalancer
+      value:
+        enabled: true
+        provider: "haproxy"
+        haproxy:
+          adminHost: "10.0.0.50"        # 同一个 HAProxy
+          adminPort: 9999
+          backendName: "k8s-ingress"
+          httpPort: 30080
+          httpsPort: 30443
+```
+
+###### MetalLB 方式
+
+```yaml
+    - name: ingressLoadBalancer
+      value:
+        enabled: true
+        provider: "metal-lb"
+        metal-lb:
+          ipAddressPool: "ingress-pool"
+          loadBalancerIP: "10.0.0.200"
+```
+
+##### 6.16.9.9 关键设计决策
+
+| 决策点 | 选项 | 推荐 | 理由 |
+|--------|------|------|------|
+| **NodePort 管理** | 固定端口 vs 动态分配 | 固定端口 (30080/30443) | LB 配置需要知道固定端口 |
+| **HTTP/HTTPS 分离** | 同一 backend vs 分离 | 分离 backend | HTTP 需要 L7 解析，HTTPS 需要 TCP 透传 |
+| **与 Ingress Controller 协同** | CAPBM 管理 vs Ingress Controller 管理 | CAPBM 管理 LB，Ingress Controller 管理 NodePort | 职责分离 |
+| **健康检查** | LB 内置 vs kubelet | LB 内置检查 NodePort | 更准确反映服务可用性 |
+
 ### 6.17 CNI/CSI 安装与升级设计
 
 #### 6.17.1 问题背景

@@ -42,6 +42,9 @@ const (
 
 	// LoadBalancerReadyCondition reports whether the load balancer is ready.
 	LoadBalancerReadyCondition clusterv1.ConditionType = "LoadBalancerReady"
+
+	// IngressLoadBalancerReadyCondition reports whether the ingress load balancer is ready.
+	IngressLoadBalancerReadyCondition clusterv1.ConditionType = "IngressLoadBalancerReady"
 )
 
 // Common condition reasons
@@ -96,4 +99,10 @@ const (
 
 	// LBProviderNotSupportedReason indicates the load balancer provider is not supported.
 	LBProviderNotSupportedReason = "LBProviderNotSupported"
+
+	// IngressLBSyncFailedReason indicates ingress load balancer sync failed.
+	IngressLBSyncFailedReason = "IngressLBSyncFailed"
+
+	// IngressLoadBalancerReadyReason indicates ingress load balancer is ready.
+	IngressLoadBalancerReadyReason = "IngressLoadBalancerReady"
 )

@@ -50,6 +50,10 @@ type BareMetalClusterSpec struct {
 	// LoadBalancer holds the load balancer configuration for the control plane.
 	// +optional
 	LoadBalancer *LoadBalancerConfig `json:"loadBalancer,omitempty"`
+
+	// IngressLoadBalancer holds the load balancer configuration for ingress traffic.
+	// +optional
+	IngressLoadBalancer *IngressLoadBalancerConfig `json:"ingressLoadBalancer,omitempty"`
 }
 
 // NetworkConfig holds the network configuration for the cluster.
@@ -265,6 +269,116 @@ func (c *BareMetalCluster) GetConditions() clusterv1.Conditions {
 // SetConditions sets the conditions on this object.
 func (c *BareMetalCluster) SetConditions(conditions clusterv1.Conditions) {
 	c.Status.Conditions = conditions
+}
+
+// IngressLoadBalancerConfig defines the ingress load balancer configuration.
+type IngressLoadBalancerConfig struct {
+	// Enabled enables ingress load balancer management.
+	// +optional
+	// +kubebuilder:default=false
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Provider is the load balancer type (haproxy, f5, metal-lb).
+	// +optional
+	Provider string `json:"provider,omitempty"`
+
+	// HAProxy holds HAProxy specific configuration.
+	// +optional
+	HAProxy *IngressHAProxyConfig `json:"haproxy,omitempty"`
+
+	// F5 holds F5 BIG-IP specific configuration.
+	// +optional
+	F5 *IngressF5Config `json:"f5,omitempty"`
+
+	// MetalLB holds MetalLB specific configuration.
+	// +optional
+	MetalLB *IngressMetalLBConfig `json:"metal-lb,omitempty"`
+}
+
+// IngressHAProxyConfig defines HAProxy specific configuration for ingress.
+type IngressHAProxyConfig struct {
+	// AdminHost is the HAProxy Runtime API host.
+	// +optional
+	AdminHost string `json:"adminHost,omitempty"`
+
+	// AdminPort is the HAProxy Runtime API port.
+	// +optional
+	// +kubebuilder:default=9999
+	AdminPort int `json:"adminPort,omitempty"`
+
+	// SSHHost is the HAProxy server SSH host.
+	// +optional
+	SSHHost string `json:"sshHost,omitempty"`
+
+	// SSHPort is the HAProxy server SSH port.
+	// +optional
+	// +kubebuilder:default=22
+	SSHPort int `json:"sshPort,omitempty"`
+
+	// BackendName is the backend name in HAProxy config.
+	// +optional
+	// +kubebuilder:default=k8s-ingress
+	BackendName string `json:"backendName,omitempty"`
+
+	// HTTPPort is the NodePort for HTTP traffic on worker nodes.
+	// +optional
+	// +kubebuilder:default=30080
+	HTTPPort int `json:"httpPort,omitempty"`
+
+	// HTTPSPort is the NodePort for HTTPS traffic on worker nodes.
+	// +optional
+	// +kubebuilder:default=30443
+	HTTPSPort int `json:"httpsPort,omitempty"`
+}
+
+// IngressF5Config defines F5 BIG-IP specific configuration for ingress.
+type IngressF5Config struct {
+	// Host is the F5 BIG-IP management host.
+	// +optional
+	Host string `json:"host,omitempty"`
+
+	// Port is the F5 BIG-IP management port.
+	// +optional
+	// +kubebuilder:default=443
+	Port int `json:"port,omitempty"`
+
+	// CredentialsRef references the F5 credentials secret.
+	// +optional
+	CredentialsRef *corev1.LocalObjectReference `json:"credentialsRef,omitempty"`
+
+	// Partition is the F5 partition.
+	// +optional
+	// +kubebuilder:default=Common
+	Partition string `json:"partition,omitempty"`
+
+	// HTTPPoolName is the F5 pool name for HTTP traffic.
+	// +optional
+	HTTPPoolName string `json:"httpPoolName,omitempty"`
+
+	// HTTPSPoolName is the F5 pool name for HTTPS traffic.
+	// +optional
+	HTTPSPoolName string `json:"httpsPoolName,omitempty"`
+
+	// HTTPPort is the NodePort for HTTP traffic.
+	// +optional
+	// +kubebuilder:default=30080
+	HTTPPort int `json:"httpPort,omitempty"`
+
+	// HTTPSPort is the NodePort for HTTPS traffic.
+	// +optional
+	// +kubebuilder:default=30443
+	HTTPSPort int `json:"httpsPort,omitempty"`
+}
+
+// IngressMetalLBConfig defines MetalLB specific configuration for ingress.
+type IngressMetalLBConfig struct {
+	// IPAddressPool is the MetalLB IP address pool name.
+	// +optional
+	IPAddressPool string `json:"ipAddressPool,omitempty"`
+
+	// LoadBalancerIP is the VIP for ingress traffic.
+	// +optional
+	LoadBalancerIP string `json:"loadBalancerIP,omitempty"`
 }
 
 // +kubebuilder:object:root=true

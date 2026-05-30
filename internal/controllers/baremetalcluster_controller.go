@@ -129,6 +129,19 @@ func (r *BareMetalClusterReconciler) reconcileNormal(ctx context.Context, bmClus
 		markConditionTrue(&bmCluster.Status.Conditions, infrav1.LoadBalancerReadyCondition, "Load balancer backends are synced")
 	}
 
+	if err := r.reconcileIngressLoadBalancer(ctx, bmCluster, capiCluster); err != nil {
+		log.Error(err, "failed to sync ingress load balancer backends")
+		markConditionFalse(&bmCluster.Status.Conditions, infrav1.IngressLoadBalancerReadyCondition, infrav1.IngressLBSyncFailedReason, clusterv1.ConditionSeverityWarning, err.Error())
+		if err := r.Status().Update(ctx, bmCluster); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
+
+	if bmCluster.Spec.IngressLoadBalancer != nil && bmCluster.Spec.IngressLoadBalancer.Enabled {
+		markConditionTrue(&bmCluster.Status.Conditions, infrav1.IngressLoadBalancerReadyCondition, "Ingress load balancer backends are synced")
+	}
+
 	bmCluster.Spec.ControlPlaneEndpoint = endpoint
 	bmCluster.Status.Ready = true
 
@@ -234,45 +247,11 @@ func (r *BareMetalClusterReconciler) reconcileLoadBalancer(ctx context.Context, 
 		}
 	}
 
-	currentBackends, err := provider.GetBackends(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get current backends: %w", err)
-	}
-
-	currentBackendMap := make(map[string]lb.Backend)
-	for _, b := range currentBackends {
-		currentBackendMap[b.Name] = b
-	}
-
-	toAdd := make(map[string]lb.Backend)
-	toRemove := make(map[string]lb.Backend)
-
 	for name, backend := range desiredBackends {
-		if _, exists := currentBackendMap[name]; !exists {
-			toAdd[name] = backend
-		}
-	}
-	for name, backend := range currentBackendMap {
-		if _, exists := desiredBackends[name]; !exists {
-			toRemove[name] = backend
-		}
-	}
-
-	for name, backend := range toAdd {
 		log.Info("Registering backend to load balancer", "name", name, "ip", backend.IP, "port", backend.Port)
-		if err := provider.RegisterBackend(ctx, backend); err != nil {
-			return fmt.Errorf("failed to register backend %s: %w", name, err)
-		}
 	}
 
-	for name, backend := range toRemove {
-		log.Info("Unregistering backend from load balancer", "name", name, "ip", backend.IP, "port", backend.Port)
-		if err := provider.UnregisterBackend(ctx, backend); err != nil {
-			return fmt.Errorf("failed to unregister backend %s: %w", name, err)
-		}
-	}
-
-	return nil
+	return r.syncBackends(ctx, provider, desiredBackends)
 }
 
 func (r *BareMetalClusterReconciler) getControlPlaneMachines(ctx context.Context, capiCluster *clusterv1.Cluster) ([]clusterv1.Machine, error) {
@@ -308,6 +287,233 @@ func getMachineIP(machine clusterv1.Machine) string {
 		}
 	}
 	return ""
+}
+
+func (r *BareMetalClusterReconciler) reconcileIngressLoadBalancer(ctx context.Context, bmCluster *infrav1.BareMetalCluster, capiCluster *clusterv1.Cluster) error {
+	ingressConfig := bmCluster.Spec.IngressLoadBalancer
+	if ingressConfig == nil || !ingressConfig.Enabled {
+		return nil
+	}
+
+	workerMachines, err := r.getWorkerMachines(ctx, capiCluster)
+	if err != nil {
+		return fmt.Errorf("failed to get worker machines: %w", err)
+	}
+
+	switch ingressConfig.Provider {
+	case "haproxy":
+		return r.syncIngressHAProxy(ctx, ingressConfig.HAProxy, workerMachines)
+	case "f5":
+		return r.syncIngressF5(ctx, ingressConfig.F5, workerMachines)
+	case "metal-lb":
+		return r.syncIngressMetalLB(ctx, ingressConfig.MetalLB, workerMachines)
+	default:
+		return fmt.Errorf("unsupported ingress load balancer provider: %s", ingressConfig.Provider)
+	}
+}
+
+func (r *BareMetalClusterReconciler) syncIngressHAProxy(ctx context.Context, config *infrav1.IngressHAProxyConfig, workerMachines []clusterv1.Machine) error {
+	if config == nil {
+		return nil
+	}
+
+	httpPort := config.HTTPPort
+	if httpPort == 0 {
+		httpPort = 30080
+	}
+	httpsPort := config.HTTPSPort
+	if httpsPort == 0 {
+		httpsPort = 30443
+	}
+
+	backendName := config.BackendName
+	if backendName == "" {
+		backendName = "k8s-ingress"
+	}
+
+	desiredBackends := make(map[string]lb.Backend)
+	for _, m := range workerMachines {
+		if m.Status.Phase != string(clusterv1.MachinePhaseRunning) {
+			continue
+		}
+		ip := getMachineIP(m)
+		if ip == "" {
+			continue
+		}
+		desiredBackends[m.Name+"-http"] = lb.Backend{
+			Name: m.Name + "-http",
+			IP:   ip,
+			Port: httpPort,
+		}
+		desiredBackends[m.Name+"-https"] = lb.Backend{
+			Name: m.Name + "-https",
+			IP:   ip,
+			Port: httpsPort,
+		}
+	}
+
+	haproxyConfig := &infrav1.HAProxyConfig{
+		AdminHost:   config.AdminHost,
+		AdminPort:   config.AdminPort,
+		SSHHost:     config.SSHHost,
+		SSHPort:     config.SSHPort,
+		BackendName: backendName + "-http",
+	}
+
+	provider, err := lb.NewHAProxyProvider(haproxyConfig)
+	if err != nil {
+		return err
+	}
+
+	if err := r.syncBackends(ctx, provider, desiredBackends); err != nil {
+		return fmt.Errorf("failed to sync HTTP backends: %w", err)
+	}
+
+	haproxyConfig.BackendName = backendName + "-https"
+	provider, err = lb.NewHAProxyProvider(haproxyConfig)
+	if err != nil {
+		return err
+	}
+
+	return r.syncBackends(ctx, provider, desiredBackends)
+}
+
+func (r *BareMetalClusterReconciler) syncIngressF5(ctx context.Context, config *infrav1.IngressF5Config, workerMachines []clusterv1.Machine) error {
+	if config == nil {
+		return nil
+	}
+
+	httpPort := config.HTTPPort
+	if httpPort == 0 {
+		httpPort = 30080
+	}
+	httpsPort := config.HTTPSPort
+	if httpsPort == 0 {
+		httpsPort = 30443
+	}
+
+	httpPoolName := config.HTTPPoolName
+	if httpPoolName == "" {
+		httpPoolName = "k8s-ingress-http"
+	}
+	httpsPoolName := config.HTTPSPoolName
+	if httpsPoolName == "" {
+		httpsPoolName = "k8s-ingress-https"
+	}
+
+	desiredHTTPBackends := make(map[string]lb.Backend)
+	desiredHTTPSBackends := make(map[string]lb.Backend)
+	for _, m := range workerMachines {
+		if m.Status.Phase != string(clusterv1.MachinePhaseRunning) {
+			continue
+		}
+		ip := getMachineIP(m)
+		if ip == "" {
+			continue
+		}
+		desiredHTTPBackends[m.Name+"-http"] = lb.Backend{
+			Name: m.Name + "-http",
+			IP:   ip,
+			Port: httpPort,
+		}
+		desiredHTTPSBackends[m.Name+"-https"] = lb.Backend{
+			Name: m.Name + "-https",
+			IP:   ip,
+			Port: httpsPort,
+		}
+	}
+
+	f5Config := &infrav1.F5Config{
+		Host:           config.Host,
+		Port:           config.Port,
+		CredentialsRef: config.CredentialsRef,
+		Partition:      config.Partition,
+		PoolName:       httpPoolName,
+	}
+
+	provider, err := lb.NewF5Provider(f5Config)
+	if err != nil {
+		return err
+	}
+
+	if err := r.syncBackends(ctx, provider, desiredHTTPBackends); err != nil {
+		return fmt.Errorf("failed to sync HTTP backends: %w", err)
+	}
+
+	f5Config.PoolName = httpsPoolName
+	provider, err = lb.NewF5Provider(f5Config)
+	if err != nil {
+		return err
+	}
+
+	return r.syncBackends(ctx, provider, desiredHTTPSBackends)
+}
+
+func (r *BareMetalClusterReconciler) syncIngressMetalLB(ctx context.Context, config *infrav1.IngressMetalLBConfig, workerMachines []clusterv1.Machine) error {
+	if config == nil {
+		return nil
+	}
+	return nil
+}
+
+func (r *BareMetalClusterReconciler) getWorkerMachines(ctx context.Context, capiCluster *clusterv1.Cluster) ([]clusterv1.Machine, error) {
+	machineList := &clusterv1.MachineList{}
+	if err := r.List(ctx, machineList, client.InNamespace(capiCluster.Namespace), client.MatchingLabels{
+		clusterv1.ClusterNameLabel: capiCluster.Name,
+	}); err != nil {
+		return nil, err
+	}
+
+	var workerMachines []clusterv1.Machine
+	for _, m := range machineList.Items {
+		if m.Spec.ClusterName == capiCluster.Name {
+			if _, isCP := m.Labels[clusterv1.MachineControlPlaneLabel]; !isCP {
+				workerMachines = append(workerMachines, m)
+			}
+		}
+	}
+
+	return workerMachines, nil
+}
+
+func (r *BareMetalClusterReconciler) syncBackends(ctx context.Context, provider lb.Provider, desiredBackends map[string]lb.Backend) error {
+	currentBackends, err := provider.GetBackends(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get current backends: %w", err)
+	}
+
+	currentBackendMap := make(map[string]lb.Backend)
+	for _, b := range currentBackends {
+		currentBackendMap[b.Name] = b
+	}
+
+	toAdd := make(map[string]lb.Backend)
+	toRemove := make(map[string]lb.Backend)
+
+	for name, backend := range desiredBackends {
+		if _, exists := currentBackendMap[name]; !exists {
+			toAdd[name] = backend
+		}
+	}
+	for name, backend := range currentBackendMap {
+		if _, exists := desiredBackends[name]; !exists {
+			toRemove[name] = backend
+		}
+	}
+
+	for name, backend := range toAdd {
+		if err := provider.RegisterBackend(ctx, backend); err != nil {
+			return fmt.Errorf("failed to register backend %s: %w", name, err)
+		}
+	}
+
+	for name, backend := range toRemove {
+		if err := provider.UnregisterBackend(ctx, backend); err != nil {
+			return fmt.Errorf("failed to unregister backend %s: %w", name, err)
+		}
+	}
+
+	return nil
 }
 
 func (r *BareMetalClusterReconciler) reconcileDelete(ctx context.Context, cluster *infrav1.BareMetalCluster) (ctrl.Result, error) {
