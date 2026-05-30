@@ -46,9 +46,7 @@ func New(sshConn *sshclient.SSHConnection, config infrav1.CNIConfig, podCIDR str
 	}
 }
 
-// NewFromReleaseImage creates a CNI Installer with versions sourced from a ReleaseImage.
 func NewFromReleaseImage(sshConn *sshclient.SSHConnection, releaseImage *infrav1.ReleaseImage, config infrav1.CNIConfig, podCIDR string) *Installer {
-	// Derive CNI type and version from ReleaseImage components
 	if config.Type == "" {
 		if releaseImage.Spec.Components.Calico != "" {
 			config.Type = "calico"
@@ -92,12 +90,7 @@ func (i *Installer) Install(ctx context.Context) (*InstallResult, error) {
 		return &InstallResult{Completed: true, Success: true, Version: existing.version}, nil
 	}
 
-	var script string
-	if i.config.AirGap != nil && i.config.AirGap.Enabled {
-		script = i.generateOfflineInstallScript()
-	} else {
-		script = i.generateOnlineInstallScript()
-	}
+	script := i.generateInstallScript()
 
 	result, err := i.sshConn.ExecuteScript(ctx, script)
 	if err != nil {
@@ -154,8 +147,26 @@ func (i *Installer) checkExisting(ctx context.Context) (*existingCNI, error) {
 	return ec, nil
 }
 
-func (i *Installer) generateOnlineInstallScript() string {
+func (i *Installer) generateInstallScript() string {
 	cniPluginsVersion := "1.3.0"
+
+	installSource := "online"
+	releaseServer := ""
+	localPath := ""
+	if i.config.AirGap != nil && i.config.AirGap.Enabled {
+		switch i.config.AirGap.ManifestSource {
+		case "HTTPServer":
+			installSource = "http"
+			if i.config.AirGap.HTTPServerConfig != nil {
+				releaseServer = i.config.AirGap.HTTPServerConfig.BaseURL
+			}
+		case "LocalPath":
+			installSource = "local"
+			localPath = i.config.AirGap.LocalPath
+		default:
+			installSource = "http"
+		}
+	}
 
 	script := `#!/bin/bash
 set -euo pipefail
@@ -164,8 +175,23 @@ CNI_TYPE="${CNI_TYPE:-calico}"
 CNI_VERSION="${CNI_VERSION}"
 POD_CIDR="${POD_CIDR:-10.244.0.0/16}"
 CNI_PLUGINS_VERSION="${CNI_PLUGINS_VERSION:-1.3.0}"
+INSTALL_MODE="${INSTALL_MODE:-Manifest}"
+INSTALL_SOURCE="${INSTALL_SOURCE:-online}"
+RELEASE_SERVER="${RELEASE_SERVER:-}"
+LOCAL_PATH="${LOCAL_PATH:-}"
 
-echo "=== CNI 安装开始 (type=$CNI_TYPE, version=$CNI_VERSION) ==="
+echo "=== CNI 安装开始 (type=$CNI_TYPE, version=$CNI_VERSION, source=$INSTALL_SOURCE) ==="
+
+fetch_resource() {
+    local resource="$1"
+    local dest="$2"
+    case "$INSTALL_SOURCE" in
+        online) curl -fsSL "$resource" -o "$dest" ;;
+        http)   curl -fsSL "${RELEASE_SERVER}/${resource}" -o "$dest" ;;
+        local)  cp "${LOCAL_PATH}/${resource}" "$dest" ;;
+        *)      echo "ERROR: 不支持的安装源: $INSTALL_SOURCE"; exit 1 ;;
+    esac
+}
 
 install_cni_plugins() {
     if [ -d "/opt/cni/bin" ] && [ "$(ls -A /opt/cni/bin 2>/dev/null)" ]; then
@@ -173,39 +199,75 @@ install_cni_plugins() {
         return 0
     fi
     mkdir -p /opt/cni/bin
-    curl -fsSL "https://github.com/containernetworking/plugins/releases/download/v${CNI_PLUGINS_VERSION}/cni-plugins-linux-amd64-v${CNI_PLUGINS_VERSION}.tgz" | tar -C /opt/cni/bin -xz
+
+    local archive=$(mktemp)
+    case "$INSTALL_SOURCE" in
+        online)
+            fetch_resource "https://github.com/containernetworking/plugins/releases/download/v${CNI_PLUGINS_VERSION}/cni-plugins-linux-amd64-v${CNI_PLUGINS_VERSION}.tgz" "$archive"
+            ;;
+        http|local)
+            fetch_resource "cni/cni-plugins-linux-amd64-v${CNI_PLUGINS_VERSION}.tgz" "$archive"
+            ;;
+    esac
+    tar -C /opt/cni/bin -xzf "$archive"
+    rm -f "$archive"
     echo "CNI 二进制插件安装完成"
 }
 
 install_calico() {
-    local manifest_url="https://raw.githubusercontent.com/projectcalico/calico/v${CNI_VERSION}/manifests/calico.yaml"
-    local temp_manifest=$(mktemp)
-    curl -fsSL "$manifest_url" -o "$temp_manifest"
-    sed -i "s|\"192.168.0.0/16\"|\"${POD_CIDR}\"|g" "$temp_manifest"
-    kubectl apply -f "$temp_manifest"
-    rm -f "$temp_manifest"
+    local manifest=$(mktemp)
+    case "$INSTALL_SOURCE" in
+        online)
+            fetch_resource "https://raw.githubusercontent.com/projectcalico/calico/v${CNI_VERSION}/manifests/calico.yaml" "$manifest"
+            ;;
+        http|local)
+            fetch_resource "cni/calico-${CNI_VERSION}.yaml" "$manifest"
+            ;;
+    esac
+    sed -i "s|\"192.168.0.0/16\"|\"${POD_CIDR}\"|g" "$manifest"
+    kubectl apply -f "$manifest"
+    rm -f "$manifest"
     kubectl rollout status daemonset/calico-node -n kube-system --timeout=300s
     echo "Calico 部署完成"
 }
 
 install_cilium_helm() {
-    helm repo add cilium https://helm.cilium.io/ || true
-    helm repo update
-    helm upgrade --install cilium cilium/cilium \
-        --namespace kube-system --version "v${CNI_VERSION}" \
-        --set ipam.mode=kubernetes \
-        --set kubeProxyReplacement="${CILIUM_KUBE_PROXY_REPLACEMENT:-partial}" \
-        --wait --timeout=300s
+    case "$INSTALL_SOURCE" in
+        online)
+            helm repo add cilium https://helm.cilium.io/ || true
+            helm repo update
+            helm upgrade --install cilium cilium/cilium \
+                --namespace kube-system --version "v${CNI_VERSION}" \
+                --set ipam.mode=kubernetes \
+                --set kubeProxyReplacement="${CILIUM_KUBE_PROXY_REPLACEMENT:-partial}" \
+                --wait --timeout=300s
+            ;;
+        http|local)
+            local chart=$(mktemp)
+            fetch_resource "cni/cilium-${CNI_VERSION}.tgz" "$chart"
+            helm upgrade --install cilium "$chart" --namespace kube-system \
+                --set ipam.mode=kubernetes \
+                --set kubeProxyReplacement="${CILIUM_KUBE_PROXY_REPLACEMENT:-partial}" \
+                --wait --timeout=300s
+            rm -f "$chart"
+            ;;
+    esac
     echo "Cilium 部署完成"
 }
 
 install_flannel() {
-    local manifest_url="https://github.com/flannel-io/flannel/releases/download/v${CNI_VERSION}/kube-flannel.yml"
-    local temp_manifest=$(mktemp)
-    curl -fsSL "$manifest_url" -o "$temp_manifest"
-    sed -i "s|\"10.244.0.0/16\"|\"${POD_CIDR}\"|g" "$temp_manifest"
-    kubectl apply -f "$temp_manifest"
-    rm -f "$temp_manifest"
+    local manifest=$(mktemp)
+    case "$INSTALL_SOURCE" in
+        online)
+            fetch_resource "https://github.com/flannel-io/flannel/releases/download/v${CNI_VERSION}/kube-flannel.yml" "$manifest"
+            ;;
+        http|local)
+            fetch_resource "cni/flannel-${CNI_VERSION}.yaml" "$manifest"
+            ;;
+    esac
+    sed -i "s|\"10.244.0.0/16\"|\"${POD_CIDR}\"|g" "$manifest"
+    kubectl apply -f "$manifest"
+    rm -f "$manifest"
     kubectl rollout status daemonset/kube-flannel-ds -n kube-flannel --timeout=300s
     echo "Flannel 部署完成"
 }
@@ -234,86 +296,21 @@ echo "=== CNI 安装完成 ==="
 		"CNI_VERSION":         i.config.Version,
 		"POD_CIDR":            i.podCIDR,
 		"CNI_PLUGINS_VERSION": cniPluginsVersion,
+		"INSTALL_MODE":        i.config.InstallMode,
+		"INSTALL_SOURCE":      installSource,
+	}
+
+	if releaseServer != "" {
+		envVars["RELEASE_SERVER"] = releaseServer
+	}
+	if localPath != "" {
+		envVars["LOCAL_PATH"] = localPath
 	}
 
 	if i.config.Config != nil && i.config.Config.Cilium != nil {
 		if i.config.Config.Cilium.KubeProxyReplacement != "" {
 			envVars["CILIUM_KUBE_PROXY_REPLACEMENT"] = i.config.Config.Cilium.KubeProxyReplacement
 		}
-	}
-
-	return prependEnvVars(script, envVars)
-}
-
-func (i *Installer) generateOfflineInstallScript() string {
-	airGap := i.config.AirGap
-	pluginsArchive := "/opt/capbm/cni/cni-plugins-linux-amd64-v1.3.0.tgz"
-	manifestPath := "/opt/capbm/cni/calico.yaml"
-	chartArchive := "/opt/capbm/cni/calico-" + i.config.Version + ".tgz"
-
-	if airGap != nil {
-		if airGap.CNIPluginsArchive != "" {
-			pluginsArchive = airGap.CNIPluginsArchive
-		}
-		if airGap.LocalPath != "" {
-			manifestPath = airGap.LocalPath + "/calico.yaml"
-			chartArchive = airGap.LocalPath + "/calico-" + i.config.Version + ".tgz"
-		}
-		if airGap.ChartArchive != "" {
-			chartArchive = airGap.ChartArchive
-		}
-	}
-
-	script := `#!/bin/bash
-set -euo pipefail
-
-CNI_TYPE="${CNI_TYPE:-calico}"
-CNI_VERSION="${CNI_VERSION}"
-CNI_PLUGINS_ARCHIVE="${CNI_PLUGINS_ARCHIVE}"
-CNI_MANIFEST_PATH="${CNI_MANIFEST_PATH}"
-CNI_CHART_ARCHIVE="${CNI_CHART_ARCHIVE}"
-INSTALL_MODE="${INSTALL_MODE:-Manifest}"
-
-echo "=== CNI 离线安装开始 ==="
-
-install_cni_plugins_offline() {
-    [ -d "/opt/cni/bin" ] && [ -n "$(ls -A /opt/cni/bin 2>/dev/null)" ] && { echo "CNI 二进制已安装"; return 0; }
-    [ ! -f "$CNI_PLUGINS_ARCHIVE" ] && { echo "ERROR: CNI 二进制插件包不存在: $CNI_PLUGINS_ARCHIVE"; return 1; }
-    mkdir -p /opt/cni/bin && tar -C /opt/cni/bin -xzf "$CNI_PLUGINS_ARCHIVE"
-    echo "CNI 二进制离线安装完成"
-}
-
-install_cni_manifest_offline() {
-    [ ! -f "$CNI_MANIFEST_PATH" ] && { echo "ERROR: Manifest 不存在: $CNI_MANIFEST_PATH"; return 1; }
-    kubectl apply -f "$CNI_MANIFEST_PATH"
-    case "$CNI_TYPE" in
-        calico)  kubectl rollout status daemonset/calico-node -n kube-system --timeout=300s ;;
-        flannel) kubectl rollout status daemonset/kube-flannel-ds -n kube-flannel --timeout=300s ;;
-    esac
-    echo "CNI 离线部署完成 (Manifest)"
-}
-
-install_cni_helm_offline() {
-    [ ! -f "$CNI_CHART_ARCHIVE" ] && { echo "ERROR: Helm Chart 不存在: $CNI_CHART_ARCHIVE"; return 1; }
-    helm upgrade --install "$CNI_TYPE" "$CNI_CHART_ARCHIVE" --namespace kube-system --wait --timeout=300s
-    echo "CNI 离线部署完成 (Helm)"
-}
-
-install_cni_plugins_offline
-case "$INSTALL_MODE" in
-    Manifest) install_cni_manifest_offline ;;
-    Helm)     install_cni_helm_offline ;;
-esac
-echo "=== CNI 离线安装完成 ==="
-`
-
-	envVars := map[string]string{
-		"CNI_TYPE":            i.config.Type,
-		"CNI_VERSION":         i.config.Version,
-		"CNI_PLUGINS_ARCHIVE": pluginsArchive,
-		"CNI_MANIFEST_PATH":   manifestPath,
-		"CNI_CHART_ARCHIVE":   chartArchive,
-		"INSTALL_MODE":        i.config.InstallMode,
 	}
 
 	return prependEnvVars(script, envVars)

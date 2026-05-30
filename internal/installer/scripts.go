@@ -89,22 +89,47 @@ SANDBOX_IMAGE="${SANDBOX_IMAGE:-registry.k8s.io/pause:3.9}"
 REGISTRY_MIRRORS="${REGISTRY_MIRRORS:-}"
 MAX_CONCURRENT_DOWNLOADS="${MAX_CONCURRENT_DOWNLOADS:-}"
 RAW_CONFIG="${RAW_CONFIG:-}"
+INSTALL_SOURCE="${INSTALL_SOURCE:-online}"
+RELEASE_SERVER="${RELEASE_SERVER:-}"
+LOCAL_PATH="${LOCAL_PATH:-}"
 
 echo "=== Installing containerd (Ubuntu/Debian) ==="
 
-if command -v containerd &>/dev/null; then
-    current_version=$(containerd --version | awk '{print $3}')
-    if [ -n "$CONTAINERD_VERSION" ] && [ "$current_version" != "$CONTAINERD_VERSION" ]; then
-        echo "Upgrading containerd: $current_version -> $CONTAINERD_VERSION"
-        apt-get remove -y containerd || true
-        apt-get install -y containerd
-    else
-        echo "containerd already installed: $current_version"
-    fi
-else
-    apt-get update
-    apt-get install -y containerd
-fi
+fetch_resource() {
+    local resource="$1"
+    local dest="$2"
+    case "$INSTALL_SOURCE" in
+        online) curl -fsSL "$resource" -o "$dest" ;;
+        http)   curl -fsSL "${RELEASE_SERVER}/${resource}" -o "$dest" ;;
+        local)  cp "${LOCAL_PATH}/${resource}" "$dest" ;;
+        *)      echo "ERROR: unsupported INSTALL_SOURCE=$INSTALL_SOURCE"; exit 1 ;;
+    esac
+}
+
+install_containerd() {
+    case "$INSTALL_SOURCE" in
+        online)
+            if command -v containerd &>/dev/null; then
+                local current_version=$(containerd --version | awk '{print $3}')
+                if [ -n "$CONTAINERD_VERSION" ] && [ "$current_version" != "$CONTAINERD_VERSION" ]; then
+                    echo "Upgrading containerd: $current_version -> $CONTAINERD_VERSION"
+                    apt-get remove -y containerd || true
+                fi
+            fi
+            apt-get update
+            apt-get install -y containerd
+            ;;
+        http)
+            local archive=$(mktemp)
+            fetch_resource "containerd/containerd-linux-amd64.tar.gz" "$archive"
+            tar -C /usr/local -xzf "$archive"
+            rm -f "$archive"
+            ;;
+        local)
+            tar -C /usr/local -xzf "${LOCAL_PATH}/containerd/containerd-linux-amd64.tar.gz"
+            ;;
+    esac
+}
 
 generate_containerd_config() {
     local temp_config=$(mktemp)
@@ -153,9 +178,35 @@ EOF
     fi
 }
 
+install_containerd
+
+cat > /etc/systemd/system/containerd.service << 'EOF'
+[Unit]
+Description=containerd container runtime
+Documentation=https://containerd.io
+After=network.target local-fs.target
+
+[Service]
+ExecStartPre=-/sbin/modprobe overlay
+ExecStart=/usr/local/bin/containerd
+Type=notify
+Delegate=yes
+KillMode=process
+Restart=always
+RestartSec=5
+LimitNPROC=infinity
+LimitCORE=infinity
+LimitNOFILE=infinity
+TasksMax=infinity
+OOMScoreAdjust=-999
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 generate_containerd_config
-systemctl restart containerd
-systemctl enable containerd
+systemctl daemon-reload
+systemctl enable --now containerd
 
 echo "=== containerd installation completed ==="
 `
@@ -169,25 +220,52 @@ SANDBOX_IMAGE="${SANDBOX_IMAGE:-registry.k8s.io/pause:3.9}"
 REGISTRY_MIRRORS="${REGISTRY_MIRRORS:-}"
 MAX_CONCURRENT_DOWNLOADS="${MAX_CONCURRENT_DOWNLOADS:-}"
 RAW_CONFIG="${RAW_CONFIG:-}"
+INSTALL_SOURCE="${INSTALL_SOURCE:-online}"
+RELEASE_SERVER="${RELEASE_SERVER:-}"
+LOCAL_PATH="${LOCAL_PATH:-}"
 
 echo "=== Installing containerd (RHEL/CentOS/Rocky) ==="
 
-if command -v containerd &>/dev/null; then
-    current_version=$(containerd --version | awk '{print $3}')
-    if [ -n "$CONTAINERD_VERSION" ] && [ "$current_version" != "$CONTAINERD_VERSION" ]; then
-        echo "Upgrading containerd: $current_version -> $CONTAINERD_VERSION"
-        dnf remove -y containerd 2>/dev/null || yum remove -y containerd 2>/dev/null || true
-        dnf install -y containerd 2>/dev/null || yum install -y containerd 2>/dev/null || true
-    else
-        echo "containerd already installed: $current_version"
-    fi
-else
+fetch_resource() {
+    local resource="$1"
+    local dest="$2"
+    case "$INSTALL_SOURCE" in
+        online) curl -fsSL "$resource" -o "$dest" ;;
+        http)   curl -fsSL "${RELEASE_SERVER}/${resource}" -o "$dest" ;;
+        local)  cp "${LOCAL_PATH}/${resource}" "$dest" ;;
+        *)      echo "ERROR: unsupported INSTALL_SOURCE=$INSTALL_SOURCE"; exit 1 ;;
+    esac
+}
+
+install_containerd() {
     if command -v dnf &>/dev/null; then
-        dnf install -y containerd
+        PKG_MGR="dnf"
     else
-        yum install -y containerd
+        PKG_MGR="yum"
     fi
-fi
+
+    case "$INSTALL_SOURCE" in
+        online)
+            if command -v containerd &>/dev/null; then
+                local current_version=$(containerd --version | awk '{print $3}')
+                if [ -n "$CONTAINERD_VERSION" ] && [ "$current_version" != "$CONTAINERD_VERSION" ]; then
+                    echo "Upgrading containerd: $current_version -> $CONTAINERD_VERSION"
+                    $PKG_MGR remove -y containerd || true
+                fi
+            fi
+            $PKG_MGR install -y containerd
+            ;;
+        http)
+            local archive=$(mktemp)
+            fetch_resource "containerd/containerd-linux-amd64.tar.gz" "$archive"
+            tar -C /usr/local -xzf "$archive"
+            rm -f "$archive"
+            ;;
+        local)
+            tar -C /usr/local -xzf "${LOCAL_PATH}/containerd/containerd-linux-amd64.tar.gz"
+            ;;
+    esac
+}
 
 generate_containerd_config() {
     local temp_config=$(mktemp)
@@ -236,9 +314,35 @@ EOF
     fi
 }
 
+install_containerd
+
+cat > /etc/systemd/system/containerd.service << 'EOF'
+[Unit]
+Description=containerd container runtime
+Documentation=https://containerd.io
+After=network.target local-fs.target
+
+[Service]
+ExecStartPre=-/sbin/modprobe overlay
+ExecStart=/usr/local/bin/containerd
+Type=notify
+Delegate=yes
+KillMode=process
+Restart=always
+RestartSec=5
+LimitNPROC=infinity
+LimitCORE=infinity
+LimitNOFILE=infinity
+TasksMax=infinity
+OOMScoreAdjust=-999
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 generate_containerd_config
-systemctl restart containerd
-systemctl enable containerd
+systemctl daemon-reload
+systemctl enable --now containerd
 
 echo "=== containerd installation completed ==="
 `
@@ -249,15 +353,44 @@ set -euo pipefail
 CONFIG_FILE="/etc/containerd/config.toml"
 SYSTEMD_CGROUP="${SYSTEMD_CGROUP:-true}"
 SANDBOX_IMAGE="${SANDBOX_IMAGE:-registry.k8s.io/pause:3.9}"
+INSTALL_SOURCE="${INSTALL_SOURCE:-online}"
+RELEASE_SERVER="${RELEASE_SERVER:-}"
+LOCAL_PATH="${LOCAL_PATH:-}"
 
 echo "=== Installing containerd (SUSE) ==="
 
-if command -v containerd &>/dev/null; then
-    echo "containerd already installed: $(containerd --version)"
-else
-    zypper refresh
-    zypper install -y containerd
-fi
+fetch_resource() {
+    local resource="$1"
+    local dest="$2"
+    case "$INSTALL_SOURCE" in
+        online) curl -fsSL "$resource" -o "$dest" ;;
+        http)   curl -fsSL "${RELEASE_SERVER}/${resource}" -o "$dest" ;;
+        local)  cp "${LOCAL_PATH}/${resource}" "$dest" ;;
+        *)      echo "ERROR: unsupported INSTALL_SOURCE=$INSTALL_SOURCE"; exit 1 ;;
+    esac
+}
+
+install_containerd() {
+    case "$INSTALL_SOURCE" in
+        online)
+            if command -v containerd &>/dev/null; then
+                echo "containerd already installed: $(containerd --version)"
+                return 0
+            fi
+            zypper refresh
+            zypper install -y containerd
+            ;;
+        http)
+            local archive=$(mktemp)
+            fetch_resource "containerd/containerd-linux-amd64.tar.gz" "$archive"
+            tar -C /usr/local -xzf "$archive"
+            rm -f "$archive"
+            ;;
+        local)
+            tar -C /usr/local -xzf "${LOCAL_PATH}/containerd/containerd-linux-amd64.tar.gz"
+            ;;
+    esac
+}
 
 generate_containerd_config() {
     local temp_config=$(mktemp)
@@ -280,9 +413,35 @@ generate_containerd_config() {
     fi
 }
 
+install_containerd
+
+cat > /etc/systemd/system/containerd.service << 'EOF'
+[Unit]
+Description=containerd container runtime
+Documentation=https://containerd.io
+After=network.target local-fs.target
+
+[Service]
+ExecStartPre=-/sbin/modprobe overlay
+ExecStart=/usr/local/bin/containerd
+Type=notify
+Delegate=yes
+KillMode=process
+Restart=always
+RestartSec=5
+LimitNPROC=infinity
+LimitCORE=infinity
+LimitNOFILE=infinity
+TasksMax=infinity
+OOMScoreAdjust=-999
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 generate_containerd_config
-systemctl restart containerd
-systemctl enable containerd
+systemctl daemon-reload
+systemctl enable --now containerd
 
 echo "=== containerd installation completed ==="
 `
@@ -342,32 +501,57 @@ EXTRA_ARGS="${EXTRA_ARGS:-}"
 KUBELET_RAW_CONFIG="${KUBELET_RAW_CONFIG:-}"
 DROP_IN_DIR="/etc/systemd/system/kubelet.service.d"
 DROP_IN_FILE="${DROP_IN_DIR}/10-capbm.conf"
+INSTALL_SOURCE="${INSTALL_SOURCE:-online}"
+RELEASE_SERVER="${RELEASE_SERVER:-}"
+LOCAL_PATH="${LOCAL_PATH:-}"
 
 echo "=== Installing Kubernetes components (Ubuntu/Debian) ==="
 
-if command -v kubeadm &>/dev/null; then
-    current_version=$(kubeadm version -o short 2>/dev/null || echo "")
-    if [ "$current_version" = "v${K8S_VERSION}" ]; then
-        echo "Kubernetes components already installed: $current_version"
-        generate_kubelet_config
-        exit 0
-    fi
-    echo "Version mismatch: current=$current_version, desired=v${K8S_VERSION}"
-fi
+fetch_resource() {
+    local resource="$1"
+    local dest="$2"
+    case "$INSTALL_SOURCE" in
+        online) curl -fsSL "$resource" -o "$dest" ;;
+        http)   curl -fsSL "${RELEASE_SERVER}/${resource}" -o "$dest" ;;
+        local)  cp "${LOCAL_PATH}/${resource}" "$dest" ;;
+        *)      echo "ERROR: unsupported INSTALL_SOURCE=$INSTALL_SOURCE"; exit 1 ;;
+    esac
+}
 
-apt-get update
-apt-get install -y apt-transport-https ca-certificates curl gpg
+install_kubernetes() {
+    local minor_version=$(echo "$K8S_VERSION" | cut -d'.' -f1,2)
 
-minor_version=$(echo "$K8S_VERSION" | cut -d'.' -f1,2)
-gpg_key_url="${REPO_GPG_KEY:-https://pkgs.k8s.io/core:/stable:/v${minor_version}/deb/Release.key}"
-repo_url="${REPO_BASE_URL:-https://pkgs.k8s.io/core:/stable:/v${minor_version}/deb/}"
+    case "$INSTALL_SOURCE" in
+        online)
+            apt-get update
+            apt-get install -y apt-transport-https ca-certificates curl gpg
 
-curl -fsSL "$gpg_key_url" | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
-echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] ${repo_url} /" > /etc/apt/sources.list.d/kubernetes.list
+            local gpg_key_url="${REPO_GPG_KEY:-https://pkgs.k8s.io/core:/stable:/v${minor_version}/deb/Release.key}"
+            local repo_url="${REPO_BASE_URL:-https://pkgs.k8s.io/core:/stable:/v${minor_version}/deb/}"
 
-apt-get update
-apt-get install -y "kubelet=${K8S_VERSION}-*" "kubeadm=${K8S_VERSION}-*" "kubectl=${K8S_VERSION}-*"
-apt-mark hold kubelet kubeadm kubectl
+            curl -fsSL "$gpg_key_url" | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+            echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] ${repo_url} /" > /etc/apt/sources.list.d/kubernetes.list
+
+            apt-get update
+            apt-get install -y "kubelet=${K8S_VERSION}-*" "kubeadm=${K8S_VERSION}-*" "kubectl=${K8S_VERSION}-*"
+            apt-mark hold kubelet kubeadm kubectl
+            ;;
+        http)
+            fetch_resource "k8s/v${minor_version}/kubelet-${K8S_VERSION}.deb" /tmp/kubelet.deb
+            fetch_resource "k8s/v${minor_version}/kubeadm-${K8S_VERSION}.deb" /tmp/kubeadm.deb
+            fetch_resource "k8s/v${minor_version}/kubectl-${K8S_VERSION}.deb" /tmp/kubectl.deb
+            apt-get install -y /tmp/kubelet.deb /tmp/kubeadm.deb /tmp/kubectl.deb
+            apt-mark hold kubelet kubeadm kubectl
+            rm -f /tmp/kubelet.deb /tmp/kubeadm.deb /tmp/kubectl.deb
+            ;;
+        local)
+            apt-get install -y "${LOCAL_PATH}/k8s/v${minor_version}/kubelet-${K8S_VERSION}.deb" \
+                               "${LOCAL_PATH}/k8s/v${minor_version}/kubeadm-${K8S_VERSION}.deb" \
+                               "${LOCAL_PATH}/k8s/v${minor_version}/kubectl-${K8S_VERSION}.deb"
+            apt-mark hold kubelet kubeadm kubectl
+            ;;
+    esac
+}
 
 generate_kubelet_config() {
     mkdir -p "$DROP_IN_DIR"
@@ -401,6 +585,7 @@ EOF
     systemctl enable kubelet
 }
 
+install_kubernetes
 generate_kubelet_config
 
 echo "=== Kubernetes components installation completed ==="
@@ -420,30 +605,38 @@ EXTRA_ARGS="${EXTRA_ARGS:-}"
 KUBELET_RAW_CONFIG="${KUBELET_RAW_CONFIG:-}"
 DROP_IN_DIR="/etc/systemd/system/kubelet.service.d"
 DROP_IN_FILE="${DROP_IN_DIR}/10-capbm.conf"
+INSTALL_SOURCE="${INSTALL_SOURCE:-online}"
+RELEASE_SERVER="${RELEASE_SERVER:-}"
+LOCAL_PATH="${LOCAL_PATH:-}"
 
 echo "=== Installing Kubernetes components (RHEL/CentOS/Rocky) ==="
 
-if command -v dnf &>/dev/null; then
-    PKG_MGR="dnf"
-else
-    PKG_MGR="yum"
-fi
+fetch_resource() {
+    local resource="$1"
+    local dest="$2"
+    case "$INSTALL_SOURCE" in
+        online) curl -fsSL "$resource" -o "$dest" ;;
+        http)   curl -fsSL "${RELEASE_SERVER}/${resource}" -o "$dest" ;;
+        local)  cp "${LOCAL_PATH}/${resource}" "$dest" ;;
+        *)      echo "ERROR: unsupported INSTALL_SOURCE=$INSTALL_SOURCE"; exit 1 ;;
+    esac
+}
 
-if command -v kubeadm &>/dev/null; then
-    current_version=$(kubeadm version -o short 2>/dev/null || echo "")
-    if [ "$current_version" = "v${K8S_VERSION}" ]; then
-        echo "Kubernetes components already installed: $current_version"
-        generate_kubelet_config
-        exit 0
+install_kubernetes() {
+    if command -v dnf &>/dev/null; then
+        PKG_MGR="dnf"
+    else
+        PKG_MGR="yum"
     fi
-    echo "Version mismatch: current=$current_version, desired=v${K8S_VERSION}"
-fi
 
-minor_version=$(echo "$K8S_VERSION" | cut -d'.' -f1,2)
-repo_url="${REPO_BASE_URL:-https://pkgs.k8s.io/core:/stable:/v${minor_version}/rpm/}"
-gpg_key="${REPO_GPG_KEY:-https://pkgs.k8s.io/core:/stable:/v${minor_version}/rpm/repodata/repomd.xml.key}"
+    local minor_version=$(echo "$K8S_VERSION" | cut -d'.' -f1,2)
 
-cat > /etc/yum.repos.d/kubernetes.repo << EOF
+    case "$INSTALL_SOURCE" in
+        online)
+            local repo_url="${REPO_BASE_URL:-https://pkgs.k8s.io/core:/stable:/v${minor_version}/rpm/}"
+            local gpg_key="${REPO_GPG_KEY:-https://pkgs.k8s.io/core:/stable:/v${minor_version}/rpm/repodata/repomd.xml.key}"
+
+            cat > /etc/yum.repos.d/kubernetes.repo << EOF
 [kubernetes]
 name=Kubernetes
 baseurl=${repo_url}
@@ -452,7 +645,22 @@ gpgcheck=1
 gpgkey=${gpg_key}
 EOF
 
-$PKG_MGR install -y "kubelet-${K8S_VERSION}" "kubeadm-${K8S_VERSION}" "kubectl-${K8S_VERSION}"
+            $PKG_MGR install -y "kubelet-${K8S_VERSION}" "kubeadm-${K8S_VERSION}" "kubectl-${K8S_VERSION}"
+            ;;
+        http)
+            fetch_resource "k8s/v${minor_version}/kubelet-${K8S_VERSION}.rpm" /tmp/kubelet.rpm
+            fetch_resource "k8s/v${minor_version}/kubeadm-${K8S_VERSION}.rpm" /tmp/kubeadm.rpm
+            fetch_resource "k8s/v${minor_version}/kubectl-${K8S_VERSION}.rpm" /tmp/kubectl.rpm
+            $PKG_MGR install -y /tmp/kubelet.rpm /tmp/kubeadm.rpm /tmp/kubectl.rpm
+            rm -f /tmp/kubelet.rpm /tmp/kubeadm.rpm /tmp/kubectl.rpm
+            ;;
+        local)
+            $PKG_MGR install -y "${LOCAL_PATH}/k8s/v${minor_version}/kubelet-${K8S_VERSION}.rpm" \
+                                "${LOCAL_PATH}/k8s/v${minor_version}/kubeadm-${K8S_VERSION}.rpm" \
+                                "${LOCAL_PATH}/k8s/v${minor_version}/kubectl-${K8S_VERSION}.rpm"
+            ;;
+    esac
+}
 
 generate_kubelet_config() {
     mkdir -p "$DROP_IN_DIR"
@@ -486,6 +694,7 @@ EOF
     systemctl enable kubelet
 }
 
+install_kubernetes
 generate_kubelet_config
 
 echo "=== Kubernetes components installation completed ==="
@@ -502,21 +711,29 @@ MAX_PODS="${MAX_PODS:-250}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 DROP_IN_DIR="/etc/systemd/system/kubelet.service.d"
 DROP_IN_FILE="${DROP_IN_DIR}/10-capbm.conf"
+INSTALL_SOURCE="${INSTALL_SOURCE:-online}"
+RELEASE_SERVER="${RELEASE_SERVER:-}"
+LOCAL_PATH="${LOCAL_PATH:-}"
 
 echo "=== Installing Kubernetes components (SUSE) ==="
 
-if command -v kubeadm &>/dev/null; then
-    current_version=$(kubeadm version -o short 2>/dev/null || echo "")
-    if [ "$current_version" = "v${K8S_VERSION}" ]; then
-        echo "Kubernetes components already installed: $current_version"
-        generate_kubelet_config
-        exit 0
-    fi
-fi
+fetch_resource() {
+    local resource="$1"
+    local dest="$2"
+    case "$INSTALL_SOURCE" in
+        online) curl -fsSL "$resource" -o "$dest" ;;
+        http)   curl -fsSL "${RELEASE_SERVER}/${resource}" -o "$dest" ;;
+        local)  cp "${LOCAL_PATH}/${resource}" "$dest" ;;
+        *)      echo "ERROR: unsupported INSTALL_SOURCE=$INSTALL_SOURCE"; exit 1 ;;
+    esac
+}
 
-minor_version=$(echo "$K8S_VERSION" | cut -d'.' -f1,2)
+install_kubernetes() {
+    local minor_version=$(echo "$K8S_VERSION" | cut -d'.' -f1,2)
 
-cat > /etc/zypp/repos.d/kubernetes.repo << EOF
+    case "$INSTALL_SOURCE" in
+        online)
+            cat > /etc/zypp/repos.d/kubernetes.repo << EOF
 [kubernetes]
 name=Kubernetes
 baseurl=https://pkgs.k8s.io/core:/stable:/v${minor_version}/rpm/
@@ -525,8 +742,23 @@ gpgcheck=1
 gpgkey=https://pkgs.k8s.io/core:/stable:/v${minor_version}/rpm/repodata/repomd.xml.key
 EOF
 
-zypper refresh
-zypper install -y "kubelet-${K8S_VERSION}" "kubeadm-${K8S_VERSION}" "kubectl-${K8S_VERSION}"
+            zypper refresh
+            zypper install -y "kubelet-${K8S_VERSION}" "kubeadm-${K8S_VERSION}" "kubectl-${K8S_VERSION}"
+            ;;
+        http)
+            fetch_resource "k8s/v${minor_version}/kubelet-${K8S_VERSION}.rpm" /tmp/kubelet.rpm
+            fetch_resource "k8s/v${minor_version}/kubeadm-${K8S_VERSION}.rpm" /tmp/kubeadm.rpm
+            fetch_resource "k8s/v${minor_version}/kubectl-${K8S_VERSION}.rpm" /tmp/kubectl.rpm
+            zypper install -y /tmp/kubelet.rpm /tmp/kubeadm.rpm /tmp/kubectl.rpm
+            rm -f /tmp/kubelet.rpm /tmp/kubeadm.rpm /tmp/kubectl.rpm
+            ;;
+        local)
+            zypper install -y "${LOCAL_PATH}/k8s/v${minor_version}/kubelet-${K8S_VERSION}.rpm" \
+                              "${LOCAL_PATH}/k8s/v${minor_version}/kubeadm-${K8S_VERSION}.rpm" \
+                              "${LOCAL_PATH}/k8s/v${minor_version}/kubectl-${K8S_VERSION}.rpm"
+            ;;
+    esac
+}
 
 generate_kubelet_config() {
     mkdir -p "$DROP_IN_DIR"
@@ -551,6 +783,7 @@ EOF
     systemctl enable kubelet
 }
 
+install_kubernetes
 generate_kubelet_config
 
 echo "=== Kubernetes components installation completed ==="
@@ -565,23 +798,62 @@ CGROUP_DRIVER="${CGROUP_DRIVER:-systemd}"
 MAX_PODS="${MAX_PODS:-250}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
 DROP_IN_DIR="/etc/systemd/system/kubelet.service.d"
+INSTALL_SOURCE="${INSTALL_SOURCE:-online}"
+RELEASE_SERVER="${RELEASE_SERVER:-}"
+LOCAL_PATH="${LOCAL_PATH:-}"
 
 echo "=== Installing Kubernetes binaries (Flatcar) ==="
 
-mkdir -p "$INSTALL_PREFIX"
+fetch_resource() {
+    local resource="$1"
+    local dest="$2"
+    case "$INSTALL_SOURCE" in
+        online) curl -fsSL "$resource" -o "$dest" ;;
+        http)   curl -fsSL "${RELEASE_SERVER}/${resource}" -o "$dest" ;;
+        local)  cp "${LOCAL_PATH}/${resource}" "$dest" ;;
+        *)      echo "ERROR: unsupported INSTALL_SOURCE=$INSTALL_SOURCE"; exit 1 ;;
+    esac
+}
 
-base_url="https://dl.k8s.io/v${K8S_VERSION}/bin/linux/amd64"
+install_kubernetes() {
+    mkdir -p "$INSTALL_PREFIX"
 
-for binary in kubeadm kubelet kubectl; do
-    if [ ! -f "${INSTALL_PREFIX}/${binary}" ]; then
-        echo "Downloading $binary"
-        curl -fsSL "${base_url}/${binary}" -o "${INSTALL_PREFIX}/${binary}"
-        chmod +x "${INSTALL_PREFIX}/${binary}"
-    else
-        echo "$binary already exists"
-    fi
-    ln -sf "${INSTALL_PREFIX}/${binary}" "/usr/local/bin/${binary}" 2>/dev/null || true
-done
+    case "$INSTALL_SOURCE" in
+        online)
+            local base_url="https://dl.k8s.io/v${K8S_VERSION}/bin/linux/amd64"
+            for binary in kubeadm kubelet kubectl; do
+                if [ ! -f "${INSTALL_PREFIX}/${binary}" ]; then
+                    echo "Downloading $binary"
+                    curl -fsSL "${base_url}/${binary}" -o "${INSTALL_PREFIX}/${binary}"
+                    chmod +x "${INSTALL_PREFIX}/${binary}"
+                else
+                    echo "$binary already exists"
+                fi
+                ln -sf "${INSTALL_PREFIX}/${binary}" "/usr/local/bin/${binary}" 2>/dev/null || true
+            done
+            ;;
+        http)
+            fetch_resource "k8s/v${K8S_VERSION}/kubeadm" "${INSTALL_PREFIX}/kubeadm"
+            fetch_resource "k8s/v${K8S_VERSION}/kubelet" "${INSTALL_PREFIX}/kubelet"
+            fetch_resource "k8s/v${K8S_VERSION}/kubectl" "${INSTALL_PREFIX}/kubectl"
+            chmod +x "${INSTALL_PREFIX}/kubeadm" "${INSTALL_PREFIX}/kubelet" "${INSTALL_PREFIX}/kubectl"
+            for binary in kubeadm kubelet kubectl; do
+                ln -sf "${INSTALL_PREFIX}/${binary}" "/usr/local/bin/${binary}" 2>/dev/null || true
+            done
+            ;;
+        local)
+            cp "${LOCAL_PATH}/k8s/v${K8S_VERSION}/kubeadm" "${INSTALL_PREFIX}/kubeadm"
+            cp "${LOCAL_PATH}/k8s/v${K8S_VERSION}/kubelet" "${INSTALL_PREFIX}/kubelet"
+            cp "${LOCAL_PATH}/k8s/v${K8S_VERSION}/kubectl" "${INSTALL_PREFIX}/kubectl"
+            chmod +x "${INSTALL_PREFIX}/kubeadm" "${INSTALL_PREFIX}/kubelet" "${INSTALL_PREFIX}/kubectl"
+            for binary in kubeadm kubelet kubectl; do
+                ln -sf "${INSTALL_PREFIX}/${binary}" "/usr/local/bin/${binary}" 2>/dev/null || true
+            done
+            ;;
+    esac
+}
+
+install_kubernetes
 
 mkdir -p "$DROP_IN_DIR"
 
@@ -612,23 +884,48 @@ const crioUbuntuScript = `#!/bin/bash
 set -euo pipefail
 
 CRIO_VERSION="${CRIO_VERSION:-1.31}"
-OS="xUbuntu_22.04"
+INSTALL_SOURCE="${INSTALL_SOURCE:-online}"
+RELEASE_SERVER="${RELEASE_SERVER:-}"
+LOCAL_PATH="${LOCAL_PATH:-}"
 
 echo "=== Installing CRI-O (Ubuntu/Debian) ==="
 
-if command -v crio &>/dev/null; then
-    echo "CRI-O already installed: $(crio --version | head -1)"
+fetch_resource() {
+    local resource="$1"
+    local dest="$2"
+    case "$INSTALL_SOURCE" in
+        online) curl -fsSL "$resource" -o "$dest" ;;
+        http)   curl -fsSL "${RELEASE_SERVER}/${resource}" -o "$dest" ;;
+        local)  cp "${LOCAL_PATH}/${resource}" "$dest" ;;
+        *)      echo "ERROR: unsupported INSTALL_SOURCE=$INSTALL_SOURCE"; exit 1 ;;
+    esac
+}
+
+install_crio() {
+    local OS="xUbuntu_22.04"
+
+    case "$INSTALL_SOURCE" in
+        online)
+            echo "deb https://pkgs.k8s.io/addons:/cri-o:/stable:/${CRIO_VERSION}/deb/${OS}/ /" > /etc/apt/sources.list.d/cri-o.list
+            curl -fsSL "https://pkgs.k8s.io/addons:/cri-o:/stable:/${CRIO_VERSION}/deb/${OS}/Release.key" | gpg --dearmor -o /etc/apt/keyrings/cri-o-apt-keyring.gpg
+
+            apt-get update
+            apt-get install -y "cri-o-${CRIO_VERSION}"
+            ;;
+        http)
+            fetch_resource "cri-o/cri-o-${CRIO_VERSION}.deb" /tmp/cri-o.deb
+            apt-get install -y /tmp/cri-o.deb
+            rm -f /tmp/cri-o.deb
+            ;;
+        local)
+            apt-get install -y "${LOCAL_PATH}/cri-o/cri-o-${CRIO_VERSION}.deb"
+            ;;
+    esac
+
     systemctl enable --now crio
-    exit 0
-fi
+}
 
-echo "deb https://pkgs.k8s.io/addons:/cri-o:/stable:/${CRIO_VERSION}/deb/${OS}/ /" > /etc/apt/sources.list.d/cri-o.list
-curl -fsSL "https://pkgs.k8s.io/addons:/cri-o:/stable:/${CRIO_VERSION}/deb/${OS}/Release.key" | gpg --dearmor -o /etc/apt/keyrings/cri-o-apt-keyring.gpg
-
-apt-get update
-apt-get install -y "cri-o-${CRIO_VERSION}"
-
-systemctl enable --now crio
+install_crio
 echo "=== CRI-O installation completed ==="
 `
 
@@ -636,22 +933,33 @@ const crioRHELScript = `#!/bin/bash
 set -euo pipefail
 
 CRIO_VERSION="${CRIO_VERSION:-1.31}"
+INSTALL_SOURCE="${INSTALL_SOURCE:-online}"
+RELEASE_SERVER="${RELEASE_SERVER:-}"
+LOCAL_PATH="${LOCAL_PATH:-}"
 
 echo "=== Installing CRI-O (RHEL/CentOS/Rocky) ==="
 
-if command -v crio &>/dev/null; then
-    echo "CRI-O already installed: $(crio --version | head -1)"
-    systemctl enable --now crio
-    exit 0
-fi
+fetch_resource() {
+    local resource="$1"
+    local dest="$2"
+    case "$INSTALL_SOURCE" in
+        online) curl -fsSL "$resource" -o "$dest" ;;
+        http)   curl -fsSL "${RELEASE_SERVER}/${resource}" -o "$dest" ;;
+        local)  cp "${LOCAL_PATH}/${resource}" "$dest" ;;
+        *)      echo "ERROR: unsupported INSTALL_SOURCE=$INSTALL_SOURCE"; exit 1 ;;
+    esac
+}
 
-if command -v dnf &>/dev/null; then
-    PKG_MGR="dnf"
-else
-    PKG_MGR="yum"
-fi
+install_crio() {
+    if command -v dnf &>/dev/null; then
+        PKG_MGR="dnf"
+    else
+        PKG_MGR="yum"
+    fi
 
-cat > /etc/yum.repos.d/cri-o.repo << EOF
+    case "$INSTALL_SOURCE" in
+        online)
+            cat > /etc/yum.repos.d/cri-o.repo << EOF
 [cri-o]
 name=CRI-O
 baseurl=https://pkgs.k8s.io/addons:/cri-o:/stable:/${CRIO_VERSION}/rpm/
@@ -660,9 +968,22 @@ gpgcheck=1
 gpgkey=https://pkgs.k8s.io/addons:/cri-o:/stable:/${CRIO_VERSION}/rpm/repodata/repomd.xml.key
 EOF
 
-$PKG_MGR install -y "cri-o-${CRIO_VERSION}"
+            $PKG_MGR install -y "cri-o-${CRIO_VERSION}"
+            ;;
+        http)
+            fetch_resource "cri-o/cri-o-${CRIO_VERSION}.rpm" /tmp/cri-o.rpm
+            $PKG_MGR install -y /tmp/cri-o.rpm
+            rm -f /tmp/cri-o.rpm
+            ;;
+        local)
+            $PKG_MGR install -y "${LOCAL_PATH}/cri-o/cri-o-${CRIO_VERSION}.rpm"
+            ;;
+    esac
 
-systemctl enable --now crio
+    systemctl enable --now crio
+}
+
+install_crio
 echo "=== CRI-O installation completed ==="
 `
 
@@ -671,19 +992,59 @@ set -euo pipefail
 
 DOCKER_VERSION="${DOCKER_VERSION:-24.0}"
 CRI_DOCKERD_VERSION="${CRI_DOCKERD_VERSION:-0.3.12}"
+INSTALL_SOURCE="${INSTALL_SOURCE:-online}"
+RELEASE_SERVER="${RELEASE_SERVER:-}"
+LOCAL_PATH="${LOCAL_PATH:-}"
 
 echo "=== Installing Docker + cri-dockerd ==="
 
-if ! command -v docker &>/dev/null; then
-    curl -fsSL https://get.docker.com | sh -s -- --version "$DOCKER_VERSION" 2>/dev/null || \
-    curl -fsSL https://get.docker.com | sh 2>/dev/null || true
-    systemctl enable --now docker
-fi
+fetch_resource() {
+    local resource="$1"
+    local dest="$2"
+    case "$INSTALL_SOURCE" in
+        online) curl -fsSL "$resource" -o "$dest" ;;
+        http)   curl -fsSL "${RELEASE_SERVER}/${resource}" -o "$dest" ;;
+        local)  cp "${LOCAL_PATH}/${resource}" "$dest" ;;
+        *)      echo "ERROR: unsupported INSTALL_SOURCE=$INSTALL_SOURCE"; exit 1 ;;
+    esac
+}
 
-if ! command -v cri-dockerd &>/dev/null; then
-    arch="amd64"
-    curl -fsSL "https://github.com/Mirantis/cri-dockerd/releases/download/v${CRI_DOCKERD_VERSION}/cri-dockerd-${CRI_DOCKERD_VERSION}.${arch}.tgz" | tar -xz -C /tmp
+install_docker() {
+    case "$INSTALL_SOURCE" in
+        online)
+            curl -fsSL https://get.docker.com | sh -s -- --version "$DOCKER_VERSION" 2>/dev/null || \
+            curl -fsSL https://get.docker.com | sh 2>/dev/null || true
+            ;;
+        http)
+            fetch_resource "docker/docker-${DOCKER_VERSION}.tar.gz" /tmp/docker.tar.gz
+            tar -C /usr/local -xzf /tmp/docker.tar.gz
+            rm -f /tmp/docker.tar.gz
+            ;;
+        local)
+            tar -C /usr/local -xzf "${LOCAL_PATH}/docker/docker.tar.gz"
+            ;;
+    esac
+    systemctl enable --now docker
+}
+
+install_cri_dockerd() {
+    case "$INSTALL_SOURCE" in
+        online)
+            local arch="amd64"
+            curl -fsSL "https://github.com/Mirantis/cri-dockerd/releases/download/v${CRI_DOCKERD_VERSION}/cri-dockerd-${CRI_DOCKERD_VERSION}.${arch}.tgz" | tar -xz -C /tmp
+            ;;
+        http)
+            fetch_resource "docker/cri-dockerd-${CRI_DOCKERD_VERSION}.tgz" /tmp/cri-dockerd.tgz
+            tar -xz -C /tmp -f /tmp/cri-dockerd.tgz
+            rm -f /tmp/cri-dockerd.tgz
+            ;;
+        local)
+            tar -xz -C /tmp -f "${LOCAL_PATH}/docker/cri-dockerd.tgz"
+            ;;
+    esac
+
     install -m 0755 /tmp/cri-dockerd/cri-dockerd /usr/local/bin/
+    rm -rf /tmp/cri-dockerd
 
     cat > /etc/systemd/system/cri-dockerd.service << 'EOF'
 [Unit]
@@ -718,7 +1079,10 @@ EOF
 
     systemctl daemon-reload
     systemctl enable --now cri-dockerd.socket cri-dockerd
-fi
+}
+
+install_docker
+install_cri_dockerd
 
 echo "=== Docker + cri-dockerd installation completed ==="
 `

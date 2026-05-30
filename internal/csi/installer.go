@@ -44,7 +44,6 @@ func New(sshConn *sshclient.SSHConnection, config infrav1.CSIConfig) *Installer 
 	}
 }
 
-// NewFromReleaseImage creates a CSI Installer with versions sourced from a ReleaseImage.
 func NewFromReleaseImage(sshConn *sshclient.SSHConnection, releaseImage *infrav1.ReleaseImage, config infrav1.CSIConfig) *Installer {
 	if config.Driver == "" {
 		if releaseImage.Spec.Components.CephCsi != "" {
@@ -81,12 +80,7 @@ func (i *Installer) Install(ctx context.Context) (*InstallResult, error) {
 		return &InstallResult{Completed: true, Success: true, Version: existing.version}, nil
 	}
 
-	var script string
-	if i.config.AirGap != nil && i.config.AirGap.Enabled {
-		script = i.generateOfflineInstallScript()
-	} else {
-		script = i.generateOnlineInstallScript()
-	}
+	script := i.generateInstallScript()
 
 	result, err := i.sshConn.ExecuteScript(ctx, script)
 	if err != nil {
@@ -132,18 +126,36 @@ func (i *Installer) checkExisting(ctx context.Context) (*existingCSI, error) {
 	return ec, nil
 }
 
-func (i *Installer) generateOnlineInstallScript() string {
+func (i *Installer) generateInstallScript() string {
+	installSource := "online"
+	releaseServer := ""
+	localPath := ""
+	if i.config.AirGap != nil && i.config.AirGap.Enabled {
+		switch i.config.AirGap.ManifestSource {
+		case "HTTPServer":
+			installSource = "http"
+			if i.config.AirGap.HTTPServerConfig != nil {
+				releaseServer = i.config.AirGap.HTTPServerConfig.BaseURL
+			}
+		case "LocalPath":
+			installSource = "local"
+			localPath = i.config.AirGap.LocalPath
+		default:
+			installSource = "http"
+		}
+	}
+
 	switch i.config.Driver {
 	case "ceph-csi":
-		return i.generateCephCSIScript()
+		return i.generateCephCSIScript(installSource, releaseServer, localPath)
 	case "local-csi":
-		return i.generateLocalCSIScript()
+		return i.generateLocalCSIScript(installSource, releaseServer, localPath)
 	default:
-		return i.generateLocalCSIScript()
+		return i.generateLocalCSIScript(installSource, releaseServer, localPath)
 	}
 }
 
-func (i *Installer) generateCephCSIScript() string {
+func (i *Installer) generateCephCSIScript(installSource, releaseServer, localPath string) string {
 	clusterID := ""
 	monitors := ""
 	rbdPool := "kubernetes"
@@ -172,40 +184,102 @@ set -euo pipefail
 CSI_DRIVER="${CSI_DRIVER:-ceph-csi}"
 CSI_VERSION="${CSI_VERSION}"
 INSTALL_MODE="${INSTALL_MODE:-Helm}"
+INSTALL_SOURCE="${INSTALL_SOURCE:-online}"
+RELEASE_SERVER="${RELEASE_SERVER:-}"
+LOCAL_PATH="${LOCAL_PATH:-}"
 CEPH_CLUSTER_ID="${CEPH_CLUSTER_ID}"
 CEPH_MONITORS="${CEPH_MONITORS}"
 CEPH_RBD_POOL="${CEPH_RBD_POOL:-kubernetes}"
 SC_NAME="${SC_NAME:-ceph-rbd}"
 
-echo "=== CSI 安装开始 (driver=$CSI_DRIVER, version=$CSI_VERSION) ==="
+echo "=== CSI 安装开始 (driver=$CSI_DRIVER, version=$CSI_VERSION, source=$INSTALL_SOURCE) ==="
+
+fetch_resource() {
+    local resource="$1"
+    local dest="$2"
+    case "$INSTALL_SOURCE" in
+        online) curl -fsSL "$resource" -o "$dest" ;;
+        http)   curl -fsSL "${RELEASE_SERVER}/${resource}" -o "$dest" ;;
+        local)  cp "${LOCAL_PATH}/${resource}" "$dest" ;;
+        *)      echo "ERROR: 不支持的安装源: $INSTALL_SOURCE"; exit 1 ;;
+    esac
+}
+
+load_csi_images() {
+    case "$INSTALL_SOURCE" in
+        online)
+            echo "在线模式：镜像从 registry 拉取"
+            ;;
+        http|local)
+            local images_archive=$(mktemp)
+            fetch_resource "csi/ceph-csi-images.tar" "$images_archive"
+            ctr -n k8s.io images import "$images_archive"
+            rm -f "$images_archive"
+            echo "CSI 镜像加载完成"
+            ;;
+    esac
+}
 
 install_ceph_csi_helm() {
-    helm repo add ceph-csi https://ceph.github.io/csi-charts || true
-    helm repo update
-    local monitors_json="["
-    local first=true
-    IFS=',' read -ra MON_ARRAY <<< "$CEPH_MONITORS"
-    for mon in "${MON_ARRAY[@]}"; do
-        $first && { monitors_json="${monitors_json}\"${mon}\""; first=false; } || monitors_json="${monitors_json},\"${mon}\""
-    done
-    monitors_json="${monitors_json}]"
-    helm upgrade --install ceph-csi ceph-csi/ceph-csi \
-        --namespace ceph-csi --create-namespace --version "v${CSI_VERSION}" \
-        --set "csiConfig[0].clusterID=${CEPH_CLUSTER_ID}" \
-        --set "csiConfig[0].monitors=${monitors_json}" \
-        --set "storageClass.create=true" \
-        --set "storageClass.name=${SC_NAME}" \
-        --set "storageClass.pool=${CEPH_RBD_POOL}" \
-        --wait --timeout=300s
+    case "$INSTALL_SOURCE" in
+        online)
+            helm repo add ceph-csi https://ceph.github.io/csi-charts || true
+            helm repo update
+            local monitors_json="["
+            local first=true
+            IFS=',' read -ra MON_ARRAY <<< "$CEPH_MONITORS"
+            for mon in "${MON_ARRAY[@]}"; do
+                $first && { monitors_json="${monitors_json}\"${mon}\""; first=false; } || monitors_json="${monitors_json},\"${mon}\""
+            done
+            monitors_json="${monitors_json}]"
+            helm upgrade --install ceph-csi ceph-csi/ceph-csi \
+                --namespace ceph-csi --create-namespace --version "v${CSI_VERSION}" \
+                --set "csiConfig[0].clusterID=${CEPH_CLUSTER_ID}" \
+                --set "csiConfig[0].monitors=${monitors_json}" \
+                --set "storageClass.create=true" \
+                --set "storageClass.name=${SC_NAME}" \
+                --set "storageClass.pool=${CEPH_RBD_POOL}" \
+                --wait --timeout=300s
+            ;;
+        http|local)
+            local chart=$(mktemp)
+            fetch_resource "csi/ceph-csi-${CSI_VERSION}.tgz" "$chart"
+            local monitors_json="["
+            local first=true
+            IFS=',' read -ra MON_ARRAY <<< "$CEPH_MONITORS"
+            for mon in "${MON_ARRAY[@]}"; do
+                $first && { monitors_json="${monitors_json}\"${mon}\""; first=false; } || monitors_json="${monitors_json},\"${mon}\""
+            done
+            monitors_json="${monitors_json}]"
+            helm upgrade --install ceph-csi "$chart" \
+                --namespace ceph-csi --create-namespace \
+                --set "csiConfig[0].clusterID=${CEPH_CLUSTER_ID}" \
+                --set "csiConfig[0].monitors=${monitors_json}" \
+                --set "storageClass.create=true" \
+                --set "storageClass.name=${SC_NAME}" \
+                --wait --timeout=300s
+            rm -f "$chart"
+            ;;
+    esac
     echo "Ceph-CSI 部署完成"
 }
 
 install_ceph_csi_manifest() {
     kubectl create namespace ceph-csi --dry-run=client -o yaml | kubectl apply -f -
-    local base="https://raw.githubusercontent.com/ceph/ceph-csi/v${CSI_VERSION}/deploy/cephcsi/kubernetes"
-    for f in csi-config-map.yaml csi-rbdplugin.yaml csi-rbdplugin-provisioner.yaml; do
-        curl -fsSL "${base}/${f}" | kubectl apply -n ceph-csi -f -
-    done
+    local manifest=$(mktemp)
+    case "$INSTALL_SOURCE" in
+        online)
+            local base="https://raw.githubusercontent.com/ceph/ceph-csi/v${CSI_VERSION}/deploy/cephcsi/kubernetes"
+            for f in csi-config-map.yaml csi-rbdplugin.yaml csi-rbdplugin-provisioner.yaml; do
+                curl -fsSL "${base}/${f}" | kubectl apply -n ceph-csi -f -
+            done
+            ;;
+        http|local)
+            fetch_resource "csi/ceph-csi-${CSI_VERSION}.yaml" "$manifest"
+            kubectl apply -n ceph-csi -f "$manifest"
+            rm -f "$manifest"
+            ;;
+    esac
     cat <<EOF | kubectl apply -f -
 apiVersion: storage.k8s.io/v1
 kind: StorageClass
@@ -235,6 +309,7 @@ verify_csi() {
     echo "CSI 验证完成"
 }
 
+load_csi_images
 case "$INSTALL_MODE" in
     Helm)     install_ceph_csi_helm ;;
     Manifest) install_ceph_csi_manifest ;;
@@ -247,16 +322,24 @@ echo "=== CSI 安装完成 ==="
 		"CSI_DRIVER":      "ceph-csi",
 		"CSI_VERSION":     i.config.Version,
 		"INSTALL_MODE":    i.config.InstallMode,
+		"INSTALL_SOURCE":  installSource,
 		"CEPH_CLUSTER_ID": clusterID,
 		"CEPH_MONITORS":   monitors,
 		"CEPH_RBD_POOL":   rbdPool,
 		"SC_NAME":         scName,
 	}
 
+	if releaseServer != "" {
+		envVars["RELEASE_SERVER"] = releaseServer
+	}
+	if localPath != "" {
+		envVars["LOCAL_PATH"] = localPath
+	}
+
 	return prependEnvVars(script, envVars)
 }
 
-func (i *Installer) generateLocalCSIScript() string {
+func (i *Installer) generateLocalCSIScript(installSource, releaseServer, localPath string) string {
 	scName := "local-path"
 
 	if i.config.Config != nil && i.config.Config.LocalCsi != nil && i.config.Config.LocalCsi.StorageClass != nil {
@@ -269,12 +352,36 @@ func (i *Installer) generateLocalCSIScript() string {
 set -euo pipefail
 
 CSI_VERSION="${CSI_VERSION}"
+INSTALL_SOURCE="${INSTALL_SOURCE:-online}"
+RELEASE_SERVER="${RELEASE_SERVER:-}"
+LOCAL_PATH="${LOCAL_PATH:-}"
 SC_NAME="${SC_NAME:-local-path}"
 
-echo "=== Local-CSI 安装开始 ==="
+echo "=== Local-CSI 安装开始 (source=$INSTALL_SOURCE) ==="
+
+fetch_resource() {
+    local resource="$1"
+    local dest="$2"
+    case "$INSTALL_SOURCE" in
+        online) curl -fsSL "$resource" -o "$dest" ;;
+        http)   curl -fsSL "${RELEASE_SERVER}/${resource}" -o "$dest" ;;
+        local)  cp "${LOCAL_PATH}/${resource}" "$dest" ;;
+        *)      echo "ERROR: 不支持的安装源: $INSTALL_SOURCE"; exit 1 ;;
+    esac
+}
 
 install_local_csi() {
-    kubectl apply -f "https://raw.githubusercontent.com/rancher/local-path-provisioner/v${CSI_VERSION}/deploy/local-path-storage.yaml"
+    local manifest=$(mktemp)
+    case "$INSTALL_SOURCE" in
+        online)
+            curl -fsSL "https://raw.githubusercontent.com/rancher/local-path-provisioner/v${CSI_VERSION}/deploy/local-path-storage.yaml" -o "$manifest"
+            ;;
+        http|local)
+            fetch_resource "csi/local-path-provisioner-${CSI_VERSION}.yaml" "$manifest"
+            ;;
+    esac
+    kubectl apply -f "$manifest"
+    rm -f "$manifest"
     kubectl rollout status deployment/local-path-provisioner -n local-path-storage --timeout=300s
     echo "Local-CSI 部署完成"
 }
@@ -290,106 +397,16 @@ echo "=== Local-CSI 安装完成 ==="
 `
 
 	envVars := map[string]string{
-		"CSI_VERSION": i.config.Version,
-		"SC_NAME":     scName,
+		"CSI_VERSION":    i.config.Version,
+		"INSTALL_SOURCE": installSource,
+		"SC_NAME":        scName,
 	}
 
-	return prependEnvVars(script, envVars)
-}
-
-func (i *Installer) generateOfflineInstallScript() string {
-	airGap := i.config.AirGap
-	chartArchive := "/opt/capbm/csi/ceph-csi-" + i.config.Version + ".tgz"
-	imagesArchive := "/opt/capbm/csi/ceph-csi-images.tar"
-	manifestPath := "/opt/capbm/csi/" + i.config.Driver + ".yaml"
-
-	if airGap != nil {
-		if airGap.ChartArchive != "" {
-			chartArchive = airGap.ChartArchive
-		}
-		if airGap.LocalPath != "" {
-			manifestPath = airGap.LocalPath + "/" + i.config.Driver + ".yaml"
-			chartArchive = airGap.LocalPath + "/ceph-csi-" + i.config.Version + ".tgz"
-		}
+	if releaseServer != "" {
+		envVars["RELEASE_SERVER"] = releaseServer
 	}
-
-	script := `#!/bin/bash
-set -euo pipefail
-
-CSI_DRIVER="${CSI_DRIVER:-ceph-csi}"
-CSI_VERSION="${CSI_VERSION}"
-INSTALL_MODE="${INSTALL_MODE:-Helm}"
-CSI_CHART_ARCHIVE="${CSI_CHART_ARCHIVE}"
-CSI_IMAGES_ARCHIVE="${CSI_IMAGES_ARCHIVE}"
-CSI_MANIFEST_PATH="${CSI_MANIFEST_PATH}"
-
-echo "=== CSI 离线安装开始 ==="
-
-load_csi_images() {
-    [ -f "$CSI_IMAGES_ARCHIVE" ] && { ctr -n k8s.io images import "$CSI_IMAGES_ARCHIVE"; echo "CSI 镜像加载完成"; } || echo "WARNING: 镜像包不存在, 跳过"
-}
-
-install_csi_helm_offline() {
-    [ ! -f "$CSI_CHART_ARCHIVE" ] && { echo "ERROR: Helm Chart 不存在: $CSI_CHART_ARCHIVE"; return 1; }
-    helm upgrade --install "$CSI_DRIVER" "$CSI_CHART_ARCHIVE" \
-        --namespace "${CSI_DRIVER}" --create-namespace \
-        --set "csiConfig[0].clusterID=${CEPH_CLUSTER_ID}" \
-        --set "csiConfig[0].monitors=${CEPH_MONITORS}" \
-        --set "storageClass.create=true" \
-        --set "storageClass.name=${SC_NAME}" \
-        --wait --timeout=300s
-    echo "CSI 离线部署完成 (Helm)"
-}
-
-install_csi_manifest_offline() {
-    [ ! -f "$CSI_MANIFEST_PATH" ] && { echo "ERROR: Manifest 不存在: $CSI_MANIFEST_PATH"; return 1; }
-    kubectl create namespace "${CSI_DRIVER}" --dry-run=client -o yaml | kubectl apply -f -
-    kubectl apply -n "${CSI_DRIVER}" -f "$CSI_MANIFEST_PATH"
-    echo "CSI 离线部署完成 (Manifest)"
-}
-
-verify_csi() {
-    kubectl get storageclass "$SC_NAME" &>/dev/null && echo "StorageClass: OK" || { echo "ERROR: StorageClass 不存在"; return 1; }
-    echo "CSI 验证完成"
-}
-
-load_csi_images
-case "$INSTALL_MODE" in
-    Helm)     install_csi_helm_offline ;;
-    Manifest) install_csi_manifest_offline ;;
-esac
-verify_csi
-echo "=== CSI 离线安装完成 ==="
-`
-
-	clusterID := ""
-	monitors := ""
-	scName := "ceph-rbd"
-
-	if i.config.Config != nil && i.config.Config.CephCsi != nil {
-		cc := i.config.Config.CephCsi
-		clusterID = cc.ClusterID
-		for _, m := range cc.Monitors {
-			if monitors != "" {
-				monitors += ","
-			}
-			monitors += m
-		}
-		if cc.StorageClass != nil && cc.StorageClass.Name != "" {
-			scName = cc.StorageClass.Name
-		}
-	}
-
-	envVars := map[string]string{
-		"CSI_DRIVER":         i.config.Driver,
-		"CSI_VERSION":        i.config.Version,
-		"INSTALL_MODE":       i.config.InstallMode,
-		"CSI_CHART_ARCHIVE":  chartArchive,
-		"CSI_IMAGES_ARCHIVE": imagesArchive,
-		"CSI_MANIFEST_PATH":  manifestPath,
-		"CEPH_CLUSTER_ID":    clusterID,
-		"CEPH_MONITORS":      monitors,
-		"SC_NAME":            scName,
+	if localPath != "" {
+		envVars["LOCAL_PATH"] = localPath
 	}
 
 	return prependEnvVars(script, envVars)

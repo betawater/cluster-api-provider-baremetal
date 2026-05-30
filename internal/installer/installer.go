@@ -306,13 +306,20 @@ func (i *Installer) installContainerRuntime(ctx context.Context, osInfo *OSInfo)
 	}
 
 	if i.config.AirGap != nil && i.config.AirGap.Enabled {
-		script = prependEnvVar(script, "AIR_GAP_MODE", "true")
-		if i.config.AirGap.HTTPServerConfig != nil {
-			script = prependEnvVar(script, "BASE_URL", i.config.AirGap.HTTPServerConfig.BaseURL)
-		}
-		if i.config.AirGap.LocalPath != "" {
+		switch i.config.AirGap.ManifestSource {
+		case "HTTPServer":
+			script = prependEnvVar(script, "INSTALL_SOURCE", "http")
+			if i.config.AirGap.HTTPServerConfig != nil {
+				script = prependEnvVar(script, "RELEASE_SERVER", i.config.AirGap.HTTPServerConfig.BaseURL)
+			}
+		case "LocalPath":
+			script = prependEnvVar(script, "INSTALL_SOURCE", "local")
 			script = prependEnvVar(script, "LOCAL_PATH", i.config.AirGap.LocalPath)
+		default:
+			script = prependEnvVar(script, "INSTALL_SOURCE", "http")
 		}
+	} else {
+		script = prependEnvVar(script, "INSTALL_SOURCE", "online")
 	}
 
 	result, err := i.sshConn.ExecuteScript(ctx, script)
@@ -372,10 +379,20 @@ func (i *Installer) installKubernetesComponents(ctx context.Context, osInfo *OSI
 	}
 
 	if i.config.AirGap != nil && i.config.AirGap.Enabled {
-		script = prependEnvVar(script, "AIR_GAP_MODE", "true")
-		if i.config.AirGap.HTTPServerConfig != nil {
-			script = prependEnvVar(script, "BASE_URL", i.config.AirGap.HTTPServerConfig.BaseURL)
+		switch i.config.AirGap.ManifestSource {
+		case "HTTPServer":
+			script = prependEnvVar(script, "INSTALL_SOURCE", "http")
+			if i.config.AirGap.HTTPServerConfig != nil {
+				script = prependEnvVar(script, "RELEASE_SERVER", i.config.AirGap.HTTPServerConfig.BaseURL)
+			}
+		case "LocalPath":
+			script = prependEnvVar(script, "INSTALL_SOURCE", "local")
+			script = prependEnvVar(script, "LOCAL_PATH", i.config.AirGap.LocalPath)
+		default:
+			script = prependEnvVar(script, "INSTALL_SOURCE", "http")
 		}
+	} else {
+		script = prependEnvVar(script, "INSTALL_SOURCE", "online")
 	}
 
 	result, err := i.sshConn.ExecuteScript(ctx, script)
