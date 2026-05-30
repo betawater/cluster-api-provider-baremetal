@@ -7428,6 +7428,380 @@ docker build -t capbm-release:$RELEASE_VERSION .
 docker push capbm-release:$RELEASE_VERSION
 ```
 
+### 6.20 Helm 组件安装设计
+
+#### 6.20.1 问题背景
+
+CAPBM 使用 Helm 安装多个组件（Calico、Cilium、Ceph-CSI 等），但存在以下问题：
+
+1. **Helm 安装位置**: Helm 是客户端工具，不需要安装在所有节点
+2. **节点故障处理**: 如果 Helm 安装的节点故障，如何恢复？
+3. **状态追踪**: 如何追踪哪些组件已安装、版本是什么？
+4. **离线支持**: 离线环境如何获取 chart 包和镜像？
+
+**解决方案**: 使用 Kubernetes Job 运行 Helm，不依赖特定节点。
+
+#### 6.20.2 架构设计
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ Workload Cluster                                            │
+│                                                             │
+│  ┌───────────────────────────────────────────────────────┐  │
+│  │  Job: install-calico                                  │  │
+│  │  Job: install-ceph-csi                                │  │
+│  │  Job: install-envoy-gateway                           │  │
+│  │  Job: install-metallb                                 │  │
+│  │  Job: upgrade-calico (升级时)                         │  │
+│  └───────────────────────────────────────────────────────┘  │
+│         │                                                   │
+│         │ 自动调度到任意可用节点                             │
+│         ▼                                                   │
+│  ┌───────────────────────────────────────────────────────┐  │
+│  │  Node-01 / Node-02 / Node-03 (任意可用节点)            │  │
+│  └───────────────────────────────────────────────────────┘  │
+│                                                             │
+│  ┌───────────────────────────────────────────────────────┐  │
+│  │  ConfigMap: capbm-component-status                    │  │
+│  │  └── 追踪所有组件安装状态                              │  │
+│  └───────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+#### 6.20.3 节点故障处理
+
+Kubernetes Job 自动处理节点故障：
+
+| 故障场景 | 处理方式 | 恢复时间 |
+|---------|---------|---------|
+| Pod 所在节点宕机 | Job 自动在其他节点重新创建 Pod | 30-60 秒 |
+| Pod OOMKilled | Job 自动重试 (backoffLimit: 3) | 指数退避 |
+| 网络超时 | Job 自动重试 | 指数退避 |
+| 所有节点不可用 | Job 保持 Pending，等待节点恢复 | 节点恢复后 |
+
+**重试配置**:
+```yaml
+spec:
+  backoffLimit: 3          # 最多重试 3 次
+  activeDeadlineSeconds: 600  # 总超时 10 分钟
+```
+
+#### 6.20.4 组件状态追踪
+
+使用 ConfigMap 记录所有组件状态：
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: capbm-component-status
+  namespace: kube-system
+data:
+  calico: |
+    version: "v3.27.0"
+    status: "installed"
+    installedAt: "2024-01-15T10:30:00Z"
+    jobName: "install-calico"
+  ceph-csi: |
+    version: "v3.9.0"
+    status: "installing"
+    jobName: "install-ceph-csi"
+  envoy-gateway: |
+    version: "v1.1.0"
+    status: "pending"
+```
+
+**查询方式**:
+```bash
+# 查看所有组件状态
+kubectl get configmap capbm-component-status -n kube-system -o yaml
+
+# 查看特定组件
+kubectl get configmap capbm-component-status -n kube-system \
+  -o jsonpath='{.data.calico}'
+
+# 查看 Job 状态
+kubectl get jobs -n kube-system -l capbm.capbm.io/type=helm-install
+```
+
+#### 6.20.5 Helm Job 模板
+
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: install-{component}
+  namespace: kube-system
+  labels:
+    capbm.capbm.io/component: {component}
+    capbm.capbm.io/version: "{version}"
+    capbm.capbm.io/type: helm-install
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 600
+  template:
+    metadata:
+      labels:
+        capbm.capbm.io/component: {component}
+    spec:
+      serviceAccountName: capbm-helm
+      containers:
+      - name: helm
+        image: alpine/helm:3.15.0
+        command:
+        - sh
+        - -c
+        - |
+          set -euo pipefail
+          
+          COMPONENT="{component}"
+          VERSION="{version}"
+          RELEASE_SERVER="${RELEASE_SERVER}"
+          NAMESPACE="{namespace}"
+          COMPONENT_PATH="{component_path}"
+          IMAGE_LIST="{image_list}"
+          HELM_VALUES="{helm_values}"
+          
+          echo "=== Installing $COMPONENT v$VERSION ==="
+          
+          # 1. 下载 chart 包
+          CHART_URL="${RELEASE_SERVER}/${COMPONENT_PATH}/${VERSION}/${COMPONENT}.tgz"
+          CHART_PATH="/tmp/${COMPONENT}.tgz"
+          curl -fsSL "$CHART_URL" -o "$CHART_PATH"
+          
+          # 2. 加载容器镜像 (离线模式)
+          if [ "${INSTALL_SOURCE}" != "online" ]; then
+            echo "Loading images for $COMPONENT..."
+            IMAGE_PATH="${RELEASE_SERVER}/images/${COMPONENT}/${VERSION}"
+            for image_tar in $IMAGE_LIST; do
+              curl -fsSL "${IMAGE_PATH}/${image_tar}" -o "/tmp/${image_tar}"
+              ctr -n k8s.io images import "/tmp/${image_tar}"
+              rm -f "/tmp/${image_tar}"
+            done
+          fi
+          
+          # 3. 安装组件
+          echo "Installing $COMPONENT via Helm..."
+          helm upgrade --install "$COMPONENT" "$CHART_PATH" \
+            --namespace "$NAMESPACE" \
+            --create-namespace \
+            --wait \
+            --timeout=300s \
+            $HELM_VALUES
+          
+          # 4. 更新状态 ConfigMap
+          kubectl patch configmap capbm-component-status -n kube-system \
+            --type merge \
+            -p "{\"data\":{\"${COMPONENT}\":\"version: ${VERSION}\nstatus: installed\ninstalledAt: $(date -u +%Y-%m-%dT%H:%M:%SZ)\njobName: install-${COMPONENT}\"}}"
+          
+          echo "=== $COMPONENT v$VERSION installed successfully ==="
+        env:
+        - name: RELEASE_SERVER
+          value: "http://release-server:8080/release"
+        - name: INSTALL_SOURCE
+          value: "http"
+      restartPolicy: Never
+      tolerations:
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+```
+
+#### 6.20.6 RBAC 配置
+
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: capbm-helm
+  namespace: kube-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: capbm-helm
+rules:
+- apiGroups: ["*"]
+  resources: ["*"]
+  verbs: ["*"]
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: capbm-helm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: capbm-helm
+subjects:
+- kind: ServiceAccount
+  name: capbm-helm
+  namespace: kube-system
+```
+
+#### 6.20.7 完整安装流程
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ 1. 创建 RBAC (ServiceAccount, ClusterRole, ClusterRoleBinding) │
+└─────────────────┬───────────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 2. 创建 ConfigMap: capbm-component-status                   │
+│    └── 初始状态: 所有组件 status: "pending"                  │
+└─────────────────┬───────────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 3. 为每个 Helm 组件创建 Job                                 │
+│    ├── Job: install-calico                                  │
+│    ├── Job: install-ceph-csi                                │
+│    ├── Job: install-envoy-gateway                           │
+│    └── Job: install-metallb                                 │
+└─────────────────┬───────────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 4. Job 自动调度到可用节点                                    │
+│    ├── 下载 chart 包 (从 ReleaseImage)                      │
+│    ├── 加载容器镜像 (离线模式)                               │
+│    ├── 执行 helm install                                    │
+│    └── 更新 ConfigMap 状态                                  │
+└─────────────────┬───────────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 5. Controller 监控 Job 状态                                 │
+│    ├── Success: 标记组件 installed                          │
+│    ├── Failed: 重试或告警                                   │
+│    └── Running: 等待完成                                    │
+└─────────────────┬───────────────────────────────────────────┘
+                  │
+                  ▼
+┌─────────────────────────────────────────────────────────────┐
+│ 6. 所有组件安装完成: 集群 Ready                              │
+└─────────────────────────────────────────────────────────────┘
+```
+
+#### 6.20.8 升级流程
+
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: upgrade-calico
+  namespace: kube-system
+  labels:
+    capbm.capbm.io/component: calico
+    capbm.capbm.io/version: "v3.28.0"
+    capbm.capbm.io/type: helm-upgrade
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 600
+  template:
+    spec:
+      serviceAccountName: capbm-helm
+      containers:
+      - name: helm
+        image: alpine/helm:3.15.0
+        command:
+        - sh
+        - -c
+        - |
+          # 下载新 chart
+          curl -fsSL ${RELEASE_SERVER}/cni/calico/v3.28.0/calico.tgz -o /tmp/calico.tgz
+          
+          # 升级 (保留现有 values)
+          helm upgrade calico /tmp/calico.tgz \
+            --namespace kube-system \
+            --reuse-values \
+            --wait --timeout=300s
+          
+          # 更新状态
+          kubectl patch configmap capbm-component-status -n kube-system \
+            --type merge \
+            -p '{"data":{"calico":"version: v3.28.0\nstatus: installed\ninstalledAt: $(date -u +%Y-%m-%dT%H:%M:%SZ)\njobName: upgrade-calico"}}'
+      restartPolicy: Never
+```
+
+#### 6.20.9 代码实现
+
+**internal/helm/installer.go** - Helm Job 构建器:
+
+```go
+type Installer struct {
+    client        client.Client
+    releaseServer string
+    namespace     string
+}
+
+func (i *Installer) InstallComponent(ctx context.Context, component HelmComponent) error {
+    // 检查是否已安装
+    status, err := i.GetComponentStatus(ctx, component.Name)
+    if err == nil && status.Status == StatusInstalled && status.Version == component.Version {
+        return nil
+    }
+    
+    // 创建 Job
+    job := i.buildInstallJob(component)
+    return i.client.Create(ctx, job)
+}
+```
+
+**internal/helm/status.go** - 组件状态追踪:
+
+```go
+type StatusTracker struct {
+    client    client.Client
+    namespace string
+}
+
+func (t *StatusTracker) GetComponentStatus(ctx context.Context, componentName string) (*ComponentStatus, error) {
+    // 从 ConfigMap 获取状态
+    cm := &corev1.ConfigMap{}
+    err := t.client.Get(ctx, types.NamespacedName{
+        Name:      StatusConfigMapName,
+        Namespace: t.namespace,
+    }, cm)
+    
+    if err == nil {
+        if statusData, ok := cm.Data[componentName]; ok {
+            return parseComponentStatus(statusData)
+        }
+    }
+    
+    // Fallback: 检查 Job 状态
+    jobList := &batchv1.JobList{}
+    err = t.client.List(ctx, jobList, client.MatchingLabels{
+        "capbm.capbm.io/component": componentName,
+    })
+    
+    if err == nil && len(jobList.Items) > 0 {
+        job := jobList.Items[0]
+        return &ComponentStatus{
+            Version: job.Labels["capbm.capbm.io/version"],
+            Status:  getJobStatus(&job),
+        }, nil
+    }
+    
+    return &ComponentStatus{Status: "not-installed"}, nil
+}
+```
+
+#### 6.20.10 关键设计决策
+
+| 决策点 | 选项 | 推荐 | 理由 |
+|--------|------|------|------|
+| **Helm 运行位置** | 管理集群 vs Workload Job | Workload Job | 不依赖管理集群，自动重试 |
+| **认证方式** | kubeconfig vs ServiceAccount | ServiceAccount | 原生 Kubernetes 认证 |
+| **Chart 来源** | 在线仓库 vs ReleaseImage | ReleaseImage | 版本一致性，离线支持 |
+| **状态追踪** | Job 状态 vs ConfigMap | ConfigMap + Job Labels | 持久化，易查询 |
+| **升级方式** | helm upgrade vs 新 Job | 新 Job | 可追踪，可回滚 |
+
 ## 八、SSH 连接管理 (保持不变)
 
 ### 7.1 SSH Manager 设计

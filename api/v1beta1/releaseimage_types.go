@@ -41,6 +41,7 @@ type ReleaseImageSpec struct {
 type ReleaseComponentVersions struct {
 	Kubernetes   KubernetesComponent   `json:"kubernetes"`
 	Containerd   BinaryComponent       `json:"containerd,omitempty"`
+	Helm         BinaryComponent       `json:"helm,omitempty"`
 	CNIPlugins   BinaryComponent       `json:"cniPlugins,omitempty"`
 	Calico       CNIComponent          `json:"calico,omitempty"`
 	Cilium       CNIComponent          `json:"cilium,omitempty"`

@@ -846,3 +846,68 @@ podman save capbm-release:v1.31.0 -o capbm-release-v1.31.0.tar
 podman load -i capbm-release-v1.31.0.tar
 podman run -d --name release-server -p 8080:8080 capbm-release:v1.31.0
 ```
+
+## 13. Helm 组件安装
+
+### 13.1 概述
+
+CAPBM 使用 Kubernetes Job 运行 Helm 来安装组件（Calico、Cilium、Ceph-CSI 等），不依赖特定节点。
+
+**优势**:
+- **节点故障无影响**: Job 自动调度到其他节点
+- **自动重试**: `backoffLimit: 3` 自动恢复
+- **状态可追踪**: ConfigMap + Job Labels 双重追踪
+- **离线支持**: Chart 和镜像都从 ReleaseImage 获取
+
+### 13.2 安装流程
+
+```bash
+# 1. 部署 RBAC
+kubectl apply -f config/rbac/helm_rbac.yaml
+
+# 2. 创建状态 ConfigMap
+kubectl create configmap capbm-component-status -n kube-system
+
+# 3. 创建 Helm Job (由 Controller 自动创建)
+# Job 自动调度到可用节点
+# 从 ReleaseImage 下载 chart 包
+# 加载容器镜像 (离线模式)
+# 执行 helm install
+# 更新 ConfigMap 状态
+```
+
+### 13.3 查看安装状态
+
+```bash
+# 查看所有组件状态
+kubectl get configmap capbm-component-status -n kube-system -o yaml
+
+# 查看特定组件
+kubectl get configmap capbm-component-status -n kube-system \
+  -o jsonpath='{.data.calico}'
+
+# 查看 Helm Job 状态
+kubectl get jobs -n kube-system -l capbm.capbm.io/type=helm-install
+
+# 查看 Job 日志
+kubectl logs -n kube-system job/install-calico
+```
+
+### 13.4 升级组件
+
+```bash
+# 升级 Calico (创建新的 Job)
+kubectl apply -f upgrade-calico-job.yaml
+
+# 查看升级状态
+kubectl get jobs -n kube-system -l capbm.capbm.io/component=calico
+```
+
+### 13.5 故障恢复
+
+| 故障场景 | 处理方式 |
+|---------|---------|
+| Pod 所在节点宕机 | Job 自动在其他节点重新创建 Pod |
+| Pod OOMKilled | Job 自动重试 (backoffLimit: 3) |
+| 网络超时 | Job 自动重试 |
+| 所有节点不可用 | Job 保持 Pending，等待节点恢复 |
