@@ -570,11 +570,121 @@ variables:
       enabled: true
       binarySource: "HTTPServer"  # HTTPServer | ConfigMap | LocalPath
       httpServerConfig:
-        baseUrl: "https://internal-pkg.example.com/k8s/v1.31.0"
+        baseUrl: "http://10.0.0.50:30080/release"
       preloadImages:
         - "registry.k8s.io/kube-apiserver:v1.31.0"
         - "registry.k8s.io/kube-controller-manager:v1.31.0"
         - "registry.k8s.io/kube-scheduler:v1.31.0"
+```
+
+### 7.6 ReleaseImage 镜像安装
+
+CAPBM 支持使用 ReleaseImage OCI 镜像作为组件源。ReleaseImage 是一个自包含的镜像，内置 HTTP 服务器，提供所有组件的下载服务。
+
+#### 7.6.1 部署 ReleaseImage HTTP 服务器
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: capbm-release-server
+  namespace: capbm-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: capbm-release-server
+  template:
+    metadata:
+      labels:
+        app: capbm-release-server
+    spec:
+      containers:
+      - name: release-server
+        image: capbm-release:v1.31.0
+        ports:
+        - containerPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: capbm-release-server
+  namespace: capbm-system
+spec:
+  type: NodePort
+  selector:
+    app: capbm-release-server
+  ports:
+  - port: 8080
+    targetPort: 8080
+    nodePort: 30080
+```
+
+#### 7.6.2 ReleaseImage 目录结构
+
+ReleaseImage 镜像使用统一的目录结构规范：`分类/组件名称/版本/平台/组件内容`
+
+```
+/release/
+├── runtime/                    # 容器运行时
+│   └── containerd/
+│       └── v1.7.0/
+│           ├── linux-amd64/
+│           └── linux-arm64/
+├── kubernetes/                 # Kubernetes 核心二进制
+│   └── v1.31.0/
+│       ├── ubuntu/
+│       │   ├── linux-amd64/
+│       │   └── linux-arm64/
+│       └── rhel/
+│           ├── linux-amd64/
+│           └── linux-arm64/
+├── cni/                        # CNI 网络插件
+│   ├── plugins/
+│   │   └── v1.3.0/
+│   │       ├── linux-amd64/
+│   │       └── linux-arm64/
+│   ├── calico/
+│   │   └── v3.27.0/
+│   ├── cilium/
+│   │   └── v1.15.0/
+│   └── flannel/
+│       └── v0.24.0/
+├── csi/                        # CSI 存储驱动
+│   ├── ceph-csi/
+│   ├── local-path-provisioner/
+│   └── nfs-csi/
+├── gateway/                    # 网关组件
+│   ├── gateway-api/
+│   └── envoy-gateway/
+├── metallb/                    # 负载均衡器
+├── images/                     # 容器镜像包
+├── index.json                  # 组件索引
+└── checksums.sha256            # 校验和
+```
+
+#### 7.6.3 配置集群使用 ReleaseImage
+
+```yaml
+variables:
+- name: componentInstall
+  value:
+    enabled: true
+    airGap:
+      enabled: true
+      binarySource: "HTTPServer"
+      httpServerConfig:
+        baseUrl: "http://10.0.0.50:30080/release"
+- name: cni
+  value:
+    enabled: true
+    type: "calico"
+    version: "3.27.0"
+    airGap:
+      enabled: true
+      manifestSource: "HTTPServer"
+      httpServerConfig:
+        baseUrl: "http://10.0.0.50:30080/release"
 ```
 
 ---

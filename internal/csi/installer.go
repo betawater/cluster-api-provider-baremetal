@@ -46,15 +46,15 @@ func New(sshConn *sshclient.SSHConnection, config infrav1.CSIConfig) *Installer 
 
 func NewFromReleaseImage(sshConn *sshclient.SSHConnection, releaseImage *infrav1.ReleaseImage, config infrav1.CSIConfig) *Installer {
 	if config.Driver == "" {
-		if releaseImage.Spec.Components.CephCsi != "" {
+		if releaseImage.Spec.Components.CephCsi.Version != "" {
 			config.Driver = "ceph-csi"
-			config.Version = releaseImage.Spec.Components.CephCsi
+			config.Version = releaseImage.Spec.Components.CephCsi.Version
 		}
 	}
 	if config.Version == "" && config.Driver != "" {
 		switch config.Driver {
 		case "ceph-csi":
-			config.Version = releaseImage.Spec.Components.CephCsi
+			config.Version = releaseImage.Spec.Components.CephCsi.Version
 		}
 	}
 	return &Installer{
@@ -212,7 +212,7 @@ load_csi_images() {
             ;;
         http|local)
             local images_archive=$(mktemp)
-            fetch_resource "csi/ceph-csi-images.tar" "$images_archive"
+            fetch_resource "images/ceph-csi-v${CSI_VERSION}.tar" "$images_archive"
             ctr -n k8s.io images import "$images_archive"
             rm -f "$images_archive"
             echo "CSI 镜像加载完成"
@@ -243,7 +243,7 @@ install_ceph_csi_helm() {
             ;;
         http|local)
             local chart=$(mktemp)
-            fetch_resource "csi/ceph-csi-${CSI_VERSION}.tgz" "$chart"
+            fetch_resource "csi/ceph-csi/v${CSI_VERSION}/ceph-csi.tgz" "$chart"
             local monitors_json="["
             local first=true
             IFS=',' read -ra MON_ARRAY <<< "$CEPH_MONITORS"

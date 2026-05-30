@@ -48,22 +48,22 @@ func New(sshConn *sshclient.SSHConnection, config infrav1.CNIConfig, podCIDR str
 
 func NewFromReleaseImage(sshConn *sshclient.SSHConnection, releaseImage *infrav1.ReleaseImage, config infrav1.CNIConfig, podCIDR string) *Installer {
 	if config.Type == "" {
-		if releaseImage.Spec.Components.Calico != "" {
+		if releaseImage.Spec.Components.Calico.Version != "" {
 			config.Type = "calico"
-			config.Version = releaseImage.Spec.Components.Calico
-		} else if releaseImage.Spec.Components.Cilium != "" {
+			config.Version = releaseImage.Spec.Components.Calico.Version
+		} else if releaseImage.Spec.Components.Cilium.Version != "" {
 			config.Type = "cilium"
-			config.Version = releaseImage.Spec.Components.Cilium
+			config.Version = releaseImage.Spec.Components.Cilium.Version
 		}
 	}
 	if config.Version == "" && config.Type != "" {
 		switch config.Type {
 		case "calico":
-			config.Version = releaseImage.Spec.Components.Calico
+			config.Version = releaseImage.Spec.Components.Calico.Version
 		case "cilium":
-			config.Version = releaseImage.Spec.Components.Cilium
+			config.Version = releaseImage.Spec.Components.Cilium.Version
 		case "flannel":
-			config.Version = releaseImage.Spec.Components.Kubernetes["flannel"]
+			config.Version = releaseImage.Spec.Components.Flannel.Version
 		}
 	}
 	return &Installer{
@@ -206,7 +206,7 @@ install_cni_plugins() {
             fetch_resource "https://github.com/containernetworking/plugins/releases/download/v${CNI_PLUGINS_VERSION}/cni-plugins-linux-amd64-v${CNI_PLUGINS_VERSION}.tgz" "$archive"
             ;;
         http|local)
-            fetch_resource "cni/cni-plugins-linux-amd64-v${CNI_PLUGINS_VERSION}.tgz" "$archive"
+            fetch_resource "cni/plugins/v${CNI_PLUGINS_VERSION}/linux-${ARCH}/cni-plugins-linux-${ARCH}-v${CNI_PLUGINS_VERSION}.tgz" "$archive"
             ;;
     esac
     tar -C /opt/cni/bin -xzf "$archive"
@@ -221,7 +221,7 @@ install_calico() {
             fetch_resource "https://raw.githubusercontent.com/projectcalico/calico/v${CNI_VERSION}/manifests/calico.yaml" "$manifest"
             ;;
         http|local)
-            fetch_resource "cni/calico-${CNI_VERSION}.yaml" "$manifest"
+            fetch_resource "cni/calico/v${CNI_VERSION}/calico.yaml" "$manifest"
             ;;
     esac
     sed -i "s|\"192.168.0.0/16\"|\"${POD_CIDR}\"|g" "$manifest"
@@ -244,7 +244,7 @@ install_cilium_helm() {
             ;;
         http|local)
             local chart=$(mktemp)
-            fetch_resource "cni/cilium-${CNI_VERSION}.tgz" "$chart"
+            fetch_resource "cni/cilium/v${CNI_VERSION}/cilium.tgz" "$chart"
             helm upgrade --install cilium "$chart" --namespace kube-system \
                 --set ipam.mode=kubernetes \
                 --set kubeProxyReplacement="${CILIUM_KUBE_PROXY_REPLACEMENT:-partial}" \
@@ -262,7 +262,7 @@ install_flannel() {
             fetch_resource "https://github.com/flannel-io/flannel/releases/download/v${CNI_VERSION}/kube-flannel.yml" "$manifest"
             ;;
         http|local)
-            fetch_resource "cni/flannel-${CNI_VERSION}.yaml" "$manifest"
+            fetch_resource "cni/flannel/v${CNI_VERSION}/flannel.yaml" "$manifest"
             ;;
     esac
     sed -i "s|\"10.244.0.0/16\"|\"${POD_CIDR}\"|g" "$manifest"

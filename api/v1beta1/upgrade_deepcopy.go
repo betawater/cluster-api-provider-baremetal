@@ -249,13 +249,102 @@ func (in *ReleaseImageSpec) DeepCopy() *ReleaseImageSpec {
 
 func (in *ReleaseComponentVersions) DeepCopyInto(out *ReleaseComponentVersions) {
 	*out = *in
-	if in.Kubernetes != nil {
-		in, out := &in.Kubernetes, &out.Kubernetes
+	in.Kubernetes.DeepCopyInto(&out.Kubernetes)
+	in.Containerd.DeepCopyInto(&out.Containerd)
+	in.CNIPlugins.DeepCopyInto(&out.CNIPlugins)
+	in.Calico.DeepCopyInto(&out.Calico)
+	in.Cilium.DeepCopyInto(&out.Cilium)
+	in.Flannel.DeepCopyInto(&out.Flannel)
+	in.CephCsi.DeepCopyInto(&out.CephCsi)
+	in.LocalPath.DeepCopyInto(&out.LocalPath)
+	in.NfsCsi.DeepCopyInto(&out.NfsCsi)
+	in.GatewayAPI.DeepCopyInto(&out.GatewayAPI)
+	in.EnvoyGateway.DeepCopyInto(&out.EnvoyGateway)
+	in.MetalLB.DeepCopyInto(&out.MetalLB)
+}
+
+func (in *KubernetesComponent) DeepCopyInto(out *KubernetesComponent) {
+	*out = *in
+	if in.Platforms != nil {
+		in, out := &in.Platforms, &out.Platforms
+		*out = make(map[string]K8SPlatform, len(*in))
+		for key, val := range *in {
+			(*out)[key] = *val.DeepCopy()
+		}
+	}
+}
+
+func (in *K8SPlatform) DeepCopyInto(out *K8SPlatform) {
+	*out = *in
+	if in.Architectures != nil {
+		in, out := &in.Architectures, &out.Architectures
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
+	if in.Packages != nil {
+		in, out := &in.Packages, &out.Packages
 		*out = make(map[string]string, len(*in))
 		for key, val := range *in {
 			(*out)[key] = val
 		}
 	}
+}
+
+func (in *K8SPlatform) DeepCopy() *K8SPlatform {
+	if in == nil {
+		return nil
+	}
+	out := new(K8SPlatform)
+	in.DeepCopyInto(out)
+	return out
+}
+
+func (in *BinaryComponent) DeepCopyInto(out *BinaryComponent) {
+	*out = *in
+	if in.Architectures != nil {
+		in, out := &in.Architectures, &out.Architectures
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
+	out.Files = in.Files
+}
+
+func (in *CNIComponent) DeepCopyInto(out *CNIComponent) {
+	*out = *in
+	if in.InstallModes != nil {
+		in, out := &in.InstallModes, &out.InstallModes
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
+	out.Files = in.Files
+	if in.HelmValues != nil {
+		in, out := &in.HelmValues, &out.HelmValues
+		*out = make(map[string]string, len(*in))
+		for key, val := range *in {
+			(*out)[key] = val
+		}
+	}
+}
+
+func (in *CSIComponent) DeepCopyInto(out *CSIComponent) {
+	*out = *in
+	if in.InstallModes != nil {
+		in, out := &in.InstallModes, &out.InstallModes
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
+	out.Files = in.Files
+	if in.HelmValues != nil {
+		in, out := &in.HelmValues, &out.HelmValues
+		*out = make(map[string]string, len(*in))
+		for key, val := range *in {
+			(*out)[key] = val
+		}
+	}
+}
+
+func (in *ManifestComponent) DeepCopyInto(out *ManifestComponent) {
+	*out = *in
 }
 
 func (in *ReleaseComponentVersions) DeepCopy() *ReleaseComponentVersions {

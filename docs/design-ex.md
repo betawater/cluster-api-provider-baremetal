@@ -7028,6 +7028,307 @@ spec:
 > - OCI 镜像拉取 + 默认值兜底机制
 > - 完整 Controller 调和逻辑 + Installer 重构方案
 
+### 6.19 ReleaseImage 镜像设计
+
+#### 6.19.1 问题背景
+
+ReleaseImage 是 CAPBM 的组件版本管理核心，通过 OCI 镜像分发所有组件，支持在线和离线安装模式。
+
+**核心需求**:
+1. 自包含：一个镜像包含所有组件，无需外网访问
+2. 版本一致性：所有组件版本由 ReleaseImage 统一管理
+3. 多架构支持：支持 linux-amd64 和 linux-arm64
+4. 多 OS 支持：支持 Ubuntu (deb) 和 RHEL (rpm)
+5. 组件类型自描述：通过 index.json 标识 binary/manifest/helm 类型
+
+#### 6.19.2 镜像架构
+
+```dockerfile
+FROM nginx:alpine AS release-server
+
+COPY release/ /usr/share/nginx/html/release/
+
+RUN echo 'server { \
+    listen 8080; \
+    server_name localhost; \
+    location / { \
+        autoindex on; \
+        autoindex_exact_size off; \
+        autoindex_localtime on; \
+    } \
+}' > /etc/nginx/conf.d/default.conf
+
+EXPOSE 8080
+CMD ["nginx", "-g", "daemon off;"]
+```
+
+#### 6.19.3 统一目录结构规范
+
+目录结构遵循 `分类/组件名称/版本/[OS/]平台/组件内容` 规范：
+
+```
+/release/
+├── runtime/                          # 容器运行时 (通用 Linux 二进制)
+│   └── containerd/
+│       └── v1.7.0/
+│           ├── linux-amd64/
+│           │   └── containerd-1.7.0-linux-amd64.tar.gz
+│           └── linux-arm64/
+│               └── containerd-1.7.0-linux-arm64.tar.gz
+│
+├── kubernetes/                       # Kubernetes (OS 特定包格式)
+│   └── v1.31.0/
+│       ├── ubuntu/
+│       │   ├── linux-amd64/
+│       │   │   ├── kubeadm_1.31.0-00_amd64.deb
+│       │   │   ├── kubelet_1.31.0-00_amd64.deb
+│       │   │   └── kubectl_1.31.0-00_amd64.deb
+│       │   └── linux-arm64/
+│       │       └── ...
+│       └── rhel/
+│           ├── linux-amd64/
+│           │   ├── kubeadm-1.31.0-0.x86_64.rpm
+│           │   ├── kubelet-1.31.0-0.x86_64.rpm
+│           │   └── kubectl-1.31.0-0.x86_64.rpm
+│           └── linux-arm64/
+│               └── ...
+│
+├── cni/                              # CNI 网络插件
+│   ├── plugins/                      # CNI 二进制插件
+│   │   └── v1.3.0/
+│   │       ├── linux-amd64/
+│   │       │   └── cni-plugins-linux-amd64-v1.3.0.tgz
+│   │       └── linux-arm64/
+│   │           └── cni-plugins-linux-arm64-v1.3.0.tgz
+│   │
+│   ├── calico/                       # Calico (Manifest/Helm)
+│   │   └── v3.27.0/
+│   │       ├── calico.yaml
+│   │       └── calico.tgz
+│   │
+│   ├── cilium/
+│   │   └── v1.15.0/
+│   │       ├── cilium.yaml
+│   │       └── cilium.tgz
+│   │
+│   └── flannel/
+│       └── v0.24.0/
+│           ├── flannel.yaml
+│           └── flannel.tgz
+│
+├── csi/                              # CSI 存储驱动
+│   ├── ceph-csi/
+│   │   └── v3.9.0/
+│   │       ├── ceph-csi.yaml
+│   │       └── ceph-csi.tgz
+│   │
+│   ├── local-path-provisioner/
+│   │   └── v0.0.26/
+│   │       └── ...
+│   │
+│   └── nfs-csi/
+│       └── v4.5.0/
+│           └── ...
+│
+├── gateway/                          # 网关组件
+│   ├── gateway-api/
+│   │   └── v1.2.0/
+│   │       └── gateway-api-crds.yaml
+│   │
+│   └── envoy-gateway/
+│       └── v1.1.0/
+│           ├── envoy-gateway-crds.yaml
+│           └── envoy-gateway-controller.yaml
+│
+├── metallb/                          # 负载均衡器
+│   └── v0.14.0/
+│       ├── metallb-crds.yaml
+│       └── metallb-controller.yaml
+│
+├── images/                           # 容器镜像包
+│   ├── kubernetes-v1.31.0.tar
+│   ├── calico-v3.27.0.tar
+│   ├── cilium-v1.15.0.tar
+│   ├── envoy-gateway-v1.1.0.tar
+│   └── metallb-v0.14.0.tar
+│
+├── index.json                        # 组件索引
+└── checksums.sha256                  # 校验和
+```
+
+#### 6.19.4 路径规则
+
+| 组件类型 | 路径格式 | 示例 |
+|---------|---------|------|
+| **通用 Linux 二进制** | `分类/组件/版本/linux-{arch}/文件` | `runtime/containerd/v1.7.0/linux-amd64/containerd.tar.gz` |
+| **OS 特定包** | `分类/组件/版本/{os}/linux-{arch}/文件` | `kubernetes/v1.31.0/ubuntu/linux-amd64/kubeadm.deb` |
+| **Manifest/Helm** | `分类/组件/版本/文件` | `cni/calico/v3.27.0/calico.yaml` |
+| **镜像包** | `images/文件` | `images/kubernetes-v1.31.0.tar` |
+
+#### 6.19.5 OS 和架构命名规范
+
+| 类别 | 命名 | 说明 |
+|------|------|------|
+| **架构** | `linux-amd64` | x86 64 位 (GOOS-GOARCH 格式) |
+| **架构** | `linux-arm64` | ARM 64 位 |
+| **OS** | `ubuntu` | Ubuntu, Debian (deb 包) |
+| **OS** | `rhel` | RHEL, CentOS, Rocky, AlmaLinux (rpm 包) |
+
+#### 6.19.6 组件类型元数据
+
+| 类型 | 标识 | 安装方式 | 示例 |
+|------|------|---------|------|
+| **binary** | 二进制包 | 解压/安装到系统 | containerd, kubernetes, cni-plugins |
+| **manifest** | YAML Manifest | `kubectl apply -f` | calico.yaml, gateway-api-crds.yaml |
+| **helm** | Helm Chart | `helm install/upgrade` | calico.tgz, ceph-csi.tgz |
+
+#### 6.19.7 index.json 索引文件
+
+```json
+{
+  "version": "v1.31.0",
+  "components": {
+    "kubernetes": {
+      "version": "v1.31.0",
+      "type": "binary",
+      "path": "kubernetes/v1.31.0",
+      "osSpecific": true,
+      "platforms": {
+        "ubuntu": {
+          "architectures": ["linux-amd64", "linux-arm64"],
+          "packages": ["kubeadm", "kubelet", "kubectl"]
+        },
+        "rhel": {
+          "architectures": ["linux-amd64", "linux-arm64"],
+          "packages": ["kubeadm", "kubelet", "kubectl"]
+        }
+      }
+    },
+    "containerd": {
+      "version": "v1.7.0",
+      "type": "binary",
+      "path": "runtime/containerd/v1.7.0",
+      "osSpecific": false,
+      "architectures": ["linux-amd64", "linux-arm64"]
+    },
+    "cni-plugins": {
+      "version": "v1.3.0",
+      "type": "binary",
+      "path": "cni/plugins/v1.3.0",
+      "osSpecific": false,
+      "architectures": ["linux-amd64", "linux-arm64"]
+    },
+    "calico": {
+      "version": "v3.27.0",
+      "type": "manifest",
+      "path": "cni/calico/v3.27.0",
+      "osSpecific": false,
+      "installModes": ["manifest", "helm"],
+      "files": {
+        "manifest": "calico.yaml",
+        "chart": "calico.tgz"
+      },
+      "images": "images/calico-v3.27.0.tar"
+    },
+    "cilium": {
+      "version": "v1.15.0",
+      "type": "helm",
+      "path": "cni/cilium/v1.15.0",
+      "osSpecific": false,
+      "files": {
+        "chart": "cilium.tgz"
+      },
+      "images": "images/cilium-v1.15.0.tar",
+      "helmValues": {
+        "ipam.mode": "kubernetes",
+        "kubeProxyReplacement": "partial"
+      }
+    }
+  }
+}
+```
+
+#### 6.19.8 CRD 扩展
+
+在 `ReleaseImageSpec` 中新增 HTTP 服务器配置：
+
+```go
+type ReleaseImageSpec struct {
+    Version          string                   `json:"version"`
+    Image            string                   `json:"image"`
+    HTTPServer       HTTPServerConfig         `json:"httpServer,omitempty"`
+    Channels         []string                 `json:"channels,omitempty"`
+    PreviousVersions []string                 `json:"previousVersions,omitempty"`
+    Components       ReleaseComponentVersions `json:"components"`
+    UpgradeGraph     []UpgradePhase           `json:"upgradeGraph"`
+    ContentHash      string                   `json:"contentHash,omitempty"`
+}
+
+type HTTPServerConfig struct {
+    Port     int    `json:"port,omitempty"`     // 默认 8080
+    BasePath string `json:"basePath,omitempty"` // 默认 /release
+}
+```
+
+#### 6.19.9 代码自动适配逻辑
+
+安装代码根据 `index.json` 中的 `type` 字段自动选择安装方式：
+
+```go
+func InstallComponent(ctx context.Context, component ComponentMetadata, releaseServer string) error {
+    switch component.Type {
+    case ComponentTypeBinary:
+        return installBinary(ctx, component, releaseServer)
+    case ComponentTypeManifest:
+        return installManifest(ctx, component, releaseServer)
+    case ComponentTypeHelm:
+        return installHelm(ctx, component, releaseServer)
+    default:
+        return fmt.Errorf("unknown component type: %s", component.Type)
+    }
+}
+```
+
+#### 6.19.10 构建脚本
+
+```bash
+#!/bin/bash
+# build-release-image.sh
+
+set -euo pipefail
+
+RELEASE_VERSION="v1.31.0"
+OUTPUT_DIR="./release-image-content/release"
+ARCHS=("amd64" "arm64")
+
+# 创建目录结构
+mkdir -p "$OUTPUT_DIR"/{runtime/containerd/v1.7.0,kubernetes/$RELEASE_VERSION/{ubuntu,rhel}/{amd64,arm64},cni/plugins/v1.3.0/{linux-amd64,linux-arm64},cni/{calico/v3.27.0,cilium/v1.15.0},csi/{ceph-csi/v3.9.0},gateway/{gateway-api/v1.2.0,envoy-gateway/v1.1.0},metallb/v0.14.0,images}
+
+# 下载组件 (多架构多 OS)
+for arch in "${ARCHS[@]}"; do
+    download_k8s_debs "$RELEASE_VERSION" "$arch" "$OUTPUT_DIR/kubernetes/$RELEASE_VERSION/ubuntu/$arch"
+    download_k8s_rpms "$RELEASE_VERSION" "$arch" "$OUTPUT_DIR/kubernetes/$RELEASE_VERSION/rhel/$arch"
+    
+    curl -fsSL "https://github.com/containerd/containerd/releases/download/v1.7.0/containerd-1.7.0-linux-${arch}.tar.gz" \
+      -o "$OUTPUT_DIR/runtime/containerd/v1.7.0/linux-${arch}/containerd-1.7.0-linux-${arch}.tar.gz"
+    
+    curl -fsSL "https://github.com/containernetworking/plugins/releases/download/v1.3.0/cni-plugins-linux-${arch}-v1.3.0.tgz" \
+      -o "$OUTPUT_DIR/cni/plugins/v1.3.0/linux-${arch}/cni-plugins-linux-${arch}-v1.3.0.tgz"
+done
+
+# 下载 Manifest/Helm 组件
+curl -fsSL "https://raw.githubusercontent.com/projectcalico/calico/v3.27.0/manifests/calico.yaml" \
+  -o "$OUTPUT_DIR/cni/calico/v3.27.0/calico.yaml"
+
+# 生成 index.json 和 checksums
+generate_index_json "$OUTPUT_DIR"
+cd "$OUTPUT_DIR" && find . -type f -exec sha256sum {} + > checksums.sha256
+
+# 构建 OCI 镜像
+docker build -t capbm-release:$RELEASE_VERSION .
+docker push capbm-release:$RELEASE_VERSION
+```
+
 ## 八、SSH 连接管理 (保持不变)
 
 ### 7.1 SSH Manager 设计

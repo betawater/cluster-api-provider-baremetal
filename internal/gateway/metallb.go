@@ -70,11 +70,48 @@ set -euo pipefail
 
 METALLB_VERSION="%s"
 MODE="%s"
+INSTALL_SOURCE="${INSTALL_SOURCE:-online}"
+RELEASE_SERVER="${RELEASE_SERVER:-}"
+LOCAL_PATH="${LOCAL_PATH:-}"
 
 echo "=== Installing MetalLB (version=$METALLB_VERSION, mode=$MODE) ==="
 
-# Install MetalLB
-kubectl apply -f "https://raw.githubusercontent.com/metallb/metallb/v${METALLB_VERSION}/config/manifests/metallb-native.yaml"
+fetch_resource() {
+    local resource="$1"
+    local dest="$2"
+    case "$INSTALL_SOURCE" in
+        online) curl -fsSL "$resource" -o "$dest" ;;
+        http)   curl -fsSL "${RELEASE_SERVER}/${resource}" -o "$dest" ;;
+        local)  cp "${LOCAL_PATH}/${resource}" "$dest" ;;
+        *)      echo "ERROR: unsupported INSTALL_SOURCE=$INSTALL_SOURCE"; exit 1 ;;
+    esac
+}
+
+# Install MetalLB CRDs first
+local crds_manifest=$(mktemp)
+case "$INSTALL_SOURCE" in
+    online)
+        kubectl apply -f "https://raw.githubusercontent.com/metallb/metallb/v${METALLB_VERSION}/config/manifests/metallb-native.yaml"
+        ;;
+    http|local)
+        fetch_resource "metallb/v${METALLB_VERSION}/metallb-crds.yaml" "$crds_manifest"
+        kubectl apply -f "$crds_manifest"
+        rm -f "$crds_manifest"
+        ;;
+esac
+
+# Install MetalLB Controller and Speaker
+local controller_manifest=$(mktemp)
+case "$INSTALL_SOURCE" in
+    online)
+        kubectl apply -f "https://raw.githubusercontent.com/metallb/metallb/v${METALLB_VERSION}/config/manifests/metallb-native.yaml"
+        ;;
+    http|local)
+        fetch_resource "metallb/v${METALLB_VERSION}/metallb-controller.yaml" "$controller_manifest"
+        kubectl apply -f "$controller_manifest"
+        rm -f "$controller_manifest"
+        ;;
+esac
 
 # Wait for MetalLB to be ready
 kubectl rollout status deployment/controller -n metallb-system --timeout=300s

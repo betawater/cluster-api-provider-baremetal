@@ -43,8 +43,8 @@ func DiffComponents(current, target *infrav1.ReleaseImage) *ComponentDiff {
 	diff := &ComponentDiff{}
 
 	// Compare containerd
-	currentContainerd := current.Spec.Components.Containerd
-	targetContainerd := target.Spec.Components.Containerd
+	currentContainerd := current.Spec.Components.Containerd.Version
+	targetContainerd := target.Spec.Components.Containerd.Version
 	if currentContainerd != targetContainerd {
 		if targetContainerd != "" {
 			diff.Changed = append(diff.Changed, ComponentChange{
@@ -57,25 +57,26 @@ func DiffComponents(current, target *infrav1.ReleaseImage) *ComponentDiff {
 		diff.Unchanged = append(diff.Unchanged, "containerd")
 	}
 
-	// Compare kubernetes sub-components
-	for name, targetVer := range target.Spec.Components.Kubernetes {
-		currentVer := current.Spec.Components.Kubernetes[name]
-		if currentVer != targetVer {
+	// Compare kubernetes version
+	currentK8s := current.Spec.Components.Kubernetes.Version
+	targetK8s := target.Spec.Components.Kubernetes.Version
+	if currentK8s != targetK8s {
+		if targetK8s != "" {
 			diff.Changed = append(diff.Changed, ComponentChange{
-				Name:           name,
-				CurrentVersion: currentVer,
-				TargetVersion:  targetVer,
+				Name:           "kubernetes",
+				CurrentVersion: currentK8s,
+				TargetVersion:  targetK8s,
 			})
-		} else if targetVer != "" {
-			diff.Unchanged = append(diff.Unchanged, name)
 		}
+	} else if currentK8s != "" {
+		diff.Unchanged = append(diff.Unchanged, "kubernetes")
 	}
 
 	// Compare CNI/CSI components
 	cniComponents := map[string]string{
-		"calico":  target.Spec.Components.Calico,
-		"cilium":  target.Spec.Components.Cilium,
-		"cephCsi": target.Spec.Components.CephCsi,
+		"calico":  target.Spec.Components.Calico.Version,
+		"cilium":  target.Spec.Components.Cilium.Version,
+		"cephCsi": target.Spec.Components.CephCsi.Version,
 	}
 	for name, targetVer := range cniComponents {
 		currentVer := getComponentVersionByName(current, name)
@@ -97,13 +98,17 @@ func DiffComponents(current, target *infrav1.ReleaseImage) *ComponentDiff {
 func getComponentVersionByName(ri *infrav1.ReleaseImage, name string) string {
 	switch name {
 	case "calico":
-		return ri.Spec.Components.Calico
+		return ri.Spec.Components.Calico.Version
 	case "cilium":
-		return ri.Spec.Components.Cilium
+		return ri.Spec.Components.Cilium.Version
 	case "cephCsi":
-		return ri.Spec.Components.CephCsi
+		return ri.Spec.Components.CephCsi.Version
+	case "containerd":
+		return ri.Spec.Components.Containerd.Version
+	case "kubernetes":
+		return ri.Spec.Components.Kubernetes.Version
 	default:
-		return ri.Spec.Components.Kubernetes[name]
+		return ""
 	}
 }
 

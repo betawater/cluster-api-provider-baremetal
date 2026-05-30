@@ -322,47 +322,47 @@ func (r *ClusterVersionReconciler) initComponentStatus(releaseImage *infrav1.Rel
 	var status []infrav1.ComponentStatus
 
 	// Add containerd
-	if releaseImage.Spec.Components.Containerd != "" {
+	if releaseImage.Spec.Components.Containerd.Version != "" {
 		status = append(status, infrav1.ComponentStatus{
 			Name:          "containerd",
-			Version:       releaseImage.Spec.Components.Containerd,
-			TargetVersion: releaseImage.Spec.Components.Containerd,
+			Version:       releaseImage.Spec.Components.Containerd.Version,
+			TargetVersion: releaseImage.Spec.Components.Containerd.Version,
 			Phase:         "Pending",
 		})
 	}
 
-	// Add kubernetes components
-	for name, ver := range releaseImage.Spec.Components.Kubernetes {
+	// Add kubernetes
+	if releaseImage.Spec.Components.Kubernetes.Version != "" {
 		status = append(status, infrav1.ComponentStatus{
-			Name:          name,
-			Version:       ver,
-			TargetVersion: ver,
+			Name:          "kubernetes",
+			Version:       releaseImage.Spec.Components.Kubernetes.Version,
+			TargetVersion: releaseImage.Spec.Components.Kubernetes.Version,
 			Phase:         "Pending",
 		})
 	}
 
 	// Add CNI/CSI components
-	if releaseImage.Spec.Components.Calico != "" {
+	if releaseImage.Spec.Components.Calico.Version != "" {
 		status = append(status, infrav1.ComponentStatus{
 			Name:          "calico",
-			Version:       releaseImage.Spec.Components.Calico,
-			TargetVersion: releaseImage.Spec.Components.Calico,
+			Version:       releaseImage.Spec.Components.Calico.Version,
+			TargetVersion: releaseImage.Spec.Components.Calico.Version,
 			Phase:         "Pending",
 		})
 	}
-	if releaseImage.Spec.Components.Cilium != "" {
+	if releaseImage.Spec.Components.Cilium.Version != "" {
 		status = append(status, infrav1.ComponentStatus{
 			Name:          "cilium",
-			Version:       releaseImage.Spec.Components.Cilium,
-			TargetVersion: releaseImage.Spec.Components.Cilium,
+			Version:       releaseImage.Spec.Components.Cilium.Version,
+			TargetVersion: releaseImage.Spec.Components.Cilium.Version,
 			Phase:         "Pending",
 		})
 	}
-	if releaseImage.Spec.Components.CephCsi != "" {
+	if releaseImage.Spec.Components.CephCsi.Version != "" {
 		status = append(status, infrav1.ComponentStatus{
 			Name:          "ceph-csi",
-			Version:       releaseImage.Spec.Components.CephCsi,
-			TargetVersion: releaseImage.Spec.Components.CephCsi,
+			Version:       releaseImage.Spec.Components.CephCsi.Version,
+			TargetVersion: releaseImage.Spec.Components.CephCsi.Version,
 			Phase:         "Pending",
 		})
 	}

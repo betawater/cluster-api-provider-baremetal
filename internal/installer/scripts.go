@@ -121,12 +121,12 @@ install_containerd() {
             ;;
         http)
             local archive=$(mktemp)
-            fetch_resource "containerd/containerd-linux-amd64.tar.gz" "$archive"
+            fetch_resource "runtime/containerd/v${CONTAINERD_VERSION}/linux-${ARCH}/containerd-${CONTAINERD_VERSION}-linux-${ARCH}.tar.gz" "$archive"
             tar -C /usr/local -xzf "$archive"
             rm -f "$archive"
             ;;
         local)
-            tar -C /usr/local -xzf "${LOCAL_PATH}/containerd/containerd-linux-amd64.tar.gz"
+            tar -C /usr/local -xzf "${LOCAL_PATH}/runtime/containerd/v${CONTAINERD_VERSION}/linux-${ARCH}/containerd-${CONTAINERD_VERSION}-linux-${ARCH}.tar.gz"
             ;;
     esac
 }
@@ -257,12 +257,12 @@ install_containerd() {
             ;;
         http)
             local archive=$(mktemp)
-            fetch_resource "containerd/containerd-linux-amd64.tar.gz" "$archive"
+            fetch_resource "runtime/containerd/v${CONTAINERD_VERSION}/linux-${ARCH}/containerd-${CONTAINERD_VERSION}-linux-${ARCH}.tar.gz" "$archive"
             tar -C /usr/local -xzf "$archive"
             rm -f "$archive"
             ;;
         local)
-            tar -C /usr/local -xzf "${LOCAL_PATH}/containerd/containerd-linux-amd64.tar.gz"
+            tar -C /usr/local -xzf "${LOCAL_PATH}/runtime/containerd/v${CONTAINERD_VERSION}/linux-${ARCH}/containerd-${CONTAINERD_VERSION}-linux-${ARCH}.tar.gz"
             ;;
     esac
 }
@@ -382,12 +382,12 @@ install_containerd() {
             ;;
         http)
             local archive=$(mktemp)
-            fetch_resource "containerd/containerd-linux-amd64.tar.gz" "$archive"
+            fetch_resource "runtime/containerd/v${CONTAINERD_VERSION}/linux-${ARCH}/containerd-${CONTAINERD_VERSION}-linux-${ARCH}.tar.gz" "$archive"
             tar -C /usr/local -xzf "$archive"
             rm -f "$archive"
             ;;
         local)
-            tar -C /usr/local -xzf "${LOCAL_PATH}/containerd/containerd-linux-amd64.tar.gz"
+            tar -C /usr/local -xzf "${LOCAL_PATH}/runtime/containerd/v${CONTAINERD_VERSION}/linux-${ARCH}/containerd-${CONTAINERD_VERSION}-linux-${ARCH}.tar.gz"
             ;;
     esac
 }
@@ -537,17 +537,17 @@ install_kubernetes() {
             apt-mark hold kubelet kubeadm kubectl
             ;;
         http)
-            fetch_resource "k8s/v${minor_version}/kubelet-${K8S_VERSION}.deb" /tmp/kubelet.deb
-            fetch_resource "k8s/v${minor_version}/kubeadm-${K8S_VERSION}.deb" /tmp/kubeadm.deb
-            fetch_resource "k8s/v${minor_version}/kubectl-${K8S_VERSION}.deb" /tmp/kubectl.deb
+            fetch_resource "kubernetes/v${K8S_VERSION}/${OS_TYPE}/linux-${ARCH}/kubelet-${K8S_VERSION}.deb" /tmp/kubelet.deb
+            fetch_resource "kubernetes/v${K8S_VERSION}/${OS_TYPE}/linux-${ARCH}/kubeadm-${K8S_VERSION}.deb" /tmp/kubeadm.deb
+            fetch_resource "kubernetes/v${K8S_VERSION}/${OS_TYPE}/linux-${ARCH}/kubectl-${K8S_VERSION}.deb" /tmp/kubectl.deb
             apt-get install -y /tmp/kubelet.deb /tmp/kubeadm.deb /tmp/kubectl.deb
             apt-mark hold kubelet kubeadm kubectl
             rm -f /tmp/kubelet.deb /tmp/kubeadm.deb /tmp/kubectl.deb
             ;;
         local)
-            apt-get install -y "${LOCAL_PATH}/k8s/v${minor_version}/kubelet-${K8S_VERSION}.deb" \
-                               "${LOCAL_PATH}/k8s/v${minor_version}/kubeadm-${K8S_VERSION}.deb" \
-                               "${LOCAL_PATH}/k8s/v${minor_version}/kubectl-${K8S_VERSION}.deb"
+            apt-get install -y "${LOCAL_PATH}/kubernetes/v${K8S_VERSION}/${OS_TYPE}/linux-${ARCH}/kubelet-${K8S_VERSION}.deb" \
+                               "${LOCAL_PATH}/kubernetes/v${K8S_VERSION}/${OS_TYPE}/linux-${ARCH}/kubeadm-${K8S_VERSION}.deb" \
+                               "${LOCAL_PATH}/kubernetes/v${K8S_VERSION}/${OS_TYPE}/linux-${ARCH}/kubectl-${K8S_VERSION}.deb"
             apt-mark hold kubelet kubeadm kubectl
             ;;
     esac
@@ -648,16 +648,16 @@ EOF
             $PKG_MGR install -y "kubelet-${K8S_VERSION}" "kubeadm-${K8S_VERSION}" "kubectl-${K8S_VERSION}"
             ;;
         http)
-            fetch_resource "k8s/v${minor_version}/kubelet-${K8S_VERSION}.rpm" /tmp/kubelet.rpm
-            fetch_resource "k8s/v${minor_version}/kubeadm-${K8S_VERSION}.rpm" /tmp/kubeadm.rpm
-            fetch_resource "k8s/v${minor_version}/kubectl-${K8S_VERSION}.rpm" /tmp/kubectl.rpm
+            fetch_resource "kubernetes/v${K8S_VERSION}/${OS_TYPE}/linux-${ARCH}/kubelet-${K8S_VERSION}.rpm" /tmp/kubelet.rpm
+            fetch_resource "kubernetes/v${K8S_VERSION}/${OS_TYPE}/linux-${ARCH}/kubeadm-${K8S_VERSION}.rpm" /tmp/kubeadm.rpm
+            fetch_resource "kubernetes/v${K8S_VERSION}/${OS_TYPE}/linux-${ARCH}/kubectl-${K8S_VERSION}.rpm" /tmp/kubectl.rpm
             $PKG_MGR install -y /tmp/kubelet.rpm /tmp/kubeadm.rpm /tmp/kubectl.rpm
             rm -f /tmp/kubelet.rpm /tmp/kubeadm.rpm /tmp/kubectl.rpm
             ;;
         local)
-            $PKG_MGR install -y "${LOCAL_PATH}/k8s/v${minor_version}/kubelet-${K8S_VERSION}.rpm" \
-                                "${LOCAL_PATH}/k8s/v${minor_version}/kubeadm-${K8S_VERSION}.rpm" \
-                                "${LOCAL_PATH}/k8s/v${minor_version}/kubectl-${K8S_VERSION}.rpm"
+            $PKG_MGR install -y "${LOCAL_PATH}/kubernetes/v${K8S_VERSION}/${OS_TYPE}/linux-${ARCH}/kubelet-${K8S_VERSION}.rpm" \
+                                "${LOCAL_PATH}/kubernetes/v${K8S_VERSION}/${OS_TYPE}/linux-${ARCH}/kubeadm-${K8S_VERSION}.rpm" \
+                                "${LOCAL_PATH}/kubernetes/v${K8S_VERSION}/${OS_TYPE}/linux-${ARCH}/kubectl-${K8S_VERSION}.rpm"
             ;;
     esac
 }
@@ -746,16 +746,16 @@ EOF
             zypper install -y "kubelet-${K8S_VERSION}" "kubeadm-${K8S_VERSION}" "kubectl-${K8S_VERSION}"
             ;;
         http)
-            fetch_resource "k8s/v${minor_version}/kubelet-${K8S_VERSION}.rpm" /tmp/kubelet.rpm
-            fetch_resource "k8s/v${minor_version}/kubeadm-${K8S_VERSION}.rpm" /tmp/kubeadm.rpm
-            fetch_resource "k8s/v${minor_version}/kubectl-${K8S_VERSION}.rpm" /tmp/kubectl.rpm
+            fetch_resource "kubernetes/v${K8S_VERSION}/${OS_TYPE}/linux-${ARCH}/kubelet-${K8S_VERSION}.rpm" /tmp/kubelet.rpm
+            fetch_resource "kubernetes/v${K8S_VERSION}/${OS_TYPE}/linux-${ARCH}/kubeadm-${K8S_VERSION}.rpm" /tmp/kubeadm.rpm
+            fetch_resource "kubernetes/v${K8S_VERSION}/${OS_TYPE}/linux-${ARCH}/kubectl-${K8S_VERSION}.rpm" /tmp/kubectl.rpm
             zypper install -y /tmp/kubelet.rpm /tmp/kubeadm.rpm /tmp/kubectl.rpm
             rm -f /tmp/kubelet.rpm /tmp/kubeadm.rpm /tmp/kubectl.rpm
             ;;
         local)
-            zypper install -y "${LOCAL_PATH}/k8s/v${minor_version}/kubelet-${K8S_VERSION}.rpm" \
-                              "${LOCAL_PATH}/k8s/v${minor_version}/kubeadm-${K8S_VERSION}.rpm" \
-                              "${LOCAL_PATH}/k8s/v${minor_version}/kubectl-${K8S_VERSION}.rpm"
+            zypper install -y "${LOCAL_PATH}/kubernetes/v${K8S_VERSION}/${OS_TYPE}/linux-${ARCH}/kubelet-${K8S_VERSION}.rpm" \
+                              "${LOCAL_PATH}/kubernetes/v${K8S_VERSION}/${OS_TYPE}/linux-${ARCH}/kubeadm-${K8S_VERSION}.rpm" \
+                              "${LOCAL_PATH}/kubernetes/v${K8S_VERSION}/${OS_TYPE}/linux-${ARCH}/kubectl-${K8S_VERSION}.rpm"
             ;;
     esac
 }
@@ -833,18 +833,18 @@ install_kubernetes() {
             done
             ;;
         http)
-            fetch_resource "k8s/v${K8S_VERSION}/kubeadm" "${INSTALL_PREFIX}/kubeadm"
-            fetch_resource "k8s/v${K8S_VERSION}/kubelet" "${INSTALL_PREFIX}/kubelet"
-            fetch_resource "k8s/v${K8S_VERSION}/kubectl" "${INSTALL_PREFIX}/kubectl"
+            fetch_resource "kubernetes/v${K8S_VERSION}/linux-${ARCH}/kubeadm" "${INSTALL_PREFIX}/kubeadm"
+            fetch_resource "kubernetes/v${K8S_VERSION}/linux-${ARCH}/kubelet" "${INSTALL_PREFIX}/kubelet"
+            fetch_resource "kubernetes/v${K8S_VERSION}/linux-${ARCH}/kubectl" "${INSTALL_PREFIX}/kubectl"
             chmod +x "${INSTALL_PREFIX}/kubeadm" "${INSTALL_PREFIX}/kubelet" "${INSTALL_PREFIX}/kubectl"
             for binary in kubeadm kubelet kubectl; do
                 ln -sf "${INSTALL_PREFIX}/${binary}" "/usr/local/bin/${binary}" 2>/dev/null || true
             done
             ;;
         local)
-            cp "${LOCAL_PATH}/k8s/v${K8S_VERSION}/kubeadm" "${INSTALL_PREFIX}/kubeadm"
-            cp "${LOCAL_PATH}/k8s/v${K8S_VERSION}/kubelet" "${INSTALL_PREFIX}/kubelet"
-            cp "${LOCAL_PATH}/k8s/v${K8S_VERSION}/kubectl" "${INSTALL_PREFIX}/kubectl"
+            cp "${LOCAL_PATH}/kubernetes/v${K8S_VERSION}/linux-${ARCH}/kubeadm" "${INSTALL_PREFIX}/kubeadm"
+            cp "${LOCAL_PATH}/kubernetes/v${K8S_VERSION}/linux-${ARCH}/kubelet" "${INSTALL_PREFIX}/kubelet"
+            cp "${LOCAL_PATH}/kubernetes/v${K8S_VERSION}/linux-${ARCH}/kubectl" "${INSTALL_PREFIX}/kubectl"
             chmod +x "${INSTALL_PREFIX}/kubeadm" "${INSTALL_PREFIX}/kubelet" "${INSTALL_PREFIX}/kubectl"
             for binary in kubeadm kubelet kubectl; do
                 ln -sf "${INSTALL_PREFIX}/${binary}" "/usr/local/bin/${binary}" 2>/dev/null || true

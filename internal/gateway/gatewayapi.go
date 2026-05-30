@@ -54,10 +54,34 @@ set -euo pipefail
 
 GATEWAY_API_VERSION="%s"
 MANIFEST_URL="%s"
+INSTALL_SOURCE="${INSTALL_SOURCE:-online}"
+RELEASE_SERVER="${RELEASE_SERVER:-}"
+LOCAL_PATH="${LOCAL_PATH:-}"
 
 echo "=== Installing Gateway API CRDs (version=$GATEWAY_API_VERSION) ==="
 
-kubectl apply -f "$MANIFEST_URL"
+fetch_resource() {
+    local resource="$1"
+    local dest="$2"
+    case "$INSTALL_SOURCE" in
+        online) curl -fsSL "$resource" -o "$dest" ;;
+        http)   curl -fsSL "${RELEASE_SERVER}/${resource}" -o "$dest" ;;
+        local)  cp "${LOCAL_PATH}/${resource}" "$dest" ;;
+        *)      echo "ERROR: unsupported INSTALL_SOURCE=$INSTALL_SOURCE"; exit 1 ;;
+    esac
+}
+
+local manifest=$(mktemp)
+case "$INSTALL_SOURCE" in
+    online)
+        kubectl apply -f "$MANIFEST_URL"
+        ;;
+    http|local)
+        fetch_resource "gateway/gateway-api/v${GATEWAY_API_VERSION}/gateway-api-crds.yaml" "$manifest"
+        kubectl apply -f "$manifest"
+        rm -f "$manifest"
+        ;;
+esac
 
 echo "Waiting for CRDs to be established..."
 kubectl wait --for=condition=Established crd/gatewayclasses.gateway.networking.k8s.io --timeout=60s

@@ -47,8 +47,8 @@ func New(sshConn *sshclient.SSHConnection, config *infrav1.ComponentInstallConfi
 // Component versions are sourced from releaseImage.Spec.Components.
 func NewWithReleaseImage(sshConn *sshclient.SSHConnection, releaseImage *infrav1.ReleaseImage, config *infrav1.ComponentInstallConfig, role string) *Installer {
 	k8sVersion := ""
-	if ver, ok := releaseImage.Spec.Components.Kubernetes["kubelet"]; ok {
-		k8sVersion = strings.TrimPrefix(ver, "v")
+	if releaseImage.Spec.Components.Kubernetes.Version != "" {
+		k8sVersion = strings.TrimPrefix(releaseImage.Spec.Components.Kubernetes.Version, "v")
 	}
 	return &Installer{
 		sshConn:      sshConn,

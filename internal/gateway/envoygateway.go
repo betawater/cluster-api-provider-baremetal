@@ -49,11 +49,48 @@ set -euo pipefail
 
 ENVOY_GATEWAY_VERSION="%s"
 REPLICA_COUNT="%d"
+INSTALL_SOURCE="${INSTALL_SOURCE:-online}"
+RELEASE_SERVER="${RELEASE_SERVER:-}"
+LOCAL_PATH="${LOCAL_PATH:-}"
 
 echo "=== Installing Envoy Gateway (version=$ENVOY_GATEWAY_VERSION) ==="
 
-# Install Envoy Gateway CRDs
-kubectl apply -f "https://github.com/envoyproxy/gateway/releases/download/${ENVOY_GATEWAY_VERSION}/install.yaml"
+fetch_resource() {
+    local resource="$1"
+    local dest="$2"
+    case "$INSTALL_SOURCE" in
+        online) curl -fsSL "$resource" -o "$dest" ;;
+        http)   curl -fsSL "${RELEASE_SERVER}/${resource}" -o "$dest" ;;
+        local)  cp "${LOCAL_PATH}/${resource}" "$dest" ;;
+        *)      echo "ERROR: unsupported INSTALL_SOURCE=$INSTALL_SOURCE"; exit 1 ;;
+    esac
+}
+
+# Install Envoy Gateway CRDs first
+local crds_manifest=$(mktemp)
+case "$INSTALL_SOURCE" in
+    online)
+        kubectl apply -f "https://github.com/envoyproxy/gateway/releases/download/v${ENVOY_GATEWAY_VERSION}/install.yaml"
+        ;;
+    http|local)
+        fetch_resource "gateway/envoy-gateway/v${ENVOY_GATEWAY_VERSION}/envoy-gateway-crds.yaml" "$crds_manifest"
+        kubectl apply -f "$crds_manifest"
+        rm -f "$crds_manifest"
+        ;;
+esac
+
+# Install Envoy Gateway Controller
+local controller_manifest=$(mktemp)
+case "$INSTALL_SOURCE" in
+    online)
+        kubectl apply -f "https://github.com/envoyproxy/gateway/releases/download/v${ENVOY_GATEWAY_VERSION}/install.yaml"
+        ;;
+    http|local)
+        fetch_resource "gateway/envoy-gateway/v${ENVOY_GATEWAY_VERSION}/envoy-gateway-controller.yaml" "$controller_manifest"
+        kubectl apply -f "$controller_manifest"
+        rm -f "$controller_manifest"
+        ;;
+esac
 
 # Wait for Envoy Gateway to be ready
 kubectl rollout status deployment/envoy-gateway -n envoy-gateway-system --timeout=300s
