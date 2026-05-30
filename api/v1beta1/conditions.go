@@ -39,6 +39,9 @@ const (
 
 	// CSIInstalledCondition reports whether CSI driver is installed.
 	CSIInstalledCondition clusterv1.ConditionType = "CSIInstalled"
+
+	// LoadBalancerReadyCondition reports whether the load balancer is ready.
+	LoadBalancerReadyCondition clusterv1.ConditionType = "LoadBalancerReady"
 )
 
 // Common condition reasons
@@ -84,4 +87,13 @@ const (
 
 	// CSIInstalledReason indicates CSI is installed.
 	CSIInstalledReason = "CSIInstalled"
+
+	// LBSyncFailedReason indicates load balancer sync failed.
+	LBSyncFailedReason = "LBSyncFailed"
+
+	// LoadBalancerReadyReason indicates load balancer is ready.
+	LoadBalancerReadyReason = "LoadBalancerReady"
+
+	// LBProviderNotSupportedReason indicates the load balancer provider is not supported.
+	LBProviderNotSupportedReason = "LBProviderNotSupported"
 )

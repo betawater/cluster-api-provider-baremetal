@@ -18,6 +18,7 @@ package controllers
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -32,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	infrav1 "github.com/BetaWater/cluster-api-provider-baremetal/api/v1beta1"
+	"github.com/BetaWater/cluster-api-provider-baremetal/internal/lb"
 )
 
 const (
@@ -53,6 +55,7 @@ type BareMetalClusterReconciler struct {
 // +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=baremetalclusters/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=infrastructure.cluster.x-k8s.io,resources=baremetalclusters/finalizers,verbs=update
 // +kubebuilder:rbac:groups=cluster.x-k8s.io,resources=clusters;clusters/status,verbs=get;list;watch
+// +kubebuilder:rbac:groups=cluster.x-k8s.io,resources=machines;machines/status,verbs=get;list;watch
 
 func (r *BareMetalClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := ctrl.LoggerFrom(ctx)
@@ -111,6 +114,19 @@ func (r *BareMetalClusterReconciler) reconcileNormal(ctx context.Context, bmClus
 	if err := r.reconcileNetworkConfig(ctx, bmCluster, capiCluster); err != nil {
 		log.Error(err, "failed to reconcile network config")
 		return ctrl.Result{}, err
+	}
+
+	if err := r.reconcileLoadBalancer(ctx, bmCluster, capiCluster); err != nil {
+		log.Error(err, "failed to sync load balancer backends")
+		markConditionFalse(&bmCluster.Status.Conditions, infrav1.LoadBalancerReadyCondition, infrav1.LBSyncFailedReason, clusterv1.ConditionSeverityWarning, err.Error())
+		if err := r.Status().Update(ctx, bmCluster); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
+
+	if bmCluster.Spec.LoadBalancer != nil {
+		markConditionTrue(&bmCluster.Status.Conditions, infrav1.LoadBalancerReadyCondition, "Load balancer backends are synced")
 	}
 
 	bmCluster.Spec.ControlPlaneEndpoint = endpoint
@@ -181,6 +197,117 @@ func (r *BareMetalClusterReconciler) reconcileNetworkConfig(ctx context.Context,
 	}
 
 	return r.Update(ctx, bmCluster)
+}
+
+func (r *BareMetalClusterReconciler) reconcileLoadBalancer(ctx context.Context, bmCluster *infrav1.BareMetalCluster, capiCluster *clusterv1.Cluster) error {
+	log := ctrl.LoggerFrom(ctx)
+
+	lbConfig := bmCluster.Spec.LoadBalancer
+	if lbConfig == nil {
+		return nil
+	}
+
+	provider, err := lb.NewProvider(lbConfig)
+	if err != nil {
+		return fmt.Errorf("failed to create load balancer provider: %w", err)
+	}
+	if provider == nil {
+		return nil
+	}
+
+	cpMachines, err := r.getControlPlaneMachines(ctx, capiCluster)
+	if err != nil {
+		return fmt.Errorf("failed to get control plane machines: %w", err)
+	}
+
+	desiredBackends := make(map[string]lb.Backend)
+	for _, m := range cpMachines {
+		if m.Status.Phase == string(clusterv1.MachinePhaseRunning) {
+			ip := getMachineIP(m)
+			if ip != "" {
+				desiredBackends[m.Name] = lb.Backend{
+					Name: m.Name,
+					IP:   ip,
+					Port: int(bmCluster.Spec.ControlPlaneEndpoint.Port),
+				}
+			}
+		}
+	}
+
+	currentBackends, err := provider.GetBackends(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get current backends: %w", err)
+	}
+
+	currentBackendMap := make(map[string]lb.Backend)
+	for _, b := range currentBackends {
+		currentBackendMap[b.Name] = b
+	}
+
+	toAdd := make(map[string]lb.Backend)
+	toRemove := make(map[string]lb.Backend)
+
+	for name, backend := range desiredBackends {
+		if _, exists := currentBackendMap[name]; !exists {
+			toAdd[name] = backend
+		}
+	}
+	for name, backend := range currentBackendMap {
+		if _, exists := desiredBackends[name]; !exists {
+			toRemove[name] = backend
+		}
+	}
+
+	for name, backend := range toAdd {
+		log.Info("Registering backend to load balancer", "name", name, "ip", backend.IP, "port", backend.Port)
+		if err := provider.RegisterBackend(ctx, backend); err != nil {
+			return fmt.Errorf("failed to register backend %s: %w", name, err)
+		}
+	}
+
+	for name, backend := range toRemove {
+		log.Info("Unregistering backend from load balancer", "name", name, "ip", backend.IP, "port", backend.Port)
+		if err := provider.UnregisterBackend(ctx, backend); err != nil {
+			return fmt.Errorf("failed to unregister backend %s: %w", name, err)
+		}
+	}
+
+	return nil
+}
+
+func (r *BareMetalClusterReconciler) getControlPlaneMachines(ctx context.Context, capiCluster *clusterv1.Cluster) ([]clusterv1.Machine, error) {
+	machineList := &clusterv1.MachineList{}
+	if err := r.List(ctx, machineList, client.InNamespace(capiCluster.Namespace), client.MatchingLabels{
+		clusterv1.ClusterNameLabel: capiCluster.Name,
+	}); err != nil {
+		return nil, err
+	}
+
+	var cpMachines []clusterv1.Machine
+	for _, m := range machineList.Items {
+		if m.Spec.ClusterName == capiCluster.Name {
+			if m.Labels[clusterv1.MachineControlPlaneLabel] == "" {
+				continue
+			}
+			cpMachines = append(cpMachines, m)
+		}
+	}
+
+	return cpMachines, nil
+}
+
+func getMachineIP(machine clusterv1.Machine) string {
+	for _, addr := range machine.Status.Addresses {
+		if addr.Type == clusterv1.MachineInternalIP {
+			return addr.Address
+		}
+	}
+	for _, addr := range machine.Status.Addresses {
+		if addr.Type == clusterv1.MachineExternalIP {
+			return addr.Address
+		}
+	}
+	return ""
 }
 
 func (r *BareMetalClusterReconciler) reconcileDelete(ctx context.Context, cluster *infrav1.BareMetalCluster) (ctrl.Result, error) {

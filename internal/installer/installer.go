@@ -306,7 +306,7 @@ func (i *Installer) installContainerRuntime(ctx context.Context, osInfo *OSInfo)
 	}
 
 	if i.config.AirGap != nil && i.config.AirGap.Enabled {
-		switch i.config.AirGap.ManifestSource {
+		switch i.config.AirGap.BinarySource {
 		case "HTTPServer":
 			script = prependEnvVar(script, "INSTALL_SOURCE", "http")
 			if i.config.AirGap.HTTPServerConfig != nil {
@@ -379,7 +379,7 @@ func (i *Installer) installKubernetesComponents(ctx context.Context, osInfo *OSI
 	}
 
 	if i.config.AirGap != nil && i.config.AirGap.Enabled {
-		switch i.config.AirGap.ManifestSource {
+		switch i.config.AirGap.BinarySource {
 		case "HTTPServer":
 			script = prependEnvVar(script, "INSTALL_SOURCE", "http")
 			if i.config.AirGap.HTTPServerConfig != nil {

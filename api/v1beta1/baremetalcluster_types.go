@@ -17,6 +17,7 @@ limitations under the License.
 package v1beta1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 )
@@ -45,6 +46,10 @@ type BareMetalClusterSpec struct {
 	// Network holds the cluster-level network configuration.
 	// +optional
 	Network NetworkConfig `json:"network,omitempty"`
+
+	// LoadBalancer holds the load balancer configuration for the control plane.
+	// +optional
+	LoadBalancer *LoadBalancerConfig `json:"loadBalancer,omitempty"`
 }
 
 // NetworkConfig holds the network configuration for the cluster.
@@ -60,6 +65,174 @@ type NetworkConfig struct {
 	// DNSDomain is the DNS domain for the cluster.
 	// +optional
 	DNSDomain string `json:"dnsDomain,omitempty"`
+}
+
+// LoadBalancerConfig defines the load balancer configuration for the control plane.
+type LoadBalancerConfig struct {
+	// Provider is the load balancer type (haproxy, keepalived, f5, nginx, metal-lb).
+	// +optional
+	// +kubebuilder:default=haproxy
+	Provider string `json:"provider,omitempty"`
+
+	// HealthCheck defines health check configuration.
+	// +optional
+	HealthCheck HealthCheckConfig `json:"healthCheck,omitempty"`
+
+	// HAProxy holds HAProxy specific configuration.
+	// +optional
+	HAProxy *HAProxyConfig `json:"haproxy,omitempty"`
+
+	// Keepalived holds Keepalived specific configuration.
+	// +optional
+	Keepalived *KeepalivedConfig `json:"keepalived,omitempty"`
+
+	// F5 holds F5 BIG-IP specific configuration.
+	// +optional
+	F5 *F5Config `json:"f5,omitempty"`
+
+	// MetalLB holds MetalLB specific configuration.
+	// +optional
+	MetalLB *MetalLBConfig `json:"metal-lb,omitempty"`
+}
+
+// HealthCheckConfig defines health check configuration for the load balancer.
+type HealthCheckConfig struct {
+	// Enabled enables health checking.
+	// +optional
+	// +kubebuilder:default=true
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Path is the health check endpoint.
+	// +optional
+	// +kubebuilder:default=/healthz
+	Path string `json:"path,omitempty"`
+
+	// Interval is the check interval.
+	// +optional
+	// +kubebuilder:default="5s"
+	Interval string `json:"interval,omitempty"`
+
+	// Timeout is the check timeout.
+	// +optional
+	// +kubebuilder:default="3s"
+	Timeout string `json:"timeout,omitempty"`
+
+	// HealthyThreshold is the number of successful checks to mark as healthy.
+	// +optional
+	// +kubebuilder:default=2
+	HealthyThreshold int `json:"healthyThreshold,omitempty"`
+
+	// UnhealthyThreshold is the number of failed checks to mark as unhealthy.
+	// +optional
+	// +kubebuilder:default=3
+	UnhealthyThreshold int `json:"unhealthyThreshold,omitempty"`
+}
+
+// HAProxyConfig defines HAProxy specific configuration.
+type HAProxyConfig struct {
+	// AdminHost is the HAProxy Runtime API host.
+	// +optional
+	AdminHost string `json:"adminHost,omitempty"`
+
+	// AdminPort is the HAProxy Runtime API port.
+	// +optional
+	// +kubebuilder:default=9999
+	AdminPort int `json:"adminPort,omitempty"`
+
+	// SSHHost is the HAProxy server SSH host (alternative to Runtime API).
+	// +optional
+	SSHHost string `json:"sshHost,omitempty"`
+
+	// SSHPort is the HAProxy server SSH port.
+	// +optional
+	// +kubebuilder:default=22
+	SSHPort int `json:"sshPort,omitempty"`
+
+	// SSHCredentialsRef references the SSH credentials secret.
+	// +optional
+	SSHCredentialsRef *corev1.LocalObjectReference `json:"sshCredentialsRef,omitempty"`
+
+	// ConfigFile is the HAProxy configuration file path.
+	// +optional
+	// +kubebuilder:default=/etc/haproxy/haproxy.cfg
+	ConfigFile string `json:"configFile,omitempty"`
+
+	// BackendName is the backend name in HAProxy config.
+	// +optional
+	// +kubebuilder:default=k8s-apiserver
+	BackendName string `json:"backendName,omitempty"`
+
+	// ReloadCommand is the command to reload HAProxy.
+	// +optional
+	// +kubebuilder:default="systemctl reload haproxy"
+	ReloadCommand string `json:"reloadCommand,omitempty"`
+}
+
+// KeepalivedConfig defines Keepalived specific configuration.
+type KeepalivedConfig struct {
+	// VirtualIP is the virtual IP address.
+	// +optional
+	VirtualIP string `json:"virtualIP,omitempty"`
+
+	// Interface is the network interface.
+	// +optional
+	// +kubebuilder:default=eth0
+	Interface string `json:"interface,omitempty"`
+
+	// VirtualRouterID is the VRRP router ID.
+	// +optional
+	// +kubebuilder:default=51
+	VirtualRouterID int `json:"virtualRouterID,omitempty"`
+
+	// Priority is the VRRP priority.
+	// +optional
+	// +kubebuilder:default=100
+	Priority int `json:"priority,omitempty"`
+
+	// AdvertInterval is the advertisement interval in seconds.
+	// +optional
+	// +kubebuilder:default=1
+	AdvertInterval int `json:"advertInterval,omitempty"`
+}
+
+// F5Config defines F5 BIG-IP specific configuration.
+type F5Config struct {
+	// Host is the F5 BIG-IP management host.
+	// +optional
+	Host string `json:"host,omitempty"`
+
+	// Port is the F5 BIG-IP management port.
+	// +optional
+	// +kubebuilder:default=443
+	Port int `json:"port,omitempty"`
+
+	// CredentialsRef references the F5 credentials secret.
+	// +optional
+	CredentialsRef *corev1.LocalObjectReference `json:"credentialsRef,omitempty"`
+
+	// Partition is the F5 partition.
+	// +optional
+	// +kubebuilder:default=Common
+	Partition string `json:"partition,omitempty"`
+
+	// PoolName is the F5 pool name.
+	// +optional
+	PoolName string `json:"poolName,omitempty"`
+
+	// VirtualServerName is the F5 virtual server name.
+	// +optional
+	VirtualServerName string `json:"virtualServerName,omitempty"`
+}
+
+// MetalLBConfig defines MetalLB specific configuration.
+type MetalLBConfig struct {
+	// IPAddressPool is the MetalLB IP address pool name.
+	// +optional
+	IPAddressPool string `json:"ipAddressPool,omitempty"`
+
+	// LoadBalancerIP is the specific IP to assign.
+	// +optional
+	LoadBalancerIP string `json:"loadBalancerIP,omitempty"`
 }
 
 // BareMetalClusterInitializationStatus provides observations of the BareMetalCluster initialization process.
