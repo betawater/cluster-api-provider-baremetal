@@ -107,6 +107,19 @@ undeploy: ## Undeploy controller from the K8s cluster specified in ~/.kube/confi
 deploy-clusterclass: manifests kustomize ## Deploy ClusterClass templates.
 	$(KUSTOMIZE) build config/clusterclass | kubectl apply -f -
 
+##@ Release
+
+.PHONY: release
+release: manifests kustomize ## Generate release manifests for clusterctl.
+	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
+	$(KUSTOMIZE) build config/default > infrastructure-components.yaml
+
+.PHONY: release-manifests
+release-manifests: release ## Generate release manifests directory.
+	mkdir -p releases/$(VERSION)
+	cp infrastructure-components.yaml releases/$(VERSION)/infrastructure-components.yaml
+	cp metadata.yaml releases/$(VERSION)/metadata.yaml
+
 ##@ Build Dependencies
 
 LOCALBIN ?= $(shell pwd)/bin
