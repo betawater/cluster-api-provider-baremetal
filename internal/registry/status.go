@@ -102,18 +102,20 @@ func (t *StatusTracker) buildImportedImageStatus(releaseImage *infrav1.ReleaseIm
 		return statuses
 	}
 
-	// Build status for each component with images
+	// Build status for kubernetes component images
 	components := []struct {
 		name      string
 		imageList []string
 		version   string
 	}{
 		{"kubernetes", releaseImage.Spec.Components.Kubernetes.ImageList, releaseImage.Spec.Components.Kubernetes.Version},
-		{"calico", releaseImage.Spec.Components.Calico.ImageList, releaseImage.Spec.Components.Calico.Version},
-		{"cilium", releaseImage.Spec.Components.Cilium.ImageList, releaseImage.Spec.Components.Cilium.Version},
-		{"ceph-csi", releaseImage.Spec.Components.CephCsi.ImageList, releaseImage.Spec.Components.CephCsi.Version},
-		{"envoy-gateway", releaseImage.Spec.Components.EnvoyGateway.ImageList, releaseImage.Spec.Components.EnvoyGateway.Version},
-		{"metallb", releaseImage.Spec.Components.MetalLB.ImageList, releaseImage.Spec.Components.MetalLB.Version},
+	}
+
+	// Add addon images (addons may have associated images)
+	for _, addon := range releaseImage.Spec.Addons {
+		// For now, addons don't have explicit image lists
+		// In a full implementation, AddonDefinition would include an ImageList field
+		_ = addon
 	}
 
 	for _, comp := range components {

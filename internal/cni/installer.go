@@ -48,22 +48,17 @@ func New(sshConn *sshclient.SSHConnection, config infrav1.CNIConfig, podCIDR str
 
 func NewFromReleaseImage(sshConn *sshclient.SSHConnection, releaseImage *infrav1.ReleaseImage, config infrav1.CNIConfig, podCIDR string) *Installer {
 	if config.Type == "" {
-		if releaseImage.Spec.Components.Calico.Version != "" {
+		if addon := findAddon(releaseImage, "calico"); addon != nil {
 			config.Type = "calico"
-			config.Version = releaseImage.Spec.Components.Calico.Version
-		} else if releaseImage.Spec.Components.Cilium.Version != "" {
+			config.Version = addon.Version
+		} else if addon := findAddon(releaseImage, "cilium"); addon != nil {
 			config.Type = "cilium"
-			config.Version = releaseImage.Spec.Components.Cilium.Version
+			config.Version = addon.Version
 		}
 	}
 	if config.Version == "" && config.Type != "" {
-		switch config.Type {
-		case "calico":
-			config.Version = releaseImage.Spec.Components.Calico.Version
-		case "cilium":
-			config.Version = releaseImage.Spec.Components.Cilium.Version
-		case "flannel":
-			config.Version = releaseImage.Spec.Components.Flannel.Version
+		if addon := findAddon(releaseImage, config.Type); addon != nil {
+			config.Version = addon.Version
 		}
 	}
 	return &Installer{
@@ -71,6 +66,16 @@ func NewFromReleaseImage(sshConn *sshclient.SSHConnection, releaseImage *infrav1
 		config:  config,
 		podCIDR: podCIDR,
 	}
+}
+
+// findAddon finds an addon by name in the ReleaseImage.
+func findAddon(releaseImage *infrav1.ReleaseImage, name string) *infrav1.AddonDefinition {
+	for i := range releaseImage.Spec.Addons {
+		if releaseImage.Spec.Addons[i].Name == name {
+			return &releaseImage.Spec.Addons[i]
+		}
+	}
+	return nil
 }
 
 func (i *Installer) Install(ctx context.Context) (*InstallResult, error) {

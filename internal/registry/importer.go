@@ -100,7 +100,7 @@ func (i *Importer) ImportImages(ctx context.Context, releaseImage *infrav1.Relea
 func (i *Importer) buildImportJob(releaseImage *infrav1.ReleaseImage) *batchv1.Job {
 	registryConfig := releaseImage.Spec.ImageRegistry
 
-	// Build image list for all components
+	// Build image list for all components and addons
 	var componentList []string
 	var imageLists []string
 
@@ -109,25 +109,19 @@ func (i *Importer) buildImportJob(releaseImage *infrav1.ReleaseImage) *batchv1.J
 		componentList = append(componentList, "kubernetes")
 		imageLists = append(imageLists, fmt.Sprintf("kubernetes:%s", strings.Join(releaseImage.Spec.Components.Kubernetes.ImageList, ",")))
 	}
-	if len(releaseImage.Spec.Components.Calico.ImageList) > 0 {
-		componentList = append(componentList, "calico")
-		imageLists = append(imageLists, fmt.Sprintf("calico:%s", strings.Join(releaseImage.Spec.Components.Calico.ImageList, ",")))
-	}
-	if len(releaseImage.Spec.Components.Cilium.ImageList) > 0 {
-		componentList = append(componentList, "cilium")
-		imageLists = append(imageLists, fmt.Sprintf("cilium:%s", strings.Join(releaseImage.Spec.Components.Cilium.ImageList, ",")))
-	}
-	if len(releaseImage.Spec.Components.CephCsi.ImageList) > 0 {
-		componentList = append(componentList, "ceph-csi")
-		imageLists = append(imageLists, fmt.Sprintf("ceph-csi:%s", strings.Join(releaseImage.Spec.Components.CephCsi.ImageList, ",")))
-	}
-	if len(releaseImage.Spec.Components.EnvoyGateway.ImageList) > 0 {
-		componentList = append(componentList, "envoy-gateway")
-		imageLists = append(imageLists, fmt.Sprintf("envoy-gateway:%s", strings.Join(releaseImage.Spec.Components.EnvoyGateway.ImageList, ",")))
-	}
-	if len(releaseImage.Spec.Components.MetalLB.ImageList) > 0 {
-		componentList = append(componentList, "metallb")
-		imageLists = append(imageLists, fmt.Sprintf("metallb:%s", strings.Join(releaseImage.Spec.Components.MetalLB.ImageList, ",")))
+
+	// Collect addons that have images
+	for _, addon := range releaseImage.Spec.Addons {
+		// Addons may have images defined in their DefaultValues or as part of the addon definition
+		// For now, we look for common addon names that have images
+		switch addon.Name {
+		case "calico", "cilium", "flannel", "ceph-csi", "local-path-provisioner", "nfs-csi", "gateway-api", "envoy-gateway", "metallb":
+			// These addons typically have associated images
+			// In a full implementation, the addon definition would include an ImageList field
+			componentList = append(componentList, addon.Name)
+			// Placeholder - actual image list would come from addon definition
+			imageLists = append(imageLists, fmt.Sprintf("%s:", addon.Name))
+		}
 	}
 
 	// Build environment variables

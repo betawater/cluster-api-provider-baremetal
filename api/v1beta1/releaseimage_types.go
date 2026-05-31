@@ -77,21 +77,13 @@ type ImageRegistryConfig struct {
 	CAConfigMap string `json:"caConfigMap,omitempty"`
 }
 
-// ReleaseComponentVersions defines all component versions with installation metadata.
+// ReleaseComponentVersions defines node-level binary component versions.
+// These are installed directly on nodes via SSH.
 type ReleaseComponentVersions struct {
-	Kubernetes   KubernetesComponent   `json:"kubernetes"`
-	Containerd   BinaryComponent       `json:"containerd,omitempty"`
-	Helm         BinaryComponent       `json:"helm,omitempty"`
-	CNIPlugins   BinaryComponent       `json:"cniPlugins,omitempty"`
-	Calico       CNIComponent          `json:"calico,omitempty"`
-	Cilium       CNIComponent          `json:"cilium,omitempty"`
-	Flannel      CNIComponent          `json:"flannel,omitempty"`
-	CephCsi      CSIComponent          `json:"cephCsi,omitempty"`
-	LocalPath    CSIComponent          `json:"localPath,omitempty"`
-	NfsCsi       CSIComponent          `json:"nfsCsi,omitempty"`
-	GatewayAPI   ManifestComponent     `json:"gatewayAPI,omitempty"`
-	EnvoyGateway ManifestComponent     `json:"envoyGateway,omitempty"`
-	MetalLB      ManifestComponent     `json:"metalLB,omitempty"`
+	Kubernetes KubernetesComponent `json:"kubernetes"`
+	Containerd BinaryComponent     `json:"containerd,omitempty"`
+	Helm       BinaryComponent     `json:"helm,omitempty"`
+	CNIPlugins BinaryComponent     `json:"cniPlugins,omitempty"`
 }
 
 // ComponentType represents the installation type of a component.
@@ -130,53 +122,6 @@ type KubernetesComponent struct {
 type K8SPlatform struct {
 	Architectures []string          `json:"architectures"`
 	Packages      map[string]string `json:"packages"`
-}
-
-// CNIComponent defines a CNI plugin component.
-type CNIComponent struct {
-	Version      string      `json:"version"`
-	Type         ComponentType `json:"type"`
-	Path         string      `json:"path"`
-	InstallModes []string    `json:"installModes,omitempty"`
-	Files        CNIFiles    `json:"files,omitempty"`
-	Images       string      `json:"images,omitempty"`
-	ImageList    []string    `json:"imageList,omitempty"`
-	HelmValues   map[string]string `json:"helmValues,omitempty"`
-}
-
-// CNIFiles defines CNI component file names.
-type CNIFiles struct {
-	Manifest string `json:"manifest,omitempty"`
-	Chart    string `json:"chart,omitempty"`
-}
-
-// CSIComponent defines a CSI driver component.
-type CSIComponent struct {
-	Version      string      `json:"version"`
-	Type         ComponentType `json:"type"`
-	Path         string      `json:"path"`
-	InstallModes []string    `json:"installModes,omitempty"`
-	Files        CSIFiles    `json:"files,omitempty"`
-	Images       string      `json:"images,omitempty"`
-	ImageList    []string    `json:"imageList,omitempty"`
-	HelmValues   map[string]string `json:"helmValues,omitempty"`
-}
-
-// CSIFiles defines CSI component file names.
-type CSIFiles struct {
-	Manifest string `json:"manifest,omitempty"`
-	Chart    string `json:"chart,omitempty"`
-}
-
-// ManifestComponent defines a manifest-based component.
-type ManifestComponent struct {
-	Version   string      `json:"version"`
-	Type      ComponentType `json:"type"`
-	Path      string      `json:"path"`
-	Manifest  string      `json:"manifest"`
-	CRDs      string      `json:"crds,omitempty"`
-	Images    string      `json:"images,omitempty"`
-	ImageList []string    `json:"imageList,omitempty"`
 }
 
 // ImageMetadata defines container image metadata.

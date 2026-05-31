@@ -341,30 +341,19 @@ func (r *ClusterVersionReconciler) initComponentStatus(releaseImage *infrav1.Rel
 		})
 	}
 
-	// Add CNI/CSI components
-	if releaseImage.Spec.Components.Calico.Version != "" {
-		status = append(status, infrav1.ComponentStatus{
-			Name:          "calico",
-			Version:       releaseImage.Spec.Components.Calico.Version,
-			TargetVersion: releaseImage.Spec.Components.Calico.Version,
-			Phase:         "Pending",
-		})
-	}
-	if releaseImage.Spec.Components.Cilium.Version != "" {
-		status = append(status, infrav1.ComponentStatus{
-			Name:          "cilium",
-			Version:       releaseImage.Spec.Components.Cilium.Version,
-			TargetVersion: releaseImage.Spec.Components.Cilium.Version,
-			Phase:         "Pending",
-		})
-	}
-	if releaseImage.Spec.Components.CephCsi.Version != "" {
-		status = append(status, infrav1.ComponentStatus{
-			Name:          "ceph-csi",
-			Version:       releaseImage.Spec.Components.CephCsi.Version,
-			TargetVersion: releaseImage.Spec.Components.CephCsi.Version,
-			Phase:         "Pending",
-		})
+	// Add CNI/CSI addons
+	addonNames := []string{"calico", "cilium", "flannel", "ceph-csi", "local-path-provisioner", "nfs-csi", "gateway-api", "envoy-gateway", "metallb"}
+	for _, name := range addonNames {
+		for _, addon := range releaseImage.Spec.Addons {
+			if addon.Name == name && addon.Version != "" {
+				status = append(status, infrav1.ComponentStatus{
+					Name:          name,
+					Version:       addon.Version,
+					TargetVersion: addon.Version,
+					Phase:         "Pending",
+				})
+			}
+		}
 	}
 
 	return status

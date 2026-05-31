@@ -250,17 +250,9 @@ func (in *ReleaseImageSpec) DeepCopy() *ReleaseImageSpec {
 func (in *ReleaseComponentVersions) DeepCopyInto(out *ReleaseComponentVersions) {
 	*out = *in
 	in.Kubernetes.DeepCopyInto(&out.Kubernetes)
-	in.Containerd.DeepCopyInto(&out.Containerd)
-	in.CNIPlugins.DeepCopyInto(&out.CNIPlugins)
-	in.Calico.DeepCopyInto(&out.Calico)
-	in.Cilium.DeepCopyInto(&out.Cilium)
-	in.Flannel.DeepCopyInto(&out.Flannel)
-	in.CephCsi.DeepCopyInto(&out.CephCsi)
-	in.LocalPath.DeepCopyInto(&out.LocalPath)
-	in.NfsCsi.DeepCopyInto(&out.NfsCsi)
-	in.GatewayAPI.DeepCopyInto(&out.GatewayAPI)
-	in.EnvoyGateway.DeepCopyInto(&out.EnvoyGateway)
-	in.MetalLB.DeepCopyInto(&out.MetalLB)
+	out.Containerd = in.Containerd
+	out.Helm = in.Helm
+	out.CNIPlugins = in.CNIPlugins
 }
 
 func (in *KubernetesComponent) DeepCopyInto(out *KubernetesComponent) {
@@ -307,53 +299,6 @@ func (in *BinaryComponent) DeepCopyInto(out *BinaryComponent) {
 		copy(*out, *in)
 	}
 	out.Files = in.Files
-}
-
-func (in *CNIComponent) DeepCopyInto(out *CNIComponent) {
-	*out = *in
-	if in.InstallModes != nil {
-		in, out := &in.InstallModes, &out.InstallModes
-		*out = make([]string, len(*in))
-		copy(*out, *in)
-	}
-	out.Files = in.Files
-	if in.HelmValues != nil {
-		in, out := &in.HelmValues, &out.HelmValues
-		*out = make(map[string]string, len(*in))
-		for key, val := range *in {
-			(*out)[key] = val
-		}
-	}
-}
-
-func (in *CSIComponent) DeepCopyInto(out *CSIComponent) {
-	*out = *in
-	if in.InstallModes != nil {
-		in, out := &in.InstallModes, &out.InstallModes
-		*out = make([]string, len(*in))
-		copy(*out, *in)
-	}
-	out.Files = in.Files
-	if in.HelmValues != nil {
-		in, out := &in.HelmValues, &out.HelmValues
-		*out = make(map[string]string, len(*in))
-		for key, val := range *in {
-			(*out)[key] = val
-		}
-	}
-}
-
-func (in *ManifestComponent) DeepCopyInto(out *ManifestComponent) {
-	*out = *in
-}
-
-func (in *ReleaseComponentVersions) DeepCopy() *ReleaseComponentVersions {
-	if in == nil {
-		return nil
-	}
-	out := new(ReleaseComponentVersions)
-	in.DeepCopyInto(out)
-	return out
 }
 
 func (in *UpgradePhase) DeepCopyInto(out *UpgradePhase) {

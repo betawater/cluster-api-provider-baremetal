@@ -46,21 +46,30 @@ func New(sshConn *sshclient.SSHConnection, config infrav1.CSIConfig) *Installer 
 
 func NewFromReleaseImage(sshConn *sshclient.SSHConnection, releaseImage *infrav1.ReleaseImage, config infrav1.CSIConfig) *Installer {
 	if config.Driver == "" {
-		if releaseImage.Spec.Components.CephCsi.Version != "" {
+		if addon := findCSIAddon(releaseImage, "ceph-csi"); addon != nil {
 			config.Driver = "ceph-csi"
-			config.Version = releaseImage.Spec.Components.CephCsi.Version
+			config.Version = addon.Version
 		}
 	}
 	if config.Version == "" && config.Driver != "" {
-		switch config.Driver {
-		case "ceph-csi":
-			config.Version = releaseImage.Spec.Components.CephCsi.Version
+		if addon := findCSIAddon(releaseImage, config.Driver); addon != nil {
+			config.Version = addon.Version
 		}
 	}
 	return &Installer{
 		sshConn: sshConn,
 		config:  config,
 	}
+}
+
+// findCSIAddon finds a CSI addon by name in the ReleaseImage.
+func findCSIAddon(releaseImage *infrav1.ReleaseImage, name string) *infrav1.AddonDefinition {
+	for i := range releaseImage.Spec.Addons {
+		if releaseImage.Spec.Addons[i].Name == name {
+			return &releaseImage.Spec.Addons[i]
+		}
+	}
+	return nil
 }
 
 func (i *Installer) Install(ctx context.Context) (*InstallResult, error) {

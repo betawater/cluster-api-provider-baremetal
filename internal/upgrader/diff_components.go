@@ -72,42 +72,56 @@ func DiffComponents(current, target *infrav1.ReleaseImage) *ComponentDiff {
 		diff.Unchanged = append(diff.Unchanged, "kubernetes")
 	}
 
-	// Compare CNI/CSI components
-	cniComponents := map[string]string{
-		"calico":  target.Spec.Components.Calico.Version,
-		"cilium":  target.Spec.Components.Cilium.Version,
-		"cephCsi": target.Spec.Components.CephCsi.Version,
-	}
-	for name, targetVer := range cniComponents {
-		currentVer := getComponentVersionByName(current, name)
-		if currentVer != targetVer && targetVer != "" {
-			diff.Changed = append(diff.Changed, ComponentChange{
-				Name:           name,
-				CurrentVersion: currentVer,
-				TargetVersion:  targetVer,
-			})
-		} else if targetVer != "" {
-			diff.Unchanged = append(diff.Unchanged, name)
+	// Compare CNI/CSI addons
+	addonNames := []string{"calico", "cilium", "flannel", "ceph-csi", "local-path-provisioner", "nfs-csi", "gateway-api", "envoy-gateway", "metallb"}
+	for _, name := range addonNames {
+		targetAddon := findAddonByName(target, name)
+		currentAddon := findAddonByName(current, name)
+		
+		if targetAddon != nil {
+			currentVer := ""
+			if currentAddon != nil {
+				currentVer = currentAddon.Version
+			}
+			targetVer := targetAddon.Version
+			
+			if currentVer != targetVer && targetVer != "" {
+				diff.Changed = append(diff.Changed, ComponentChange{
+					Name:           name,
+					CurrentVersion: currentVer,
+					TargetVersion:  targetVer,
+				})
+			} else if targetVer != "" {
+				diff.Unchanged = append(diff.Unchanged, name)
+			}
 		}
 	}
 
 	return diff
 }
 
+// findAddonByName finds an addon by name in the ReleaseImage.
+func findAddonByName(ri *infrav1.ReleaseImage, name string) *infrav1.AddonDefinition {
+	for i := range ri.Spec.Addons {
+		if ri.Spec.Addons[i].Name == name {
+			return &ri.Spec.Addons[i]
+		}
+	}
+	return nil
+}
+
 // getComponentVersionByName returns the version of a named component from a ReleaseImage.
 func getComponentVersionByName(ri *infrav1.ReleaseImage, name string) string {
 	switch name {
-	case "calico":
-		return ri.Spec.Components.Calico.Version
-	case "cilium":
-		return ri.Spec.Components.Cilium.Version
-	case "cephCsi":
-		return ri.Spec.Components.CephCsi.Version
 	case "containerd":
 		return ri.Spec.Components.Containerd.Version
 	case "kubernetes":
 		return ri.Spec.Components.Kubernetes.Version
 	default:
+		// Check addons
+		if addon := findAddonByName(ri, name); addon != nil {
+			return addon.Version
+		}
 		return ""
 	}
 }
