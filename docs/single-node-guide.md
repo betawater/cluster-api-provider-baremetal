@@ -159,7 +159,7 @@ kubectl create secret generic single-node-credentials \
 > kubectl create secret generic single-node-credentials \
 >   --from-literal=username=root \
 >   --from-file=ssh-privatekey=~/.ssh/id_rsa \
->   -n default
+>   -n cluster-single-node
 > ```
 
 ### 4.2 创建单节点机器池
@@ -171,7 +171,7 @@ apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
 kind: BareMetalHostInventory
 metadata:
   name: single-node-hosts
-  namespace: default
+  namespace: cluster-single-node   # 使用集群 namespace
 spec:
   hosts:
   - name: single-node-01
@@ -189,10 +189,10 @@ spec:
 应用配置：
 
 ```bash
-kubectl apply -f single-node-inventory.yaml
+kubectl apply -f single-node-inventory.yaml -n cluster-single-node
 
 # 验证
-kubectl get baremetalhostinventory single-node-hosts -o yaml
+kubectl get baremetalhostinventory single-node-hosts -n cluster-single-node -o yaml
 ```
 
 ---
@@ -208,11 +208,12 @@ apiVersion: cluster.x-k8s.io/v1beta2
 kind: Cluster
 metadata:
   name: single-node-cluster
-  namespace: default
+  namespace: cluster-single-node   # 使用集群 namespace
 spec:
   topology:
     classRef:
       name: baremetal-clusterclass-v0.1.0
+      namespace: capbm-system     # ClusterClass 在系统 namespace
     version: v1.31.0
     controlPlane:
       replicas: 1              # 单节点
@@ -246,26 +247,26 @@ spec:
 ### 5.2 应用集群配置
 
 ```bash
-kubectl apply -f single-node-cluster.yaml
+kubectl apply -f single-node-cluster.yaml -n cluster-single-node
 ```
 
 ### 5.3 监控集群创建过程
 
 ```bash
 # 查看集群状态
-kubectl get cluster single-node-cluster --watch
+kubectl get cluster single-node-cluster -n cluster-single-node --watch
 
 # 查看详细信息
-clusterctl describe cluster single-node-cluster --show-conditions all
+clusterctl describe cluster single-node-cluster -n cluster-single-node --show-conditions all
 
 # 查看 BareMetalCluster 状态
-kubectl get baremetalcluster single-node-cluster -o yaml
+kubectl get baremetalcluster single-node-cluster -n cluster-single-node -o yaml
 
 # 查看 Machine 状态
-kubectl get machines -l cluster.x-k8s.io/cluster-name=single-node-cluster
+kubectl get machines -l cluster.x-k8s.io/cluster-name=single-node-cluster -n cluster-single-node
 
 # 查看 BareMetalMachine 状态
-kubectl get baremetalmachines -l cluster.x-k8s.io/cluster-name=single-node-cluster
+kubectl get baremetalmachines -l cluster.x-k8s.io/cluster-name=single-node-cluster -n cluster-single-node
 ```
 
 ### 5.4 集群创建流程
@@ -294,11 +295,11 @@ kubectl get baremetalmachines -l cluster.x-k8s.io/cluster-name=single-node-clust
 
 ```bash
 # 检查集群状态
-kubectl get cluster single-node-cluster
+kubectl get cluster single-node-cluster -n cluster-single-node
 # 输出: single-node-cluster   Provisioned   true    v1.31.0
 
 # 检查节点状态
-kubectl get baremetalcluster single-node-cluster -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
+kubectl get baremetalcluster single-node-cluster -n cluster-single-node -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
 # 输出: True
 ```
 
@@ -309,7 +310,7 @@ kubectl get baremetalcluster single-node-cluster -o jsonpath='{.status.condition
 ### 6.1 获取 kubeconfig
 
 ```bash
-clusterctl get kubeconfig single-node-cluster > workload-kubeconfig
+clusterctl get kubeconfig single-node-cluster -n cluster-single-node > workload-kubeconfig
 ```
 
 ### 6.2 验证连接

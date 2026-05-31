@@ -110,7 +110,16 @@ kubectl get kubeadmconfigtemplate
 
 ## 4. 配置机器池 (BareMetalHostInventory)
 
-### 4.1 创建机器池定义
+### 4.1 创建集群 Namespace
+
+推荐为每个集群创建独立的 namespace 以实现资源隔离：
+
+```bash
+# 创建集群 namespace
+kubectl create namespace cluster-my-cluster
+```
+
+### 4.2 创建机器池定义
 
 机器池定义了所有可用的裸金属机器信息，包括 IP、主机名、凭据和角色：
 
@@ -119,7 +128,7 @@ apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
 kind: BareMetalHostInventory
 metadata:
   name: datacenter-a-hosts
-  namespace: default
+  namespace: cluster-my-cluster   # 使用集群 namespace
 spec:
   hosts:
   # 控制面节点
@@ -178,37 +187,40 @@ spec:
 
 ### 4.2 创建机器凭据 Secret
 
-为每台机器创建独立的凭据 Secret（或使用统一的凭据）：
+在集群 namespace 中为每台机器创建独立的凭据 Secret（或使用统一的凭据）：
 
 ```bash
 # 方式一：每台机器独立凭据
 kubectl create secret generic node-01-credentials \
   --from-literal=username=root \
-  --from-literal=password=node01-password
+  --from-literal=password=node01-password \
+  -n cluster-my-cluster
 
 kubectl create secret generic node-02-credentials \
   --from-literal=username=root \
-  --from-literal=password=node02-password
+  --from-literal=password=node02-password \
+  -n cluster-my-cluster
 
 # 方式二：使用统一凭据（所有机器相同）
 kubectl create secret generic baremetal-unified-credentials \
   --from-literal=username=root \
-  --from-literal=password=unified-password
+  --from-literal=password=unified-password \
+  -n cluster-my-cluster
 ```
 
 ### 4.3 应用机器池配置
 
 ```bash
-kubectl apply -f baremetalhostinventory.yaml
+kubectl apply -f baremetalhostinventory.yaml -n cluster-my-cluster
 
-kubectl get baremetalhostinventory datacenter-a-hosts
-kubectl get baremetalhostinventory datacenter-a-hosts -o yaml
+kubectl get baremetalhostinventory datacenter-a-hosts -n cluster-my-cluster
+kubectl get baremetalhostinventory datacenter-a-hosts -n cluster-my-cluster -o yaml
 ```
 
 ### 4.4 查看机器池状态
 
 ```bash
-kubectl get baremetalhostinventory datacenter-a-hosts -o jsonpath='{.status}'
+kubectl get baremetalhostinventory datacenter-a-hosts -n cluster-my-cluster -o jsonpath='{.status}'
 ```
 
 输出示例:
@@ -226,7 +238,7 @@ kubectl get baremetalhostinventory datacenter-a-hosts -o jsonpath='{.status}'
 
 ### 4.5 多机器池管理
 
-您可以创建多个机器池来管理不同位置或类型的机器：
+您可以创建多个机器池来管理不同位置或类型的机器（每个集群使用独立 namespace）：
 
 ```yaml
 # 北京数据中心机器池
@@ -234,7 +246,7 @@ apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
 kind: BareMetalHostInventory
 metadata:
   name: beijing-datacenter-hosts
-  namespace: default
+  namespace: cluster-beijing   # 北京集群 namespace
 spec:
   hosts:
   - name: bj-node-01
@@ -249,7 +261,7 @@ apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
 kind: BareMetalHostInventory
 metadata:
   name: shanghai-datacenter-hosts
-  namespace: default
+  namespace: cluster-shanghai   # 上海集群 namespace
 spec:
   hosts:
   - name: sh-node-01
@@ -278,7 +290,7 @@ variables:
 clusterctl generate cluster my-baremetal-cluster \
   --from templates/clusterclass/baremetal-clusterclass-v0.1.0.yaml \
   --variable CLUSTER_NAME=my-baremetal-cluster \
-  --variable NAMESPACE=default \
+  --variable NAMESPACE=cluster-my-cluster \
   --variable KUBERNETES_VERSION=v1.31.0 \
   --variable CONTROL_PLANE_MACHINE_COUNT=3 \
   --variable WORKER_MACHINE_COUNT=2 \
@@ -296,11 +308,12 @@ apiVersion: cluster.x-k8s.io/v1beta2
 kind: Cluster
 metadata:
   name: my-baremetal-cluster
-  namespace: default
+  namespace: cluster-my-cluster   # 使用集群 namespace
 spec:
   topology:
     classRef:
       name: baremetal-clusterclass-v0.1.0
+      namespace: capbm-system     # ClusterClass 在系统 namespace
     version: v1.31.0
     controlPlane:
       replicas: 3
@@ -335,30 +348,30 @@ spec:
 ### 5.3 应用集群配置
 
 ```bash
-kubectl apply -f cluster.yaml
+kubectl apply -f cluster.yaml -n cluster-my-cluster
 
-clusterctl describe cluster my-baremetal-cluster
+clusterctl describe cluster my-baremetal-cluster -n cluster-my-cluster
 
-kubectl get cluster my-baremetal-cluster
-kubectl get baremetalcluster my-baremetal-cluster
+kubectl get cluster my-baremetal-cluster -n cluster-my-cluster
+kubectl get baremetalcluster my-baremetal-cluster -n cluster-my-cluster
 ```
 
 ### 5.4 监控集群创建过程
 
 ```bash
-kubectl get cluster my-baremetal-cluster --watch
+kubectl get cluster my-baremetal-cluster -n cluster-my-cluster --watch
 
-kubectl get baremetalcluster my-baremetal-cluster -o yaml
+kubectl get baremetalcluster my-baremetal-cluster -n cluster-my-cluster -o yaml
 
-kubectl get machines -l cluster.x-k8s.io/cluster-name=my-baremetal-cluster
+kubectl get machines -l cluster.x-k8s.io/cluster-name=my-baremetal-cluster -n cluster-my-cluster
 
-kubectl get baremetalmachines -l cluster.x-k8s.io/cluster-name=my-baremetal-cluster
+kubectl get baremetalmachines -l cluster.x-k8s.io/cluster-name=my-baremetal-cluster -n cluster-my-cluster
 ```
 
 ### 5.5 获取工作集群 kubeconfig
 
 ```bash
-clusterctl get kubeconfig my-baremetal-cluster > workload-kubeconfig
+clusterctl get kubeconfig my-baremetal-cluster -n cluster-my-cluster > workload-kubeconfig
 
 kubectl --kubeconfig workload-kubeconfig get nodes
 kubectl --kubeconfig workload-kubeconfig get pods -A

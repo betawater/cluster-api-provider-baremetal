@@ -2,7 +2,6 @@ apiVersion: cluster.x-k8s.io/v1beta1
 kind: ClusterClass
 metadata:
   name: baremetal-clusterclass-v0.1.0
-  namespace: default
 spec:
   controlPlane:
     templateRef:
