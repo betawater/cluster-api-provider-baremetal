@@ -174,6 +174,22 @@ type AddonDefinition struct {
 	// +optional
 	Dependencies []string `json:"dependencies,omitempty"`
 
+	// InstallStrategy defines installation behavior.
+	// +optional
+	InstallStrategy *AddonInstallStrategy `json:"installStrategy,omitempty"`
+
+	// UpgradeStrategy defines upgrade behavior.
+	// +optional
+	UpgradeStrategy *AddonUpgradeStrategy `json:"upgradeStrategy,omitempty"`
+
+	// PreHooks are scripts/commands to run before install/upgrade.
+	// +optional
+	PreHooks []AddonHook `json:"preHooks,omitempty"`
+
+	// PostHooks are scripts/commands to run after install/upgrade.
+	// +optional
+	PostHooks []AddonHook `json:"postHooks,omitempty"`
+
 	// Upgrade defines component-level upgrade configuration (high cohesion).
 	// +optional
 	Upgrade *ComponentUpgradeConfig `json:"upgrade,omitempty"`
@@ -251,6 +267,88 @@ const (
 	HealthCheckTypeCRDEstablished  HealthCheckType = "CRDEstablished"
 	HealthCheckTypeEndpointHealthy HealthCheckType = "EndpointHealthy"
 )
+
+// AddonInstallStrategy defines installation behavior.
+type AddonInstallStrategy struct {
+	// Timeout is the maximum time allowed for installation.
+	// +optional
+	Timeout *metav1.Duration `json:"timeout,omitempty"`
+
+	// RetryCount is the number of retries on failure.
+	// +optional
+	// +kubebuilder:default=3
+	RetryCount int `json:"retryCount,omitempty"`
+
+	// CreateNamespace indicates whether to create the namespace if not exists.
+	// +optional
+	// +kubebuilder:default=true
+	CreateNamespace bool `json:"createNamespace,omitempty"`
+
+	// Wait indicates whether to wait for resources to be ready.
+	// +optional
+	// +kubebuilder:default=true
+	Wait bool `json:"wait,omitempty"`
+}
+
+// AddonUpgradeStrategy defines upgrade behavior.
+type AddonUpgradeStrategy struct {
+	// Type is the upgrade type: Rolling, Recreate, or BlueGreen.
+	// +kubebuilder:validation:Enum=Rolling;Recreate;BlueGreen
+	// +kubebuilder:default=Rolling
+	Type string `json:"type"`
+
+	// RollingUpdate defines rolling update configuration.
+	// +optional
+	RollingUpdate *AddonRollingUpdateConfig `json:"rollingUpdate,omitempty"`
+
+	// MaxUnavailable is the maximum number of pods that can be unavailable during upgrade.
+	// +optional
+	// +kubebuilder:default=1
+	MaxUnavailable int `json:"maxUnavailable,omitempty"`
+
+	// Timeout is the maximum time allowed for upgrade.
+	// +optional
+	Timeout *metav1.Duration `json:"timeout,omitempty"`
+
+	// RetryCount is the number of retries on failure.
+	// +optional
+	// +kubebuilder:default=3
+	RetryCount int `json:"retryCount,omitempty"`
+
+	// Force indicates whether to force upgrade even if version path is not recommended.
+	// +optional
+	Force bool `json:"force,omitempty"`
+}
+
+// AddonRollingUpdateConfig defines rolling update configuration.
+type AddonRollingUpdateConfig struct {
+	// MaxSurge is the maximum number of pods that can be created above the desired count.
+	// +optional
+	// +kubebuilder:default=1
+	MaxSurge int `json:"maxSurge,omitempty"`
+
+	// Partition indicates the ordinal at which to start the rolling update.
+	// +optional
+	Partition int `json:"partition,omitempty"`
+}
+
+// AddonHook defines a pre/post hook for install/upgrade.
+type AddonHook struct {
+	// Name is the hook name.
+	Name string `json:"name"`
+
+	// Command is the command to execute.
+	Command string `json:"command"`
+
+	// Timeout is the maximum time allowed for the hook.
+	// +optional
+	Timeout *metav1.Duration `json:"timeout,omitempty"`
+
+	// OnFailure indicates behavior on hook failure: Continue, Abort, or Ignore.
+	// +kubebuilder:validation:Enum=Continue;Abort;Ignore
+	// +kubebuilder:default=Abort
+	OnFailure string `json:"onFailure,omitempty"`
+}
 
 // ComponentUpgradeConfig defines component-level upgrade configuration (high cohesion).
 // Backup, rollback, and health check are defined together with the component.

@@ -19,10 +19,12 @@ package addon
 import (
 	"context"
 	"fmt"
+	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -52,24 +54,29 @@ func (i *ManifestInstaller) Install(ctx context.Context, addon *infrav1.ClusterA
 		return err
 	}
 
-	// 2. Merge default values with user values
+	// 2. Execute pre-hooks
+	if err := i.executeHooks(ctx, addon, addonDef.PreHooks, "pre-install"); err != nil {
+		return fmt.Errorf("pre-install hooks failed: %w", err)
+	}
+
+	// 3. Merge default values with user values
 	mergedValues := MergeValues(addonDef.DefaultValues, addon.Spec.Values)
 
-	// 3. Fetch manifest content from ReleaseImage
+	// 4. Fetch manifest content from ReleaseImage
 	contentFetcher := NewContentFetcher(i.releaseServer)
 	content, err := contentFetcher.FetchFromReleaseImage(ctx, releaseImage, addon.Spec.AddonName)
 	if err != nil {
 		return err
 	}
 
-	// 4. Process manifest with variables
+	// 5. Process manifest with variables
 	processor := &ManifestProcessor{}
 	processedContent, err := processor.Process(content, mergedValues)
 	if err != nil {
 		return fmt.Errorf("failed to process manifest template: %w", err)
 	}
 
-	// 5. Create ConfigMap to store processed manifest
+	// 6. Create ConfigMap to store processed manifest
 	configMap := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("%s-manifest", addon.Name),
@@ -83,13 +90,35 @@ func (i *ManifestInstaller) Install(ctx context.Context, addon *infrav1.ClusterA
 		return err
 	}
 
-	// 6. Create Job to apply manifest
-	job := i.buildApplyJob(addon)
-	return i.client.Create(ctx, job)
+	// 7. Create Job to apply manifest
+	job := i.buildApplyJob(addon, addonDef.InstallStrategy)
+	if err := i.client.Create(ctx, job); err != nil {
+		return err
+	}
+
+	// 8. Wait for job completion if strategy specifies
+	if err := i.waitForJob(ctx, job, addonDef.InstallStrategy); err != nil {
+		return err
+	}
+
+	// 9. Execute post-hooks
+	return i.executeHooks(ctx, addon, addonDef.PostHooks, "post-install")
 }
 
 // buildApplyJob creates a Kubernetes Job to apply the manifest.
-func (i *ManifestInstaller) buildApplyJob(addon *infrav1.ClusterAddon) *batchv1.Job {
+func (i *ManifestInstaller) buildApplyJob(addon *infrav1.ClusterAddon, strategy *infrav1.AddonInstallStrategy) *batchv1.Job {
+	retryCount := int32(3)
+	timeout := "300s"
+
+	if strategy != nil {
+		if strategy.RetryCount > 0 {
+			retryCount = int32(strategy.RetryCount)
+		}
+		if strategy.Timeout != nil {
+			timeout = strategy.Timeout.Duration.String()
+		}
+	}
+
 	return &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("install-%s", addon.Name),
@@ -100,7 +129,8 @@ func (i *ManifestInstaller) buildApplyJob(addon *infrav1.ClusterAddon) *batchv1.
 			},
 		},
 		Spec: batchv1.JobSpec{
-			BackoffLimit: ptr.To(int32(3)),
+			BackoffLimit: ptr.To(retryCount),
+			ActiveDeadlineSeconds: ptr.To(int64(parseTimeoutSeconds(timeout))),
 			Template: corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
 					ServiceAccountName: "capbm-addon-installer",
@@ -142,6 +172,105 @@ func isAlreadyExists(err error) bool {
 	}
 	_, ok := err.(interface{ IsAlreadyExists() bool })
 	return ok
+}
+
+// executeHooks executes a list of hooks.
+func (i *ManifestInstaller) executeHooks(ctx context.Context, addon *infrav1.ClusterAddon, hooks []infrav1.AddonHook, phase string) error {
+	for _, hook := range hooks {
+		if err := i.executeHook(ctx, addon, hook, phase); err != nil {
+			switch hook.OnFailure {
+			case "Abort":
+				return fmt.Errorf("hook %s failed during %s: %w", hook.Name, phase, err)
+			case "Ignore":
+				continue
+			case "Continue":
+				continue
+			default:
+				return fmt.Errorf("hook %s failed during %s: %w", hook.Name, phase, err)
+			}
+		}
+	}
+	return nil
+}
+
+// executeHook executes a single hook.
+func (i *ManifestInstaller) executeHook(ctx context.Context, addon *infrav1.ClusterAddon, hook infrav1.AddonHook, phase string) error {
+	timeout := 5 * time.Minute
+	if hook.Timeout != nil {
+		timeout = hook.Timeout.Duration
+	}
+
+	hookCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	hookJob := &batchv1.Job{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      fmt.Sprintf("hook-%s-%s-%d", addon.Name, hook.Name, time.Now().Unix()),
+			Namespace: addon.Namespace,
+			Labels: map[string]string{
+				"capbm.capbm.io/addon": addon.Name,
+				"capbm.capbm.io/hook":  hook.Name,
+				"capbm.capbm.io/phase": phase,
+			},
+		},
+		Spec: batchv1.JobSpec{
+			BackoffLimit: ptr.To(int32(1)),
+			Template: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					ServiceAccountName: "capbm-addon-installer",
+					Containers: []corev1.Container{
+						{
+							Name:    "hook",
+							Image:   "bitnami/kubectl:latest",
+							Command: []string{"sh", "-c", hook.Command},
+						},
+					},
+					RestartPolicy: corev1.RestartPolicyNever,
+				},
+			},
+		},
+	}
+
+	return i.client.Create(hookCtx, hookJob)
+}
+
+// waitForJob waits for a job to complete.
+func (i *ManifestInstaller) waitForJob(ctx context.Context, job *batchv1.Job, strategy *infrav1.AddonInstallStrategy) error {
+	if strategy == nil || !strategy.Wait {
+		return nil
+	}
+
+	timeout := 5 * time.Minute
+	if strategy.Timeout != nil {
+		timeout = strategy.Timeout.Duration
+	}
+
+	return wait.PollUntilContextTimeout(ctx, 5*time.Second, timeout, true, func(ctx context.Context) (bool, error) {
+		currentJob := &batchv1.Job{}
+		if err := i.client.Get(ctx, client.ObjectKeyFromObject(job), currentJob); err != nil {
+			return false, nil
+		}
+
+		for _, cond := range currentJob.Status.Conditions {
+			if cond.Type == batchv1.JobComplete && cond.Status == corev1.ConditionTrue {
+				return true, nil
+			}
+			if cond.Type == batchv1.JobFailed && cond.Status == corev1.ConditionTrue {
+				return false, fmt.Errorf("job %s failed: %s", job.Name, cond.Message)
+			}
+		}
+		return false, nil
+	})
+}
+
+// parseTimeoutSeconds parses a timeout string like "300s" to seconds.
+func parseTimeoutSeconds(timeout string) int {
+	var seconds int
+	fmt.Sscanf(timeout, "%ds", &seconds)
+	if seconds == 0 {
+		seconds = 300
+	}
+	return seconds
 }
 
 // ContentFetcher fetches addon content from ReleaseImage.

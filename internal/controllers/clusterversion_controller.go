@@ -34,6 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	infrav1 "github.com/BetaWater/cluster-api-provider-baremetal/api/v1beta1"
+	"github.com/BetaWater/cluster-api-provider-baremetal/internal/addon"
 	"github.com/BetaWater/cluster-api-provider-baremetal/internal/upgrader"
 )
 
@@ -314,6 +315,12 @@ func (r *ClusterVersionReconciler) executeUpgrade(ctx context.Context, cv *infra
 	// Initialize ComponentStatus from ReleaseImage components
 	cv.Status.ComponentStatus = r.initComponentStatus(releaseImage)
 
+	// Execute addon upgrades first (including CAPI Core)
+	if err := r.executeAddonUpgrades(ctx, cv, releaseImage); err != nil {
+		return fmt.Errorf("addon upgrades failed: %w", err)
+	}
+
+	// Execute component upgrade graph
 	executor := upgrader.NewGraphExecutor(r.Client, r.Puller, nil)
 	return executor.ExecuteUpgradeGraph(ctx, cv, releaseImage)
 }
@@ -341,22 +348,128 @@ func (r *ClusterVersionReconciler) initComponentStatus(releaseImage *infrav1.Rel
 		})
 	}
 
-	// Add CNI/CSI addons
-	addonNames := []string{"calico", "cilium", "flannel", "ceph-csi", "local-path-provisioner", "nfs-csi", "gateway-api", "envoy-gateway", "metallb"}
-	for _, name := range addonNames {
-		for _, addon := range releaseImage.Spec.Addons {
-			if addon.Name == name && addon.Version != "" {
-				status = append(status, infrav1.ComponentStatus{
-					Name:          name,
-					Version:       addon.Version,
-					TargetVersion: addon.Version,
-					Phase:         "Pending",
-				})
-			}
+	// Add all addons (including CAPI Core)
+	for _, addonDef := range releaseImage.Spec.Addons {
+		if addonDef.Version != "" {
+			status = append(status, infrav1.ComponentStatus{
+				Name:          addonDef.Name,
+				Version:       addonDef.Version,
+				TargetVersion: addonDef.Version,
+				Phase:         "Pending",
+			})
 		}
 	}
 
 	return status
+}
+
+// executeAddonUpgrades executes upgrades for all addons in dependency order.
+func (r *ClusterVersionReconciler) executeAddonUpgrades(ctx context.Context, cv *infrav1.ClusterVersion, releaseImage *infrav1.ReleaseImage) error {
+	addonUpgrader := addon.NewUpgrader(r.Client, "", cv.Namespace)
+
+	// Build addon dependency graph
+	addonGraph := buildAddonDependencyGraph(releaseImage)
+	sortedAddons := topologicalSortAddons(addonGraph)
+
+	// Get current release image for comparison
+	currentRelease := &infrav1.ReleaseImage{}
+	if err := r.Get(ctx, types.NamespacedName{Name: versionToName(cv.Status.ActualVersion)}, currentRelease); err != nil {
+		// If current release not found, treat as fresh install
+		currentRelease = nil
+	}
+
+	// Upgrade addons in order
+	for _, addonName := range sortedAddons {
+		addonDef := findAddonDefByName(releaseImage, addonName)
+		if addonDef == nil {
+			continue
+		}
+
+		// Get or create ClusterAddon
+		clusterAddon := &infrav1.ClusterAddon{}
+		err := r.Get(ctx, types.NamespacedName{Name: addonName, Namespace: cv.Namespace}, clusterAddon)
+		if apierrors.IsNotFound(err) {
+			// Fresh install
+			clusterAddon = &infrav1.ClusterAddon{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      addonName,
+					Namespace: cv.Namespace,
+				},
+				Spec: infrav1.ClusterAddonSpec{
+					ClusterRef:      cv.Spec.ClusterRef,
+					ReleaseImageRef: corev1.LocalObjectReference{Name: releaseImage.Name},
+					AddonName:       addonDef.Name,
+					Namespace:       addonDef.Namespace,
+				},
+			}
+			if err := r.Client.Create(ctx, clusterAddon); err != nil {
+				return fmt.Errorf("failed to create addon %s: %w", addonName, err)
+			}
+		} else if err != nil {
+			return err
+		}
+
+		// Skip if already at target version
+		if clusterAddon.Status.Version == addonDef.Version {
+			continue
+		}
+
+		// Execute upgrade
+		if err := addonUpgrader.Upgrade(ctx, clusterAddon, currentRelease, releaseImage); err != nil {
+			return fmt.Errorf("failed to upgrade addon %s: %w", addonName, err)
+		}
+	}
+
+	return nil
+}
+
+// buildAddonDependencyGraph builds a dependency graph from addon definitions.
+func buildAddonDependencyGraph(releaseImage *infrav1.ReleaseImage) map[string][]string {
+	graph := make(map[string][]string)
+	for _, addonDef := range releaseImage.Spec.Addons {
+		graph[addonDef.Name] = addonDef.Dependencies
+	}
+	return graph
+}
+
+// topologicalSortAddons performs topological sort on addon dependencies.
+func topologicalSortAddons(graph map[string][]string) []string {
+	var result []string
+	visited := make(map[string]bool)
+	inProgress := make(map[string]bool)
+
+	var visit func(name string)
+	visit = func(name string) {
+		if visited[name] {
+			return
+		}
+		if inProgress[name] {
+			return
+		}
+		inProgress[name] = true
+		for _, dep := range graph[name] {
+			visit(dep)
+		}
+		inProgress[name] = false
+		visited[name] = true
+		result = append(result, name)
+	}
+
+	for name := range graph {
+		visit(name)
+	}
+
+	return result
+}
+
+// findAddonDefByName finds an addon definition by name.
+func findAddonDefByName(releaseImage *infrav1.ReleaseImage, name string) *infrav1.AddonDefinition {
+	for i := range releaseImage.Spec.Addons {
+		if releaseImage.Spec.Addons[i].Name == name {
+			return &releaseImage.Spec.Addons[i]
+		}
+	}
+	return nil
 }
 
 func setCVCondition(cv *infrav1.ClusterVersion, condType clusterv1.ConditionType, status metav1.ConditionStatus, reason, message string) {

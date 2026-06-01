@@ -72,28 +72,33 @@ func DiffComponents(current, target *infrav1.ReleaseImage) *ComponentDiff {
 		diff.Unchanged = append(diff.Unchanged, "kubernetes")
 	}
 
-	// Compare CNI/CSI addons
-	addonNames := []string{"calico", "cilium", "flannel", "ceph-csi", "local-path-provisioner", "nfs-csi", "gateway-api", "envoy-gateway", "metallb"}
-	for _, name := range addonNames {
-		targetAddon := findAddonByName(target, name)
-		currentAddon := findAddonByName(current, name)
-		
-		if targetAddon != nil {
-			currentVer := ""
-			if currentAddon != nil {
-				currentVer = currentAddon.Version
-			}
-			targetVer := targetAddon.Version
-			
-			if currentVer != targetVer && targetVer != "" {
+	// Compare all addons (including CAPI Core)
+	currentAddonMap := buildAddonMap(current)
+	targetAddonMap := buildAddonMap(target)
+
+	for name, targetAddon := range targetAddonMap {
+		currentAddon, exists := currentAddonMap[name]
+		if !exists {
+			diff.Added = append(diff.Added, name)
+			continue
+		}
+
+		if currentAddon.Version != targetAddon.Version {
+			if targetAddon.Version != "" {
 				diff.Changed = append(diff.Changed, ComponentChange{
 					Name:           name,
-					CurrentVersion: currentVer,
-					TargetVersion:  targetVer,
+					CurrentVersion: currentAddon.Version,
+					TargetVersion:  targetAddon.Version,
 				})
-			} else if targetVer != "" {
-				diff.Unchanged = append(diff.Unchanged, name)
 			}
+		} else if currentAddon.Version != "" {
+			diff.Unchanged = append(diff.Unchanged, name)
+		}
+	}
+
+	for name := range currentAddonMap {
+		if _, exists := targetAddonMap[name]; !exists {
+			diff.Removed = append(diff.Removed, name)
 		}
 	}
 
@@ -110,6 +115,15 @@ func findAddonByName(ri *infrav1.ReleaseImage, name string) *infrav1.AddonDefini
 	return nil
 }
 
+// buildAddonMap builds a map of addon name to addon definition.
+func buildAddonMap(ri *infrav1.ReleaseImage) map[string]*infrav1.AddonDefinition {
+	result := make(map[string]*infrav1.AddonDefinition)
+	for i := range ri.Spec.Addons {
+		result[ri.Spec.Addons[i].Name] = &ri.Spec.Addons[i]
+	}
+	return result
+}
+
 // getComponentVersionByName returns the version of a named component from a ReleaseImage.
 func getComponentVersionByName(ri *infrav1.ReleaseImage, name string) string {
 	switch name {
@@ -118,8 +132,9 @@ func getComponentVersionByName(ri *infrav1.ReleaseImage, name string) string {
 	case "kubernetes":
 		return ri.Spec.Components.Kubernetes.Version
 	default:
-		// Check addons
-		if addon := findAddonByName(ri, name); addon != nil {
+		// Check all addons
+		addonMap := buildAddonMap(ri)
+		if addon, exists := addonMap[name]; exists {
 			return addon.Version
 		}
 		return ""

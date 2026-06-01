@@ -200,7 +200,7 @@ func (e *BackupRollbackExecutor) getComponentUpgradeConfigsWithNames(releaseImag
 		configs["containerd"] = releaseImage.Spec.Components.Containerd.Upgrade
 	}
 
-	// Addon components
+	// Addon components (including CAPI Core)
 	for _, addon := range releaseImage.Spec.Addons {
 		if addon.Upgrade != nil {
 			configs[addon.Name] = addon.Upgrade
@@ -220,7 +220,7 @@ func (e *BackupRollbackExecutor) getComponentUpgradeConfig(releaseImage *infrav1
 		return releaseImage.Spec.Components.Containerd.Upgrade
 	}
 
-	// Check addon components
+	// Check addon components (including CAPI Core)
 	for _, addon := range releaseImage.Spec.Addons {
 		if addon.Name == componentName && addon.Upgrade != nil {
 			return addon.Upgrade
