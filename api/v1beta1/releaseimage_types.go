@@ -103,6 +103,22 @@ type BinaryComponent struct {
 	Architectures []string    `json:"architectures"`
 	Files         BinaryFiles `json:"files,omitempty"`
 
+	// InstallStrategy defines installation behavior for binary components.
+	// +optional
+	InstallStrategy *BinaryInstallStrategy `json:"installStrategy,omitempty"`
+
+	// UpgradeStrategy defines upgrade behavior for binary components.
+	// +optional
+	UpgradeStrategy *BinaryUpgradeStrategy `json:"upgradeStrategy,omitempty"`
+
+	// PreHooks are scripts/commands to run before install/upgrade.
+	// +optional
+	PreHooks []AddonHook `json:"preHooks,omitempty"`
+
+	// PostHooks are scripts/commands to run after install/upgrade.
+	// +optional
+	PostHooks []AddonHook `json:"postHooks,omitempty"`
+
 	// Upgrade defines component-level upgrade configuration (high cohesion).
 	// +optional
 	Upgrade *ComponentUpgradeConfig `json:"upgrade,omitempty"`
@@ -115,11 +131,27 @@ type BinaryFiles struct {
 
 // KubernetesComponent defines Kubernetes binaries with OS-specific packages.
 type KubernetesComponent struct {
-	Version   string                    `json:"version"`
-	Type      ComponentType             `json:"type"`
-	Path      string                    `json:"path"`
-	Platforms map[string]K8SPlatform    `json:"platforms"`
-	ImageList []string                  `json:"imageList,omitempty"`
+	Version   string                 `json:"version"`
+	Type      ComponentType          `json:"type"`
+	Path      string                 `json:"path"`
+	Platforms map[string]K8SPlatform `json:"platforms"`
+	ImageList []string               `json:"imageList,omitempty"`
+
+	// InstallStrategy defines installation behavior for binary components.
+	// +optional
+	InstallStrategy *BinaryInstallStrategy `json:"installStrategy,omitempty"`
+
+	// UpgradeStrategy defines upgrade behavior for binary components.
+	// +optional
+	UpgradeStrategy *BinaryUpgradeStrategy `json:"upgradeStrategy,omitempty"`
+
+	// PreHooks are scripts/commands to run before install/upgrade.
+	// +optional
+	PreHooks []AddonHook `json:"preHooks,omitempty"`
+
+	// PostHooks are scripts/commands to run after install/upgrade.
+	// +optional
+	PostHooks []AddonHook `json:"postHooks,omitempty"`
 
 	// Upgrade defines component-level upgrade configuration (high cohesion).
 	// +optional
@@ -348,6 +380,57 @@ type AddonHook struct {
 	// +kubebuilder:validation:Enum=Continue;Abort;Ignore
 	// +kubebuilder:default=Abort
 	OnFailure string `json:"onFailure,omitempty"`
+}
+
+// BinaryInstallStrategy defines installation behavior for binary components.
+type BinaryInstallStrategy struct {
+	// Timeout is the maximum time allowed for installation.
+	// +optional
+	Timeout *metav1.Duration `json:"timeout,omitempty"`
+
+	// RetryCount is the number of retries on failure.
+	// +optional
+	// +kubebuilder:default=3
+	RetryCount int `json:"retryCount,omitempty"`
+
+	// Method is the installation method: package, archive, or manual.
+	// +kubebuilder:validation:Enum=package;archive;manual
+	// +optional
+	Method string `json:"method,omitempty"`
+
+	// ServiceName is the service name to restart after installation.
+	// +optional
+	ServiceName string `json:"serviceName,omitempty"`
+}
+
+// BinaryUpgradeStrategy defines upgrade behavior for binary components.
+type BinaryUpgradeStrategy struct {
+	// Type is the upgrade type: Rolling, DrainAndUpgrade, or Parallel.
+	// +kubebuilder:validation:Enum=Rolling;DrainAndUpgrade;Parallel
+	// +kubebuilder:default=Rolling
+	Type string `json:"type"`
+
+	// MaxConcurrent is the maximum number of nodes to upgrade concurrently.
+	// +optional
+	// +kubebuilder:default=1
+	MaxConcurrent int `json:"maxConcurrent,omitempty"`
+
+	// Timeout is the maximum time allowed for upgrade per node.
+	// +optional
+	Timeout *metav1.Duration `json:"timeout,omitempty"`
+
+	// RetryCount is the number of retries on failure.
+	// +optional
+	// +kubebuilder:default=3
+	RetryCount int `json:"retryCount,omitempty"`
+
+	// Force indicates whether to force upgrade even if version path is not recommended.
+	// +optional
+	Force bool `json:"force,omitempty"`
+
+	// Drain indicates whether to drain node before upgrade.
+	// +optional
+	Drain bool `json:"drain,omitempty"`
 }
 
 // ComponentUpgradeConfig defines component-level upgrade configuration (high cohesion).

@@ -24,6 +24,7 @@ import (
 	infrav1 "github.com/BetaWater/cluster-api-provider-baremetal/api/v1beta1"
 	sshclient "github.com/BetaWater/cluster-api-provider-baremetal/internal/ssh"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -169,38 +170,52 @@ func (u *ControlPlaneUpgrader) ExecuteUpgrade(ctx context.Context, cv *infrav1.C
 
 // upgradeNode upgrades a single control plane node.
 func (u *ControlPlaneUpgrader) upgradeNode(ctx context.Context, cv *infrav1.ClusterVersion, node *corev1.Node, releaseImage *infrav1.ReleaseImage) error {
-	// 1. Drain pods (if enabled)
-	if u.config.RollingUpdate.Drain.Enabled {
+	// 1. Execute component pre-hooks (containerd)
+	if err := u.executeComponentPreHooks(ctx, node, releaseImage.Spec.Components.Containerd.PreHooks, "containerd"); err != nil {
+		return err
+	}
+
+	// 2. Drain pods (if enabled by strategy or config)
+	shouldDrain := u.config.RollingUpdate.Drain.Enabled
+	if releaseImage.Spec.Components.Containerd.UpgradeStrategy != nil && releaseImage.Spec.Components.Containerd.UpgradeStrategy.Drain {
+		shouldDrain = true
+	}
+	if shouldDrain {
 		if err := u.drainNode(ctx, node); err != nil {
 			return err
 		}
 	}
 	
-	// 2. CAPBM: Upgrade containerd
+	// 3. CAPBM: Upgrade containerd with strategy
 	if err := u.upgradeContainerd(ctx, node, releaseImage); err != nil {
 		return err
 	}
 	
-	// 3. CAPBM: Upgrade CNI components
+	// 4. Execute component post-hooks (containerd)
+	if err := u.executeComponentPostHooks(ctx, node, releaseImage.Spec.Components.Containerd.PostHooks, "containerd"); err != nil {
+		return err
+	}
+
+	// 5. CAPBM: Upgrade CNI components
 	if err := u.upgradeCNI(ctx, node, releaseImage); err != nil {
 		return err
 	}
 	
-	// 4. CAPBM: Upgrade CSI components
+	// 6. CAPBM: Upgrade CSI components
 	if err := u.upgradeCSI(ctx, node, releaseImage); err != nil {
 		return err
 	}
 	
-	// 5. KCP: kubeadm upgrade node (handled by KCP Controller)
+	// 7. KCP: kubeadm upgrade node (handled by KCP Controller)
 	// KCP will automatically detect version change and execute kubeadm upgrade node
 	
-	// 6. Verify node upgrade
+	// 8. Verify node upgrade
 	if err := u.verifyNodeUpgrade(ctx, node, releaseImage); err != nil {
 		return err
 	}
 	
-	// 7. Uncordon node (if drained)
-	if u.config.RollingUpdate.Drain.Enabled {
+	// 9. Uncordon node (if drained)
+	if shouldDrain {
 		return u.uncordonNode(ctx, node)
 	}
 	
@@ -284,19 +299,79 @@ func (u *ControlPlaneUpgrader) uncordonNode(ctx context.Context, node *corev1.No
 	return nil
 }
 
-// upgradeContainerd upgrades containerd on a node.
+// upgradeContainerd upgrades containerd on a node using the component's strategy.
 func (u *ControlPlaneUpgrader) upgradeContainerd(ctx context.Context, node *corev1.Node, releaseImage *infrav1.ReleaseImage) error {
+	containerd := releaseImage.Spec.Components.Containerd
+
+	// Get upgrade strategy or use defaults
+	strategy := containerd.UpgradeStrategy
+	if strategy == nil {
+		strategy = &infrav1.BinaryUpgradeStrategy{
+			Type:        "Rolling",
+			RetryCount:  3,
+			Timeout:     &metav1.Duration{Duration: 10 * time.Minute},
+			MaxConcurrent: 1,
+		}
+	}
+
+	// Get install strategy for service restart info
+	installStrategy := containerd.InstallStrategy
+	if installStrategy == nil {
+		installStrategy = &infrav1.BinaryInstallStrategy{
+			Timeout:     &metav1.Duration{Duration: 5 * time.Minute},
+			RetryCount:  3,
+			Method:      "package",
+			ServiceName: "containerd",
+		}
+	}
+
+	// Execute upgrade based on strategy type
+	switch strategy.Type {
+	case "Rolling":
+		return u.upgradeContainerdRolling(ctx, node, containerd, strategy, installStrategy)
+	case "DrainAndUpgrade":
+		return u.upgradeContainerdDrainAndUpgrade(ctx, node, containerd, strategy, installStrategy)
+	case "Parallel":
+		return u.upgradeContainerdParallel(ctx, node, containerd, strategy, installStrategy)
+	default:
+		return u.upgradeContainerdRolling(ctx, node, containerd, strategy, installStrategy)
+	}
+}
+
+// upgradeContainerdRolling performs a rolling upgrade of containerd.
+func (u *ControlPlaneUpgrader) upgradeContainerdRolling(ctx context.Context, node *corev1.Node, containerd infrav1.BinaryComponent, strategy *infrav1.BinaryUpgradeStrategy, installStrategy *infrav1.BinaryInstallStrategy) error {
 	// In production, this would:
 	// 1. SSH to node
-	// 2. Backup /etc/containerd/config.toml
-	// 3. Upgrade containerd package
+	// 2. Stop service (if ServiceName defined)
+	// 3. Upgrade containerd package using Method (package/archive/manual)
 	// 4. Restore configuration
-	// 5. systemctl restart containerd
+	// 5. Start service
+	// 6. Verify service status
 	// For now, this is a placeholder.
 	_ = ctx
 	_ = node
-	_ = releaseImage
+	_ = containerd
+	_ = strategy
+	_ = installStrategy
 	return nil
+}
+
+// upgradeContainerdDrainAndUpgrade performs drain then upgrade.
+func (u *ControlPlaneUpgrader) upgradeContainerdDrainAndUpgrade(ctx context.Context, node *corev1.Node, containerd infrav1.BinaryComponent, strategy *infrav1.BinaryUpgradeStrategy, installStrategy *infrav1.BinaryInstallStrategy) error {
+	// Drain node first
+	if err := u.drainNode(ctx, node); err != nil {
+		return err
+	}
+
+	// Then perform rolling upgrade
+	return u.upgradeContainerdRolling(ctx, node, containerd, strategy, installStrategy)
+}
+
+// upgradeContainerdParallel performs parallel upgrade (not recommended for production).
+func (u *ControlPlaneUpgrader) upgradeContainerdParallel(ctx context.Context, node *corev1.Node, containerd infrav1.BinaryComponent, strategy *infrav1.BinaryUpgradeStrategy, installStrategy *infrav1.BinaryInstallStrategy) error {
+	// Parallel upgrade - same as rolling but without waiting for other nodes
+	// In production, this would upgrade multiple nodes concurrently up to MaxConcurrent
+	return u.upgradeContainerdRolling(ctx, node, containerd, strategy, installStrategy)
 }
 
 // upgradeCNI upgrades CNI components on a node.
@@ -456,4 +531,65 @@ func (u *ControlPlaneUpgrader) getSSHConnection(ctx context.Context, node *corev
 	_ = ctx
 	_ = node
 	return nil, fmt.Errorf("not implemented")
+}
+
+// executeComponentPreHooks executes pre-install/upgrade hooks for a component.
+func (u *ControlPlaneUpgrader) executeComponentPreHooks(ctx context.Context, node *corev1.Node, hooks []infrav1.AddonHook, componentName string) error {
+	for _, hook := range hooks {
+		if err := u.executeHookOnNode(ctx, node, hook, componentName, "pre"); err != nil {
+			switch hook.OnFailure {
+			case "Abort":
+				return fmt.Errorf("pre-hook %s failed for component %s on node %s: %w", hook.Name, componentName, node.Name, err)
+			case "Ignore":
+				continue
+			case "Continue":
+				continue
+			default:
+				return fmt.Errorf("pre-hook %s failed for component %s on node %s: %w", hook.Name, componentName, node.Name, err)
+			}
+		}
+	}
+	return nil
+}
+
+// executeComponentPostHooks executes post-install/upgrade hooks for a component.
+func (u *ControlPlaneUpgrader) executeComponentPostHooks(ctx context.Context, node *corev1.Node, hooks []infrav1.AddonHook, componentName string) error {
+	for _, hook := range hooks {
+		if err := u.executeHookOnNode(ctx, node, hook, componentName, "post"); err != nil {
+			switch hook.OnFailure {
+			case "Abort":
+				return fmt.Errorf("post-hook %s failed for component %s on node %s: %w", hook.Name, componentName, node.Name, err)
+			case "Ignore":
+				continue
+			case "Continue":
+				continue
+			default:
+				return fmt.Errorf("post-hook %s failed for component %s on node %s: %w", hook.Name, componentName, node.Name, err)
+			}
+		}
+	}
+	return nil
+}
+
+// executeHookOnNode executes a single hook on a node via SSH.
+func (u *ControlPlaneUpgrader) executeHookOnNode(ctx context.Context, node *corev1.Node, hook infrav1.AddonHook, componentName, phase string) error {
+	timeout := 5 * time.Minute
+	if hook.Timeout != nil {
+		timeout = hook.Timeout.Duration
+	}
+
+	hookCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	// In production, this would:
+	// 1. Get SSH connection to node
+	// 2. Execute hook.Command via SSH
+	// 3. Return error if command fails
+	// For now, this is a placeholder.
+	_ = hookCtx
+	_ = node
+	_ = hook
+	_ = componentName
+	_ = phase
+	return nil
 }

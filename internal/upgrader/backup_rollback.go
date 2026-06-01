@@ -47,13 +47,29 @@ func (e *BackupRollbackExecutor) BackupComponents(ctx context.Context, cluster *
 	// Get all component upgrade configs with names
 	componentConfigs := e.getComponentUpgradeConfigsWithNames(releaseImage)
 
+	// Get nodes for hook execution
+	nodes, err := e.getClusterNodes(ctx, cluster)
+	if err != nil {
+		return err
+	}
+
 	for name, uc := range componentConfigs {
 		if !uc.Backup.Enabled {
 			continue
 		}
 
+		// Execute pre-backup hooks if defined
+		if err := e.executePreBackupHooks(ctx, nodes, name, releaseImage); err != nil {
+			return fmt.Errorf("pre-backup hooks failed for component %s: %w", name, err)
+		}
+
 		if err := e.backupComponent(ctx, cluster, name, uc); err != nil {
 			return fmt.Errorf("failed to backup component %s: %w", name, err)
+		}
+
+		// Execute post-backup hooks if defined
+		if err := e.executePostBackupHooks(ctx, nodes, name, releaseImage); err != nil {
+			return fmt.Errorf("post-backup hooks failed for component %s: %w", name, err)
 		}
 	}
 
@@ -86,10 +102,22 @@ func (e *BackupRollbackExecutor) RollbackComponent(ctx context.Context, cluster 
 		return err
 	}
 
+	// Execute pre-rollback hooks
+	if err := e.executePreRollbackHooks(ctx, nodes, componentName, releaseImage); err != nil {
+		return fmt.Errorf("pre-rollback hooks failed for component %s: %w", componentName, err)
+	}
+
 	for _, node := range nodes {
 		if err := e.executeRollbackScript(ctx, node, scriptPath, timeout); err != nil {
+			// Try post-rollback hooks even on failure for cleanup
+			_ = e.executePostRollbackHooks(ctx, nodes, componentName, releaseImage)
 			return fmt.Errorf("failed to rollback component %s on node %s: %w", componentName, node.Name, err)
 		}
+	}
+
+	// Execute post-rollback hooks
+	if err := e.executePostRollbackHooks(ctx, nodes, componentName, releaseImage); err != nil {
+		return fmt.Errorf("post-rollback hooks failed for component %s: %w", componentName, err)
 	}
 
 	// Run health check after rollback
@@ -244,6 +272,114 @@ func (e *BackupRollbackExecutor) getClusterNodes(ctx context.Context, cluster *i
 		nodes[i] = &nodeList.Items[i]
 	}
 	return nodes, nil
+}
+
+// executePreBackupHooks executes pre-backup hooks for a component.
+func (e *BackupRollbackExecutor) executePreBackupHooks(ctx context.Context, nodes []*corev1.Node, componentName string, releaseImage *infrav1.ReleaseImage) error {
+	hooks := e.getComponentPreHooks(releaseImage, componentName)
+	return e.executeHooksOnNodes(ctx, nodes, hooks, componentName, "pre-backup")
+}
+
+// executePostBackupHooks executes post-backup hooks for a component.
+func (e *BackupRollbackExecutor) executePostBackupHooks(ctx context.Context, nodes []*corev1.Node, componentName string, releaseImage *infrav1.ReleaseImage) error {
+	hooks := e.getComponentPostHooks(releaseImage, componentName)
+	return e.executeHooksOnNodes(ctx, nodes, hooks, componentName, "post-backup")
+}
+
+// executePreRollbackHooks executes pre-rollback hooks for a component.
+func (e *BackupRollbackExecutor) executePreRollbackHooks(ctx context.Context, nodes []*corev1.Node, componentName string, releaseImage *infrav1.ReleaseImage) error {
+	hooks := e.getComponentPreHooks(releaseImage, componentName)
+	return e.executeHooksOnNodes(ctx, nodes, hooks, componentName, "pre-rollback")
+}
+
+// executePostRollbackHooks executes post-rollback hooks for a component.
+func (e *BackupRollbackExecutor) executePostRollbackHooks(ctx context.Context, nodes []*corev1.Node, componentName string, releaseImage *infrav1.ReleaseImage) error {
+	hooks := e.getComponentPostHooks(releaseImage, componentName)
+	return e.executeHooksOnNodes(ctx, nodes, hooks, componentName, "post-rollback")
+}
+
+// getComponentPreHooks gets pre-hooks for a component.
+func (e *BackupRollbackExecutor) getComponentPreHooks(releaseImage *infrav1.ReleaseImage, componentName string) []infrav1.AddonHook {
+	// Check binary components
+	if componentName == "kubernetes" {
+		return releaseImage.Spec.Components.Kubernetes.PreHooks
+	}
+	if componentName == "containerd" {
+		return releaseImage.Spec.Components.Containerd.PreHooks
+	}
+
+	// Check addon components
+	for _, addon := range releaseImage.Spec.Addons {
+		if addon.Name == componentName {
+			return addon.PreHooks
+		}
+	}
+
+	return nil
+}
+
+// getComponentPostHooks gets post-hooks for a component.
+func (e *BackupRollbackExecutor) getComponentPostHooks(releaseImage *infrav1.ReleaseImage, componentName string) []infrav1.AddonHook {
+	// Check binary components
+	if componentName == "kubernetes" {
+		return releaseImage.Spec.Components.Kubernetes.PostHooks
+	}
+	if componentName == "containerd" {
+		return releaseImage.Spec.Components.Containerd.PostHooks
+	}
+
+	// Check addon components
+	for _, addon := range releaseImage.Spec.Addons {
+		if addon.Name == componentName {
+			return addon.PostHooks
+		}
+	}
+
+	return nil
+}
+
+// executeHooksOnNodes executes hooks on all nodes.
+func (e *BackupRollbackExecutor) executeHooksOnNodes(ctx context.Context, nodes []*corev1.Node, hooks []infrav1.AddonHook, componentName, phase string) error {
+	for _, hook := range hooks {
+		for _, node := range nodes {
+			if err := e.executeHookOnNode(ctx, node, hook, componentName, phase); err != nil {
+				switch hook.OnFailure {
+				case "Abort":
+					return fmt.Errorf("hook %s failed during %s for component %s on node %s: %w", hook.Name, phase, componentName, node.Name, err)
+				case "Ignore":
+					continue
+				case "Continue":
+					continue
+				default:
+					return fmt.Errorf("hook %s failed during %s for component %s on node %s: %w", hook.Name, phase, componentName, node.Name, err)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// executeHookOnNode executes a single hook on a node.
+func (e *BackupRollbackExecutor) executeHookOnNode(ctx context.Context, node *corev1.Node, hook infrav1.AddonHook, componentName, phase string) error {
+	timeout := 5 * time.Minute
+	if hook.Timeout != nil {
+		timeout = hook.Timeout.Duration
+	}
+
+	hookCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	// In production, this would:
+	// 1. Get SSH connection to node
+	// 2. Execute hook.Command via SSH
+	// 3. Return error if command fails
+	// For now, this is a placeholder.
+	_ = hookCtx
+	_ = node
+	_ = hook
+	_ = componentName
+	_ = phase
+	return nil
 }
 
 // getSSHConnection gets SSH connection to a node.
