@@ -102,6 +102,10 @@ type BinaryComponent struct {
 	Path          string      `json:"path"`
 	Architectures []string    `json:"architectures"`
 	Files         BinaryFiles `json:"files,omitempty"`
+
+	// Upgrade defines component-level upgrade configuration (high cohesion).
+	// +optional
+	Upgrade *ComponentUpgradeConfig `json:"upgrade,omitempty"`
 }
 
 // BinaryFiles defines binary component file names.
@@ -116,6 +120,10 @@ type KubernetesComponent struct {
 	Path      string                    `json:"path"`
 	Platforms map[string]K8SPlatform    `json:"platforms"`
 	ImageList []string                  `json:"imageList,omitempty"`
+
+	// Upgrade defines component-level upgrade configuration (high cohesion).
+	// +optional
+	Upgrade *ComponentUpgradeConfig `json:"upgrade,omitempty"`
 }
 
 // K8SPlatform defines OS-specific package configuration.
@@ -149,20 +157,29 @@ type AddonDefinition struct {
 	ContentPath string `json:"contentPath"`
 
 	// Namespace is the default namespace for the addon.
+	// +optional
 	Namespace string `json:"namespace,omitempty"`
 
 	// Variables defines the variables supported by this addon.
+	// +optional
 	Variables []AddonVariable `json:"variables,omitempty"`
 
 	// DefaultValues are the default values for the addon.
 	// For Helm: helm values
 	// For Manifest: variable substitutions
+	// +optional
 	DefaultValues map[string]apiextensionsv1.JSON `json:"defaultValues,omitempty"`
 
 	// Dependencies lists other addons that must be installed first.
+	// +optional
 	Dependencies []string `json:"dependencies,omitempty"`
 
-	// HealthCheck defines health check configuration.
+	// Upgrade defines component-level upgrade configuration (high cohesion).
+	// +optional
+	Upgrade *ComponentUpgradeConfig `json:"upgrade,omitempty"`
+
+	// HealthCheck defines health check configuration (deprecated, use Upgrade.HealthCheck).
+	// +optional
 	HealthCheck *AddonHealthCheck `json:"healthCheck,omitempty"`
 }
 
@@ -234,6 +251,73 @@ const (
 	HealthCheckTypeCRDEstablished  HealthCheckType = "CRDEstablished"
 	HealthCheckTypeEndpointHealthy HealthCheckType = "EndpointHealthy"
 )
+
+// ComponentUpgradeConfig defines component-level upgrade configuration (high cohesion).
+// Backup, rollback, and health check are defined together with the component.
+type ComponentUpgradeConfig struct {
+	// Backup configuration for this component.
+	// +optional
+	Backup ComponentBackupConfig `json:"backup"`
+
+	// Rollback configuration for this component.
+	// +optional
+	Rollback ComponentRollbackConfig `json:"rollback"`
+
+	// HealthCheck configuration after upgrade.
+	// +optional
+	HealthCheck ComponentHealthCheckConfig `json:"healthCheck"`
+}
+
+// ComponentBackupConfig defines backup configuration for a component.
+type ComponentBackupConfig struct {
+	// Enabled indicates whether backup is enabled for this component.
+	// +optional
+	// +kubebuilder:default=true
+	Enabled bool `json:"enabled"`
+
+	// Config lists the configuration items to backup.
+	// +optional
+	Config []BackupItem `json:"config,omitempty"`
+
+	// EtcdSnapshot indicates whether etcd snapshot is required (for control-plane components).
+	// +optional
+	EtcdSnapshot bool `json:"etcdSnapshot,omitempty"`
+}
+
+// BackupItem defines a single backup item.
+type BackupItem struct {
+	// Path is the file or directory path to backup.
+	Path string `json:"path"`
+
+	// Type is the backup item type: file or directory.
+	// +kubebuilder:validation:Enum=file;directory
+	Type string `json:"type"`
+}
+
+// ComponentRollbackConfig defines rollback configuration for a component.
+type ComponentRollbackConfig struct {
+	// Script is the path to the rollback script (relative to release image scripts directory).
+	Script string `json:"script"`
+
+	// Timeout is the maximum time allowed for rollback.
+	// +optional
+	Timeout *metav1.Duration `json:"timeout,omitempty"`
+}
+
+// ComponentHealthCheckConfig defines health check configuration.
+type ComponentHealthCheckConfig struct {
+	// Command is the health check command to execute.
+	Command string `json:"command"`
+
+	// Timeout is the maximum time allowed for health check.
+	// +optional
+	Timeout *metav1.Duration `json:"timeout,omitempty"`
+
+	// Retries is the number of retries before considering health check failed.
+	// +optional
+	// +kubebuilder:default=3
+	Retries int `json:"retries,omitempty"`
+}
 
 type UpgradePhase struct {
 	Name          string             `json:"name"`
