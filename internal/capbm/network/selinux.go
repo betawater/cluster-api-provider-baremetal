@@ -20,16 +20,16 @@ import (
 	"context"
 	"fmt"
 
-	infrav1 "github.com/BetaWater/cluster-api-provider-baremetal/api/v1beta1"
-	sshclient "github.com/BetaWater/cluster-api-provider-baremetal/internal/ssh"
+	capbmv1 "github.com/BetaWater/cluster-api-provider-baremetal/api/capbm/v1beta1"
+	sshclient "github.com/BetaWater/cluster-api-provider-baremetal/internal/capbm/ssh"
 )
 
 type SELinuxManager struct {
 	sshConn *sshclient.SSHConnection
-	config  *infrav1.SELinuxConfig
+	config  *capbmv1.SELinuxConfig
 }
 
-func NewSELinuxManager(sshConn *sshclient.SSHConnection, config *infrav1.SELinuxConfig) *SELinuxManager {
+func NewSELinuxManager(sshConn *sshclient.SSHConnection, config *capbmv1.SELinuxConfig) *SELinuxManager {
 	return &SELinuxManager{
 		sshConn: sshConn,
 		config:  config,

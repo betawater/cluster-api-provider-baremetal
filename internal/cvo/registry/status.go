@@ -24,7 +24,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	infrav1 "github.com/BetaWater/cluster-api-provider-baremetal/api/v1beta1"
+	cfov1 "github.com/BetaWater/cluster-api-provider-baremetal/api/cvo/v1beta1"
+	commonv1 "github.com/BetaWater/cluster-api-provider-baremetal/api/common/v1beta1"
 )
 
 // Import status constants.
@@ -48,7 +49,7 @@ func NewStatusTracker(c client.Client) *StatusTracker {
 }
 
 // UpdateReleaseImageStatus updates the ReleaseImage status based on the import Job status.
-func (t *StatusTracker) UpdateReleaseImageStatus(ctx context.Context, releaseImage *infrav1.ReleaseImage) error {
+func (t *StatusTracker) UpdateReleaseImageStatus(ctx context.Context, releaseImage *cfov1.ReleaseImage) error {
 	if releaseImage.Spec.ImageRegistry == nil || !releaseImage.Spec.ImageRegistry.Enabled {
 		return nil
 	}
@@ -94,8 +95,8 @@ func (t *StatusTracker) UpdateReleaseImageStatus(ctx context.Context, releaseIma
 }
 
 // buildImportedImageStatus builds the imported image status list.
-func (t *StatusTracker) buildImportedImageStatus(releaseImage *infrav1.ReleaseImage, job *batchv1.Job) []infrav1.ImportedImageStatus {
-	var statuses []infrav1.ImportedImageStatus
+func (t *StatusTracker) buildImportedImageStatus(releaseImage *cfov1.ReleaseImage, job *batchv1.Job) []commonv1.ImportedImageStatus {
+	var statuses []commonv1.ImportedImageStatus
 
 	registryConfig := releaseImage.Spec.ImageRegistry
 	if registryConfig == nil {
@@ -133,7 +134,7 @@ func (t *StatusTracker) buildImportedImageStatus(releaseImage *infrav1.ReleaseIm
 				comp.version,
 			)
 
-			status := infrav1.ImportedImageStatus{
+			status := commonv1.ImportedImageStatus{
 				Component: comp.name,
 				Image:     imageName,
 				TargetRef: targetRef,
@@ -155,8 +156,8 @@ func (t *StatusTracker) buildImportedImageStatus(releaseImage *infrav1.ReleaseIm
 }
 
 // GetImportStatus returns the current import status for a ReleaseImage.
-func (t *StatusTracker) GetImportStatus(ctx context.Context, releaseImage *infrav1.ReleaseImage) (*infrav1.ReleaseImageStatus, error) {
-	status := &infrav1.ReleaseImageStatus{}
+func (t *StatusTracker) GetImportStatus(ctx context.Context, releaseImage *cfov1.ReleaseImage) (*cfov1.ReleaseImageStatus, error) {
+	status := &cfov1.ReleaseImageStatus{}
 
 	if releaseImage.Spec.ImageRegistry == nil || !releaseImage.Spec.ImageRegistry.Enabled {
 		status.ImagesImported = false

@@ -20,17 +20,17 @@ import (
 	"context"
 	"fmt"
 
-	infrav1 "github.com/BetaWater/cluster-api-provider-baremetal/api/v1beta1"
-	sshclient "github.com/BetaWater/cluster-api-provider-baremetal/internal/ssh"
+	capbmv1 "github.com/BetaWater/cluster-api-provider-baremetal/api/capbm/v1beta1"
+	sshclient "github.com/BetaWater/cluster-api-provider-baremetal/internal/capbm/ssh"
 )
 
 type FirewallManager struct {
 	sshConn *sshclient.SSHConnection
-	config  *infrav1.FirewallConfig
+	config  *capbmv1.FirewallConfig
 	role    string
 }
 
-func NewFirewallManager(sshConn *sshclient.SSHConnection, config *infrav1.FirewallConfig, role string) *FirewallManager {
+func NewFirewallManager(sshConn *sshclient.SSHConnection, config *capbmv1.FirewallConfig, role string) *FirewallManager {
 	return &FirewallManager{
 		sshConn: sshConn,
 		config:  config,

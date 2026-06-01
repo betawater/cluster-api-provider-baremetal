@@ -12,8 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Image URL to use all building/pushing image targets
-IMG ?= ghcr.io/betawater/cluster-api-provider-baremetal:v0.1.0
+# Image URLs to use all building/pushing image targets
+CAPBM_IMG ?= ghcr.io/betawater/capbm-manager:v0.1.0
+CVO_IMG ?= ghcr.io/betawater/cvo-manager:v0.1.0
 
 # ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
 ENVTEST_K8S_VERSION = 1.31.0
@@ -42,11 +43,14 @@ help: ## Display this help.
 
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
-	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+	$(CONTROLLER_GEN) rbac:roleName=capbm-manager-role crd webhook paths="./api/capbm/..." output:crd:artifacts:config=config/capbm/crd/bases
+	$(CONTROLLER_GEN) rbac:roleName=cvo-manager-role crd webhook paths="./api/cvo/..." output:crd:artifacts:config=config/cvo/crd/bases
 
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
-	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./..."
+	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./api/common/..."
+	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./api/cvo/..."
+	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./api/capbm/..."
 
 .PHONY: fmt
 fmt: ## Run go fmt against code.
@@ -63,61 +67,97 @@ test: manifests generate fmt vet envtest ## Run tests.
 ##@ Build
 
 .PHONY: build
-build: manifests generate fmt vet ## Build manager binary.
-	go build -o bin/manager cmd/main.go
+build: build-capbm build-cvo
 
-.PHONY: run
-run: manifests generate fmt vet ## Run a controller from your host.
-	go run ./cmd/main.go
+.PHONY: build-capbm
+build-capbm: manifests generate fmt vet ## Build CAPBM manager binary.
+	go build -o bin/capbm-manager ./cmd/capbm-manager/
 
-.PHONY: docker-build
-docker-build: test ## Build docker image with the manager.
-	docker build -t ${IMG} .
+.PHONY: build-cvo
+build-cvo: manifests generate fmt vet ## Build CVO manager binary.
+	go build -o bin/cvo-manager ./cmd/cvo-manager/
 
-.PHONY: docker-push
-docker-push: ## Push docker image with the manager.
-	docker push ${IMG}
+.PHONY: run-capbm
+run-capbm: manifests generate fmt vet ## Run CAPBM controller from your host.
+	go run ./cmd/capbm-manager/
 
-.PHONY: docker-buildx
-docker-buildx: ## Build and push docker image for the manager for cross-platform support
-	docker buildx create --name project-v3-builder
-	docker buildx use project-v3-builder
-	docker buildx build --push --platform=$(PLATFORM) --tag ${IMG} -f Dockerfile .
+.PHONY: run-cvo
+run-cvo: manifests generate fmt vet ## Run CVO controller from your host.
+	go run ./cmd/cvo-manager/
+
+.PHONY: docker-build-capbm
+docker-build-capbm: test ## Build docker image with the CAPBM manager.
+	docker build -t ${CAPBM_IMG} -f Dockerfile.capbm .
+
+.PHONY: docker-build-cvo
+docker-build-cvo: test ## Build docker image with the CVO manager.
+	docker build -t ${CVO_IMG} -f Dockerfile.cvo .
+
+.PHONY: docker-push-capbm
+docker-push-capbm: ## Push CAPBM docker image.
+	docker push ${CAPBM_IMG}
+
+.PHONY: docker-push-cvo
+docker-push-cvo: ## Push CVO docker image.
+	docker push ${CVO_IMG}
 
 ##@ Deployment
 
-.PHONY: install
-install: manifests kustomize ## Install CRDs into the K8s cluster specified in ~/.kube/config.
-	$(KUSTOMIZE) build config/crd | kubectl apply -f -
+.PHONY: install-capbm
+install-capbm: manifests kustomize ## Install CAPBM CRDs into the K8s cluster.
+	$(KUSTOMIZE) build config/capbm/crd | kubectl apply -f -
 
-.PHONY: uninstall
-uninstall: manifests kustomize ## Uninstall CRDs from the K8s cluster specified in ~/.kube/config.
-	$(KUSTOMIZE) build config/crd | kubectl delete -f -
+.PHONY: install-cvo
+install-cvo: manifests kustomize ## Install CVO CRDs into the K8s cluster.
+	$(KUSTOMIZE) build config/cvo/crd | kubectl apply -f -
 
-.PHONY: deploy
-deploy: manifests kustomize ## Deploy controller to the K8s cluster specified in ~/.kube/config.
-	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
-	$(KUSTOMIZE) build config/default | kubectl apply -f -
+.PHONY: uninstall-capbm
+uninstall-capbm: manifests kustomize ## Uninstall CAPBM CRDs from the K8s cluster.
+	$(KUSTOMIZE) build config/capbm/crd | kubectl delete -f -
 
-.PHONY: undeploy
-undeploy: ## Undeploy controller from the K8s cluster specified in ~/.kube/config.
-	$(KUSTOMIZE) build config/default | kubectl delete -f -
+.PHONY: uninstall-cvo
+uninstall-cvo: manifests kustomize ## Uninstall CVO CRDs from the K8s cluster.
+	$(KUSTOMIZE) build config/cvo/crd | kubectl delete -f -
+
+.PHONY: deploy-capbm
+deploy-capbm: manifests kustomize ## Deploy CAPBM controller to the K8s cluster.
+	cd config/capbm/manager && $(KUSTOMIZE) edit set image controller=${CAPBM_IMG}
+	$(KUSTOMIZE) build config/capbm | kubectl apply -f -
+
+.PHONY: deploy-cvo
+deploy-cvo: manifests kustomize ## Deploy CVO controller to the K8s cluster.
+	cd config/cvo/manager && $(KUSTOMIZE) edit set image controller=${CVO_IMG}
+	$(KUSTOMIZE) build config/cvo | kubectl apply -f -
+
+.PHONY: undeploy-capbm
+undeploy-capbm: ## Undeploy CAPBM controller from the K8s cluster.
+	$(KUSTOMIZE) build config/capbm | kubectl delete -f -
+
+.PHONY: undeploy-cvo
+undeploy-cvo: ## Undeploy CVO controller from the K8s cluster.
+	$(KUSTOMIZE) build config/cvo | kubectl delete -f -
 
 .PHONY: deploy-clusterclass
 deploy-clusterclass: manifests kustomize ## Deploy ClusterClass templates.
-	$(KUSTOMIZE) build config/clusterclass | kubectl apply -f -
+	$(KUSTOMIZE) build config/capbm/clusterclass | kubectl apply -f -
 
 ##@ Release
 
-.PHONY: release
-release: manifests kustomize ## Generate release manifests for clusterctl.
-	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
-	$(KUSTOMIZE) build config/default > infrastructure-components.yaml
+.PHONY: release-capbm
+release-capbm: manifests kustomize ## Generate CAPBM release manifests.
+	cd config/capbm/manager && $(KUSTOMIZE) edit set image controller=${CAPBM_IMG}
+	$(KUSTOMIZE) build config/capbm > infrastructure-components.yaml
+
+.PHONY: release-cvo
+release-cvo: manifests kustomize ## Generate CVO release manifests.
+	cd config/cvo/manager && $(KUSTOMIZE) edit set image controller=${CVO_IMG}
+	$(KUSTOMIZE) build config/cvo > cvo-components.yaml
 
 .PHONY: release-manifests
-release-manifests: release ## Generate release manifests directory.
+release-manifests: release-capbm release-cvo ## Generate release manifests directory.
 	mkdir -p releases/$(VERSION)
 	cp infrastructure-components.yaml releases/$(VERSION)/infrastructure-components.yaml
+	cp cvo-components.yaml releases/$(VERSION)/cvo-components.yaml
 	cp metadata.yaml releases/$(VERSION)/metadata.yaml
 
 ##@ Build Dependencies

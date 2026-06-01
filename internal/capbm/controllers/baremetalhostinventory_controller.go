@@ -25,7 +25,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	infrav1 "github.com/BetaWater/cluster-api-provider-baremetal/api/v1beta1"
+	capbmv1 "github.com/BetaWater/cluster-api-provider-baremetal/api/capbm/v1beta1"
 )
 
 // BareMetalHostInventoryReconciler reconciles a BareMetalHostInventory object.
@@ -42,7 +42,7 @@ func (r *BareMetalHostInventoryReconciler) Reconcile(ctx context.Context, req ct
 	log := ctrl.LoggerFrom(ctx)
 	log.Info("Reconciling BareMetalHostInventory")
 
-	inventory := &infrav1.BareMetalHostInventory{}
+	inventory := &capbmv1.BareMetalHostInventory{}
 	if err := r.Get(ctx, req.NamespacedName, inventory); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -50,26 +50,26 @@ func (r *BareMetalHostInventoryReconciler) Reconcile(ctx context.Context, req ct
 	return r.reconcileNormal(ctx, inventory)
 }
 
-func (r *BareMetalHostInventoryReconciler) reconcileNormal(ctx context.Context, inventory *infrav1.BareMetalHostInventory) (ctrl.Result, error) {
+func (r *BareMetalHostInventoryReconciler) reconcileNormal(ctx context.Context, inventory *capbmv1.BareMetalHostInventory) (ctrl.Result, error) {
 	log := ctrl.LoggerFrom(ctx)
 	log.Info("Updating host inventory status")
 
-	newStatus := infrav1.BareMetalHostInventoryStatus{
+	newStatus := capbmv1.BareMetalHostInventoryStatus{
 		TotalHosts: len(inventory.Spec.Hosts),
 	}
 
 	for _, host := range inventory.Spec.Hosts {
-		hostStatus := infrav1.HostStatusEntry{
+		hostStatus := capbmv1.HostStatusEntry{
 			Name:  host.Name,
-			State: infrav1.HostStateAvailable,
+			State: capbmv1.HostStateAvailable,
 		}
 
 		allocatedMachine, err := r.getAllocatedMachine(ctx, inventory, host.Name)
 		if err != nil {
 			log.Error(err, "failed to check machine allocation for host", "host", host.Name)
-			hostStatus.State = infrav1.HostStateMaintenance
+			hostStatus.State = capbmv1.HostStateMaintenance
 		} else if allocatedMachine != nil {
-			hostStatus.State = infrav1.HostStateAllocated
+			hostStatus.State = capbmv1.HostStateAllocated
 			hostStatus.ClusterRef = &corev1.ObjectReference{
 				Name:      allocatedMachine.Labels["cluster.x-k8s.io/cluster-name"],
 				Namespace: allocatedMachine.Namespace,
@@ -78,7 +78,7 @@ func (r *BareMetalHostInventoryReconciler) reconcileNormal(ctx context.Context, 
 
 		newStatus.HostsStatus = append(newStatus.HostsStatus, hostStatus)
 
-		if hostStatus.State == infrav1.HostStateAllocated {
+		if hostStatus.State == capbmv1.HostStateAllocated {
 			newStatus.AllocatedHosts++
 		} else {
 			newStatus.AvailableHosts++
@@ -90,8 +90,8 @@ func (r *BareMetalHostInventoryReconciler) reconcileNormal(ctx context.Context, 
 	return ctrl.Result{}, r.Status().Update(ctx, inventory)
 }
 
-func (r *BareMetalHostInventoryReconciler) getAllocatedMachine(ctx context.Context, inventory *infrav1.BareMetalHostInventory, hostName string) (*infrav1.BareMetalMachine, error) {
-	machineList := &infrav1.BareMetalMachineList{}
+func (r *BareMetalHostInventoryReconciler) getAllocatedMachine(ctx context.Context, inventory *capbmv1.BareMetalHostInventory, hostName string) (*capbmv1.BareMetalMachine, error) {
+	machineList := &capbmv1.BareMetalMachineList{}
 	if err := r.List(ctx, machineList, client.InNamespace(inventory.Namespace)); err != nil {
 		return nil, err
 	}
@@ -108,6 +108,6 @@ func (r *BareMetalHostInventoryReconciler) getAllocatedMachine(ctx context.Conte
 // SetupWithManager sets up the controller with the Manager.
 func (r *BareMetalHostInventoryReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&infrav1.BareMetalHostInventory{}).
+		For(&capbmv1.BareMetalHostInventory{}).
 		Complete(r)
 }

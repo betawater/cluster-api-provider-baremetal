@@ -21,13 +21,15 @@ import (
 	"fmt"
 	"strings"
 
-	infrav1 "github.com/BetaWater/cluster-api-provider-baremetal/api/v1beta1"
-	sshclient "github.com/BetaWater/cluster-api-provider-baremetal/internal/ssh"
+	capbmv1 "github.com/BetaWater/cluster-api-provider-baremetal/api/capbm/v1beta1"
+	commonv1 "github.com/BetaWater/cluster-api-provider-baremetal/api/common/v1beta1"
+	cfov1 "github.com/BetaWater/cluster-api-provider-baremetal/api/cvo/v1beta1"
+	sshclient "github.com/BetaWater/cluster-api-provider-baremetal/internal/capbm/ssh"
 )
 
 type Installer struct {
 	sshConn *sshclient.SSHConnection
-	config  infrav1.CNIConfig
+	config  capbmv1.CNIConfig
 	podCIDR string
 }
 
@@ -38,7 +40,7 @@ type InstallResult struct {
 	Error     string `json:"error,omitempty"`
 }
 
-func New(sshConn *sshclient.SSHConnection, config infrav1.CNIConfig, podCIDR string) *Installer {
+func New(sshConn *sshclient.SSHConnection, config capbmv1.CNIConfig, podCIDR string) *Installer {
 	return &Installer{
 		sshConn: sshConn,
 		config:  config,
@@ -46,7 +48,7 @@ func New(sshConn *sshclient.SSHConnection, config infrav1.CNIConfig, podCIDR str
 	}
 }
 
-func NewFromReleaseImage(sshConn *sshclient.SSHConnection, releaseImage *infrav1.ReleaseImage, config infrav1.CNIConfig, podCIDR string) *Installer {
+func NewFromReleaseImage(sshConn *sshclient.SSHConnection, releaseImage *cfov1.ReleaseImage, config capbmv1.CNIConfig, podCIDR string) *Installer {
 	if config.Type == "" {
 		if addon := findAddon(releaseImage, "calico"); addon != nil {
 			config.Type = "calico"
@@ -69,7 +71,7 @@ func NewFromReleaseImage(sshConn *sshclient.SSHConnection, releaseImage *infrav1
 }
 
 // findAddon finds an addon by name in the ReleaseImage.
-func findAddon(releaseImage *infrav1.ReleaseImage, name string) *infrav1.AddonDefinition {
+func findAddon(releaseImage *cfov1.ReleaseImage, name string) *commonv1.AddonDefinition {
 	for i := range releaseImage.Spec.Addons {
 		if releaseImage.Spec.Addons[i].Name == name {
 			return &releaseImage.Spec.Addons[i]
@@ -185,7 +187,7 @@ INSTALL_SOURCE="${INSTALL_SOURCE:-online}"
 RELEASE_SERVER="${RELEASE_SERVER:-}"
 LOCAL_PATH="${LOCAL_PATH:-}"
 
-echo "=== CNI 安装开始 (type=$CNI_TYPE, version=$CNI_VERSION, source=$INSTALL_SOURCE) ==="
+echo "=== CNI 安装开�?(type=$CNI_TYPE, version=$CNI_VERSION, source=$INSTALL_SOURCE) ==="
 
 fetch_resource() {
     local resource="$1"
@@ -194,7 +196,7 @@ fetch_resource() {
         online) curl -fsSL "$resource" -o "$dest" ;;
         http)   curl -fsSL "${RELEASE_SERVER}/${resource}" -o "$dest" ;;
         local)  cp "${LOCAL_PATH}/${resource}" "$dest" ;;
-        *)      echo "ERROR: 不支持的安装源: $INSTALL_SOURCE"; exit 1 ;;
+        *)      echo "ERROR: 不支持的安装�? $INSTALL_SOURCE"; exit 1 ;;
     esac
 }
 
@@ -216,7 +218,7 @@ install_cni_plugins() {
     esac
     tar -C /opt/cni/bin -xzf "$archive"
     rm -f "$archive"
-    echo "CNI 二进制插件安装完成"
+    echo "CNI 二进制插件安装完�?
 }
 
 install_calico() {
@@ -317,7 +319,7 @@ install_flannel() {
 }
 
 verify_cni() {
-    [ -d "/opt/cni/bin" ] && [ -n "$(ls -A /opt/cni/bin 2>/dev/null)" ] && echo "CNI 二进制: OK" || { echo "ERROR: /opt/cni/bin 为空"; return 1; }
+    [ -d "/opt/cni/bin" ] && [ -n "$(ls -A /opt/cni/bin 2>/dev/null)" ] && echo "CNI 二进�? OK" || { echo "ERROR: /opt/cni/bin 为空"; return 1; }
     [ -d "/etc/cni/net.d" ] && [ -n "$(ls -A /etc/cni/net.d 2>/dev/null)" ] && echo "CNI 配置: OK" || { echo "ERROR: /etc/cni/net.d 为空"; return 1; }
     local status=$(kubectl get node $(hostname) -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "Unknown")
     [ "$status" = "True" ] && echo "Node Ready: OK" || echo "WARNING: Node 尚未 Ready"

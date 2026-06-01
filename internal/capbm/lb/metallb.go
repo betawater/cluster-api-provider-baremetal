@@ -22,16 +22,16 @@ import (
 	"net"
 	"time"
 
-	infrav1 "github.com/BetaWater/cluster-api-provider-baremetal/api/v1beta1"
+	capbmv1 "github.com/BetaWater/cluster-api-provider-baremetal/api/capbm/v1beta1"
 )
 
 // MetalLBProvider implements the Provider interface for MetalLB.
 type MetalLBProvider struct {
-	config *infrav1.MetalLBConfig
+	config *capbmv1.MetalLBConfig
 }
 
 // NewMetalLBProvider creates a new MetalLB provider.
-func NewMetalLBProvider(config *infrav1.MetalLBConfig) (Provider, error) {
+func NewMetalLBProvider(config *capbmv1.MetalLBConfig) (Provider, error) {
 	if config == nil {
 		return nil, fmt.Errorf("MetalLB configuration is required")
 	}

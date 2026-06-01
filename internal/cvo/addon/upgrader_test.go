@@ -21,13 +21,14 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	infrav1 "github.com/BetaWater/cluster-api-provider-baremetal/api/v1beta1"
+	cfov1 "github.com/BetaWater/cluster-api-provider-baremetal/api/cvo/v1beta1"
+	commonv1 "github.com/BetaWater/cluster-api-provider-baremetal/api/common/v1beta1"
 )
 
 func TestFindAddonDefinition(t *testing.T) {
-	release := &infrav1.ReleaseImage{
-		Spec: infrav1.ReleaseImageSpec{
-			Addons: []infrav1.AddonDefinition{
+	release := &cfov1.ReleaseImage{
+		Spec: cfov1.ReleaseImageSpec{
+			Addons: []commonv1.AddonDefinition{
 				{Name: "capi-core-controller", Version: "v1.7.0"},
 				{Name: "kubeadm-bootstrap", Version: "v1.7.0"},
 			},
@@ -71,7 +72,7 @@ func TestFindAddonDefinitionNilRelease(t *testing.T) {
 }
 
 func TestAddonUpgradeStrategyDefaults(t *testing.T) {
-	strategy := &infrav1.AddonUpgradeStrategy{
+	strategy := &commonv1.AddonUpgradeStrategy{
 		Type:       "Rolling",
 		RetryCount: 3,
 		Timeout:    &metav1.Duration{Duration: 300000000000},
@@ -86,7 +87,7 @@ func TestAddonUpgradeStrategyDefaults(t *testing.T) {
 }
 
 func TestAddonInstallStrategyDefaults(t *testing.T) {
-	strategy := &infrav1.AddonInstallStrategy{
+	strategy := &commonv1.AddonInstallStrategy{
 		Timeout:         &metav1.Duration{Duration: 300000000000},
 		RetryCount:      3,
 		CreateNamespace: true,
@@ -113,7 +114,7 @@ func TestAddonHookOnFailure(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			hook := infrav1.AddonHook{
+			hook := commonv1.AddonHook{
 				Name:      "test-hook",
 				Command:   "echo test",
 				OnFailure: tt.onFailure,
@@ -126,26 +127,26 @@ func TestAddonHookOnFailure(t *testing.T) {
 }
 
 func TestAddonDefinitionWithAllFields(t *testing.T) {
-	addonDef := infrav1.AddonDefinition{
+	addonDef := commonv1.AddonDefinition{
 		Name:        "capi-core-controller",
-		Type:        infrav1.AddonTypeHelm,
+		Type:        commonv1.AddonTypeHelm,
 		Version:     "v1.7.0",
 		ContentPath: "charts/capi-core-controller-v1.7.0.tgz",
 		Namespace:   "capi-system",
 		Dependencies: []string{},
-		InstallStrategy: &infrav1.AddonInstallStrategy{
+		InstallStrategy: &commonv1.AddonInstallStrategy{
 			Timeout:         &metav1.Duration{Duration: 300000000000},
 			RetryCount:      3,
 			CreateNamespace: true,
 			Wait:            true,
 		},
-		UpgradeStrategy: &infrav1.AddonUpgradeStrategy{
+		UpgradeStrategy: &commonv1.AddonUpgradeStrategy{
 			Type:           "Rolling",
 			MaxUnavailable: 0,
 			Timeout:        &metav1.Duration{Duration: 300000000000},
 			RetryCount:     3,
 		},
-		PreHooks: []infrav1.AddonHook{
+		PreHooks: []commonv1.AddonHook{
 			{
 				Name:      "validate-crds",
 				Command:   "kubectl get crd clusters.cluster.x-k8s.io",
@@ -153,7 +154,7 @@ func TestAddonDefinitionWithAllFields(t *testing.T) {
 				OnFailure: "Abort",
 			},
 		},
-		PostHooks: []infrav1.AddonHook{
+		PostHooks: []commonv1.AddonHook{
 			{
 				Name:      "verify-webhook",
 				Command:   "kubectl get service capi-webhook-service -n capi-system",
@@ -161,18 +162,18 @@ func TestAddonDefinitionWithAllFields(t *testing.T) {
 				OnFailure: "Abort",
 			},
 		},
-		Upgrade: &infrav1.ComponentUpgradeConfig{
-			Backup: infrav1.ComponentBackupConfig{
+		Upgrade: &commonv1.ComponentUpgradeConfig{
+			Backup: commonv1.ComponentBackupConfig{
 				Enabled: true,
-				Config: []infrav1.BackupItem{
+				Config: []commonv1.BackupItem{
 					{Path: "/etc/capi-core-controller", Type: "directory"},
 				},
 			},
-			Rollback: infrav1.ComponentRollbackConfig{
+			Rollback: commonv1.ComponentRollbackConfig{
 				Script:  "scripts/rollback-capi-core.sh",
 				Timeout: &metav1.Duration{Duration: 300000000000},
 			},
-			HealthCheck: infrav1.ComponentHealthCheckConfig{
+			HealthCheck: commonv1.ComponentHealthCheckConfig{
 				Command: "kubectl get deployment capi-controller-manager -n capi-system",
 				Timeout: &metav1.Duration{Duration: 60000000000},
 				Retries: 3,

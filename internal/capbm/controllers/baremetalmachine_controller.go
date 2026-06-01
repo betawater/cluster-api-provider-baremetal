@@ -34,16 +34,18 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 
-	infrav1 "github.com/BetaWater/cluster-api-provider-baremetal/api/v1beta1"
-	"github.com/BetaWater/cluster-api-provider-baremetal/internal/cni"
-	"github.com/BetaWater/cluster-api-provider-baremetal/internal/csi"
-	"github.com/BetaWater/cluster-api-provider-baremetal/internal/health"
-	"github.com/BetaWater/cluster-api-provider-baremetal/internal/installer"
-	"github.com/BetaWater/cluster-api-provider-baremetal/internal/network"
-	"github.com/BetaWater/cluster-api-provider-baremetal/internal/ssh"
+	capbmv1 "github.com/BetaWater/cluster-api-provider-baremetal/api/capbm/v1beta1"
+	
+	cfov1 "github.com/BetaWater/cluster-api-provider-baremetal/api/cvo/v1beta1"
+	"github.com/BetaWater/cluster-api-provider-baremetal/internal/capbm/cni"
+	"github.com/BetaWater/cluster-api-provider-baremetal/internal/capbm/csi"
+	"github.com/BetaWater/cluster-api-provider-baremetal/internal/capbm/health"
+	"github.com/BetaWater/cluster-api-provider-baremetal/internal/capbm/installer"
+	"github.com/BetaWater/cluster-api-provider-baremetal/internal/capbm/network"
+	"github.com/BetaWater/cluster-api-provider-baremetal/internal/capbm/ssh"
 )
 
-func setMachineCondition(bmMachine *infrav1.BareMetalMachine, conditionType clusterv1.ConditionType, status corev1.ConditionStatus, reason string, severity clusterv1.ConditionSeverity, message string) {
+func setMachineCondition(bmMachine *capbmv1.BareMetalMachine, conditionType clusterv1.ConditionType, status corev1.ConditionStatus, reason string, severity clusterv1.ConditionSeverity, message string) {
 	condition := clusterv1.Condition{
 		Type:               conditionType,
 		Status:             status,
@@ -65,11 +67,11 @@ func setMachineCondition(bmMachine *infrav1.BareMetalMachine, conditionType clus
 	bmMachine.SetConditions(conditions)
 }
 
-func markMachineConditionFalse(bmMachine *infrav1.BareMetalMachine, conditionType clusterv1.ConditionType, reason string, severity clusterv1.ConditionSeverity, message string) {
+func markMachineConditionFalse(bmMachine *capbmv1.BareMetalMachine, conditionType clusterv1.ConditionType, reason string, severity clusterv1.ConditionSeverity, message string) {
 	setMachineCondition(bmMachine, conditionType, corev1.ConditionFalse, reason, severity, message)
 }
 
-func markMachineConditionTrue(bmMachine *infrav1.BareMetalMachine, conditionType clusterv1.ConditionType) {
+func markMachineConditionTrue(bmMachine *capbmv1.BareMetalMachine, conditionType clusterv1.ConditionType) {
 	setMachineCondition(bmMachine, conditionType, corev1.ConditionTrue, "", clusterv1.ConditionSeverityInfo, "")
 }
 
@@ -93,7 +95,7 @@ func (r *BareMetalMachineReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	log := ctrl.LoggerFrom(ctx)
 	log.Info("Reconciling BareMetalMachine")
 
-	bmMachine := &infrav1.BareMetalMachine{}
+	bmMachine := &capbmv1.BareMetalMachine{}
 	if err := r.Get(ctx, req.NamespacedName, bmMachine); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -114,10 +116,10 @@ func (r *BareMetalMachineReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	return r.reconcileNormal(ctx, bmMachine, machine)
 }
 
-func (r *BareMetalMachineReconciler) reconcileNormal(ctx context.Context, bmMachine *infrav1.BareMetalMachine, machine *clusterv1.Machine) (ctrl.Result, error) {
+func (r *BareMetalMachineReconciler) reconcileNormal(ctx context.Context, bmMachine *capbmv1.BareMetalMachine, machine *clusterv1.Machine) (ctrl.Result, error) {
 	log := ctrl.LoggerFrom(ctx)
 
-	controllerutil.AddFinalizer(bmMachine, infrav1.MachineFinalizer)
+	controllerutil.AddFinalizer(bmMachine, capbmv1.MachineFinalizer)
 	if err := r.Update(ctx, bmMachine); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -135,14 +137,14 @@ func (r *BareMetalMachineReconciler) reconcileNormal(ctx context.Context, bmMach
 	// Allocate host from inventory if not already allocated
 	if bmMachine.Spec.HostName == "" || bmMachine.Spec.IPAddress == "" {
 		if bmMachine.Spec.HostInventoryRef == nil {
-			markMachineConditionFalse(bmMachine, infrav1.MachineReadyCondition, infrav1.InvalidConfigurationReason, clusterv1.ConditionSeverityError, "hostInventoryRef is required when hostName/ipAddress not specified")
+			markMachineConditionFalse(bmMachine, capbmv1.MachineReadyCondition, capbmv1.InvalidConfigurationReason, clusterv1.ConditionSeverityError, "hostInventoryRef is required when hostName/ipAddress not specified")
 			return ctrl.Result{}, nil
 		}
 
 		host, err := r.allocateHostFromInventory(ctx, bmMachine)
 		if err != nil {
 			log.Error(err, "Failed to allocate host from inventory")
-			markMachineConditionFalse(bmMachine, infrav1.MachineReadyCondition, "HostAllocationFailed", clusterv1.ConditionSeverityError, err.Error())
+			markMachineConditionFalse(bmMachine, capbmv1.MachineReadyCondition, "HostAllocationFailed", clusterv1.ConditionSeverityError, err.Error())
 			return ctrl.Result{RequeueAfter: 30 * time.Second}, r.Status().Update(ctx, bmMachine)
 		}
 
@@ -157,19 +159,19 @@ func (r *BareMetalMachineReconciler) reconcileNormal(ctx context.Context, bmMach
 	}
 
 	if bmMachine.Spec.CredentialsRef == nil {
-		markMachineConditionFalse(bmMachine, infrav1.MachineReadyCondition, infrav1.InvalidConfigurationReason, clusterv1.ConditionSeverityError, "credentialsRef is required")
+		markMachineConditionFalse(bmMachine, capbmv1.MachineReadyCondition, capbmv1.InvalidConfigurationReason, clusterv1.ConditionSeverityError, "credentialsRef is required")
 		return ctrl.Result{}, nil
 	}
 
 	creds, err := r.getCredentials(ctx, bmMachine)
 	if err != nil {
-		markMachineConditionFalse(bmMachine, infrav1.MachineReadyCondition, infrav1.CredentialsNotFoundReason, clusterv1.ConditionSeverityError, err.Error())
+		markMachineConditionFalse(bmMachine, capbmv1.MachineReadyCondition, capbmv1.CredentialsNotFoundReason, clusterv1.ConditionSeverityError, err.Error())
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, r.Status().Update(ctx, bmMachine)
 	}
 
 	sshConn, err := r.SSHManager.Connect(bmMachine.Spec.IPAddress, bmMachine.Spec.SSHPort, *creds)
 	if err != nil {
-		markMachineConditionFalse(bmMachine, infrav1.SSHConnectedCondition, infrav1.SSHConnectionFailedReason, clusterv1.ConditionSeverityWarning, err.Error())
+		markMachineConditionFalse(bmMachine, capbmv1.SSHConnectedCondition, capbmv1.SSHConnectionFailedReason, clusterv1.ConditionSeverityWarning, err.Error())
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, r.Status().Update(ctx, bmMachine)
 	}
 	defer func() {
@@ -178,7 +180,7 @@ func (r *BareMetalMachineReconciler) reconcileNormal(ctx context.Context, bmMach
 		}
 	}()
 
-	markMachineConditionTrue(bmMachine, infrav1.SSHConnectedCondition)
+	markMachineConditionTrue(bmMachine, capbmv1.SSHConnectedCondition)
 
 	preflightConfig := ssh.DefaultPreflightConfig()
 	preflightResult, err := ssh.RunPreflightChecks(ctx, sshConn, preflightConfig)
@@ -187,30 +189,30 @@ func (r *BareMetalMachineReconciler) reconcileNormal(ctx context.Context, bmMach
 	}
 
 	if !preflightResult.Passed {
-		markMachineConditionFalse(bmMachine, infrav1.PreFlightChecksPassedCondition, infrav1.PreFlightChecksFailedReason, clusterv1.ConditionSeverityError, fmt.Sprintf("pre-flight checks failed: %v", preflightResult.Errors))
+		markMachineConditionFalse(bmMachine, capbmv1.PreFlightChecksPassedCondition, capbmv1.PreFlightChecksFailedReason, clusterv1.ConditionSeverityError, fmt.Sprintf("pre-flight checks failed: %v", preflightResult.Errors))
 		return ctrl.Result{RequeueAfter: 60 * time.Second}, r.Status().Update(ctx, bmMachine)
 	}
-	markMachineConditionTrue(bmMachine, infrav1.PreFlightChecksPassedCondition)
+	markMachineConditionTrue(bmMachine, capbmv1.PreFlightChecksPassedCondition)
 
 	if err := r.configureFirewall(ctx, bmMachine, sshConn); err != nil {
 		log.Error(err, "Failed to configure firewall")
-		markMachineConditionFalse(bmMachine, infrav1.FirewallConfiguredCondition, infrav1.FirewallConfigFailedReason, clusterv1.ConditionSeverityWarning, err.Error())
+		markMachineConditionFalse(bmMachine, capbmv1.FirewallConfiguredCondition, capbmv1.FirewallConfigFailedReason, clusterv1.ConditionSeverityWarning, err.Error())
 	} else {
-		markMachineConditionTrue(bmMachine, infrav1.FirewallConfiguredCondition)
+		markMachineConditionTrue(bmMachine, capbmv1.FirewallConfiguredCondition)
 	}
 
 	if err := r.configureSELinux(ctx, bmMachine, sshConn); err != nil {
 		log.Error(err, "Failed to configure SELinux")
-		markMachineConditionFalse(bmMachine, infrav1.SELinuxConfiguredCondition, infrav1.SELinuxConfigFailedReason, clusterv1.ConditionSeverityWarning, err.Error())
+		markMachineConditionFalse(bmMachine, capbmv1.SELinuxConfiguredCondition, capbmv1.SELinuxConfigFailedReason, clusterv1.ConditionSeverityWarning, err.Error())
 	} else {
-		markMachineConditionTrue(bmMachine, infrav1.SELinuxConfiguredCondition)
+		markMachineConditionTrue(bmMachine, capbmv1.SELinuxConfiguredCondition)
 	}
 
 	k8sVersion := extractK8sVersion(machine)
 	installResult, err := r.installComponents(ctx, bmMachine, sshConn, k8sVersion)
 	if err != nil {
 		log.Error(err, "Failed to install components")
-		markMachineConditionFalse(bmMachine, infrav1.ComponentsInstalledCondition, infrav1.ComponentInstallFailedReason, clusterv1.ConditionSeverityError, err.Error())
+		markMachineConditionFalse(bmMachine, capbmv1.ComponentsInstalledCondition, capbmv1.ComponentInstallFailedReason, clusterv1.ConditionSeverityError, err.Error())
 		return ctrl.Result{RequeueAfter: 60 * time.Second}, r.Status().Update(ctx, bmMachine)
 	}
 
@@ -221,13 +223,13 @@ func (r *BareMetalMachineReconciler) reconcileNormal(ctx context.Context, bmMach
 
 	if !installResult.Success {
 		log.Error(fmt.Errorf("installation failed"), "Component installation failed", "error", installResult.Error)
-		markMachineConditionFalse(bmMachine, infrav1.ComponentsInstalledCondition, infrav1.ComponentInstallFailedReason, clusterv1.ConditionSeverityError, installResult.Error)
+		markMachineConditionFalse(bmMachine, capbmv1.ComponentsInstalledCondition, capbmv1.ComponentInstallFailedReason, clusterv1.ConditionSeverityError, installResult.Error)
 		return ctrl.Result{RequeueAfter: 60 * time.Second}, r.Status().Update(ctx, bmMachine)
 	}
 
-	markMachineConditionTrue(bmMachine, infrav1.ComponentsInstalledCondition)
+	markMachineConditionTrue(bmMachine, capbmv1.ComponentsInstalledCondition)
 
-	bmMachine.Status.InstalledComponents = infrav1.ComponentVersions{
+	bmMachine.Status.InstalledComponents = capbmv1.ComponentVersions{
 		ContainerRuntime: installResult.ComponentVersions.ContainerRuntime,
 		Kubeadm:          installResult.ComponentVersions.Kubeadm,
 		Kubelet:          installResult.ComponentVersions.Kubelet,
@@ -239,17 +241,17 @@ func (r *BareMetalMachineReconciler) reconcileNormal(ctx context.Context, bmMach
 	if result, err := r.installCNI(ctx, bmMachine, sshConn); err != nil || !result.Completed {
 		if err != nil {
 			log.Error(err, "Failed to install CNI")
-			markMachineConditionFalse(bmMachine, infrav1.CNIInstalledCondition, infrav1.CNIInstallFailedReason, clusterv1.ConditionSeverityError, err.Error())
+			markMachineConditionFalse(bmMachine, capbmv1.CNIInstalledCondition, capbmv1.CNIInstallFailedReason, clusterv1.ConditionSeverityError, err.Error())
 			return ctrl.Result{RequeueAfter: 60 * time.Second}, r.Status().Update(ctx, bmMachine)
 		}
 		log.Info("CNI installation in progress", "progress", result.Error)
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	} else if !result.Success {
 		log.Error(fmt.Errorf("CNI installation failed"), "CNI installation failed", "error", result.Error)
-		markMachineConditionFalse(bmMachine, infrav1.CNIInstalledCondition, infrav1.CNIInstallFailedReason, clusterv1.ConditionSeverityError, result.Error)
+		markMachineConditionFalse(bmMachine, capbmv1.CNIInstalledCondition, capbmv1.CNIInstallFailedReason, clusterv1.ConditionSeverityError, result.Error)
 		return ctrl.Result{RequeueAfter: 60 * time.Second}, r.Status().Update(ctx, bmMachine)
 	} else {
-		markMachineConditionTrue(bmMachine, infrav1.CNIInstalledCondition)
+		markMachineConditionTrue(bmMachine, capbmv1.CNIInstalledCondition)
 		bmMachine.Status.InstalledComponents.CNI = result.Version
 		if config := bmMachine.Spec.ComponentInstall; config != nil {
 			bmMachine.Status.InstalledComponents.CNIType = config.CNI.Type
@@ -259,17 +261,17 @@ func (r *BareMetalMachineReconciler) reconcileNormal(ctx context.Context, bmMach
 	if result, err := r.installCSI(ctx, bmMachine, sshConn); err != nil || !result.Completed {
 		if err != nil {
 			log.Error(err, "Failed to install CSI")
-			markMachineConditionFalse(bmMachine, infrav1.CSIInstalledCondition, infrav1.CSIInstallFailedReason, clusterv1.ConditionSeverityError, err.Error())
+			markMachineConditionFalse(bmMachine, capbmv1.CSIInstalledCondition, capbmv1.CSIInstallFailedReason, clusterv1.ConditionSeverityError, err.Error())
 			return ctrl.Result{RequeueAfter: 60 * time.Second}, r.Status().Update(ctx, bmMachine)
 		}
 		log.Info("CSI installation in progress", "progress", result.Error)
 		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 	} else if !result.Success {
 		log.Error(fmt.Errorf("CSI installation failed"), "CSI installation failed", "error", result.Error)
-		markMachineConditionFalse(bmMachine, infrav1.CSIInstalledCondition, infrav1.CSIInstallFailedReason, clusterv1.ConditionSeverityError, result.Error)
+		markMachineConditionFalse(bmMachine, capbmv1.CSIInstalledCondition, capbmv1.CSIInstallFailedReason, clusterv1.ConditionSeverityError, result.Error)
 		return ctrl.Result{RequeueAfter: 60 * time.Second}, r.Status().Update(ctx, bmMachine)
 	} else {
-		markMachineConditionTrue(bmMachine, infrav1.CSIInstalledCondition)
+		markMachineConditionTrue(bmMachine, capbmv1.CSIInstalledCondition)
 		bmMachine.Status.InstalledComponents.CSI = result.Version
 		if config := bmMachine.Spec.ComponentInstall; config != nil {
 			bmMachine.Status.InstalledComponents.CSIDriver = config.CSI.Driver
@@ -298,12 +300,12 @@ func (r *BareMetalMachineReconciler) reconcileNormal(ctx context.Context, bmMach
 		{Type: clusterv1.MachineInternalIP, Address: bmMachine.Spec.IPAddress},
 		{Type: clusterv1.MachineHostName, Address: bmMachine.Spec.HostName},
 	}
-	markMachineConditionTrue(bmMachine, infrav1.MachineReadyCondition)
+	markMachineConditionTrue(bmMachine, capbmv1.MachineReadyCondition)
 
 	return ctrl.Result{}, r.Status().Update(ctx, bmMachine)
 }
 
-func (r *BareMetalMachineReconciler) reconcileDelete(ctx context.Context, bmMachine *infrav1.BareMetalMachine) (ctrl.Result, error) {
+func (r *BareMetalMachineReconciler) reconcileDelete(ctx context.Context, bmMachine *capbmv1.BareMetalMachine) (ctrl.Result, error) {
 	log := ctrl.LoggerFrom(ctx)
 	log.Info("Deleting BareMetalMachine")
 
@@ -314,7 +316,7 @@ func (r *BareMetalMachineReconciler) reconcileDelete(ctx context.Context, bmMach
 		}
 	}
 
-	controllerutil.RemoveFinalizer(bmMachine, infrav1.MachineFinalizer)
+	controllerutil.RemoveFinalizer(bmMachine, capbmv1.MachineFinalizer)
 	if err := r.Update(ctx, bmMachine); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -322,8 +324,8 @@ func (r *BareMetalMachineReconciler) reconcileDelete(ctx context.Context, bmMach
 	return ctrl.Result{}, nil
 }
 
-func (r *BareMetalMachineReconciler) allocateHostFromInventory(ctx context.Context, bmMachine *infrav1.BareMetalMachine) (*infrav1.HostEntry, error) {
-	inventory := &infrav1.BareMetalHostInventory{}
+func (r *BareMetalMachineReconciler) allocateHostFromInventory(ctx context.Context, bmMachine *capbmv1.BareMetalMachine) (*capbmv1.HostEntry, error) {
+	inventory := &capbmv1.BareMetalHostInventory{}
 	inventoryKey := types.NamespacedName{
 		Namespace: bmMachine.Namespace,
 		Name:      bmMachine.Spec.HostInventoryRef.Name,
@@ -339,7 +341,7 @@ func (r *BareMetalMachineReconciler) allocateHostFromInventory(ctx context.Conte
 		}
 
 		if inventory.Status.HostsStatus != nil && i < len(inventory.Status.HostsStatus) {
-			if inventory.Status.HostsStatus[i].State != infrav1.HostStateAvailable {
+			if inventory.Status.HostsStatus[i].State != capbmv1.HostStateAvailable {
 				continue
 			}
 		}
@@ -353,16 +355,16 @@ func (r *BareMetalMachineReconciler) allocateHostFromInventory(ctx context.Conte
 		}
 
 		if inventory.Status.HostsStatus == nil {
-			inventory.Status.HostsStatus = make([]infrav1.HostStatusEntry, len(inventory.Spec.Hosts))
+			inventory.Status.HostsStatus = make([]capbmv1.HostStatusEntry, len(inventory.Spec.Hosts))
 		}
 		if i >= len(inventory.Status.HostsStatus) {
-			inventory.Status.HostsStatus = append(inventory.Status.HostsStatus, make([]infrav1.HostStatusEntry, i-len(inventory.Status.HostsStatus)+1)...)
+			inventory.Status.HostsStatus = append(inventory.Status.HostsStatus, make([]capbmv1.HostStatusEntry, i-len(inventory.Status.HostsStatus)+1)...)
 		}
 
 		clusterName := bmMachine.Labels[clusterv1.ClusterNameLabel]
-		inventory.Status.HostsStatus[i] = infrav1.HostStatusEntry{
+		inventory.Status.HostsStatus[i] = capbmv1.HostStatusEntry{
 			Name:  host.Name,
-			State: infrav1.HostStateAllocated,
+			State: capbmv1.HostStateAllocated,
 			ClusterRef: &corev1.ObjectReference{
 				Name:      clusterName,
 				Namespace: bmMachine.Namespace,
@@ -382,8 +384,8 @@ func (r *BareMetalMachineReconciler) allocateHostFromInventory(ctx context.Conte
 	return nil, fmt.Errorf("no available hosts in inventory %s matching role %s", inventory.Name, bmMachine.Spec.Role)
 }
 
-func (r *BareMetalMachineReconciler) releaseHostToInventory(ctx context.Context, bmMachine *infrav1.BareMetalMachine) error {
-	inventory := &infrav1.BareMetalHostInventory{}
+func (r *BareMetalMachineReconciler) releaseHostToInventory(ctx context.Context, bmMachine *capbmv1.BareMetalMachine) error {
+	inventory := &capbmv1.BareMetalHostInventory{}
 	inventoryKey := types.NamespacedName{
 		Namespace: bmMachine.Namespace,
 		Name:      bmMachine.Spec.HostInventoryRef.Name,
@@ -399,7 +401,7 @@ func (r *BareMetalMachineReconciler) releaseHostToInventory(ctx context.Context,
 	for i, host := range inventory.Spec.Hosts {
 		if host.Name == bmMachine.Spec.HostName {
 			if inventory.Status.HostsStatus != nil && i < len(inventory.Status.HostsStatus) {
-				inventory.Status.HostsStatus[i].State = infrav1.HostStateAvailable
+				inventory.Status.HostsStatus[i].State = capbmv1.HostStateAvailable
 				inventory.Status.HostsStatus[i].ClusterRef = nil
 			}
 
@@ -418,8 +420,8 @@ func (r *BareMetalMachineReconciler) releaseHostToInventory(ctx context.Context,
 	return nil
 }
 
-func (r *BareMetalMachineReconciler) getAllocatedMachine(ctx context.Context, inventory *infrav1.BareMetalHostInventory, hostName string) (*infrav1.BareMetalMachine, error) {
-	machineList := &infrav1.BareMetalMachineList{}
+func (r *BareMetalMachineReconciler) getAllocatedMachine(ctx context.Context, inventory *capbmv1.BareMetalHostInventory, hostName string) (*capbmv1.BareMetalMachine, error) {
+	machineList := &capbmv1.BareMetalMachineList{}
 	if err := r.List(ctx, machineList, client.InNamespace(inventory.Namespace)); err != nil {
 		return nil, err
 	}
@@ -433,13 +435,13 @@ func (r *BareMetalMachineReconciler) getAllocatedMachine(ctx context.Context, in
 	return nil, nil
 }
 
-func (r *BareMetalMachineReconciler) getBareMetalCluster(ctx context.Context, bmMachine *infrav1.BareMetalMachine) (*infrav1.BareMetalCluster, error) {
+func (r *BareMetalMachineReconciler) getBareMetalCluster(ctx context.Context, bmMachine *capbmv1.BareMetalMachine) (*capbmv1.BareMetalCluster, error) {
 	clusterName := bmMachine.Labels[clusterv1.ClusterNameLabel]
 	if clusterName == "" {
 		return nil, nil
 	}
 
-	baremetalCluster := &infrav1.BareMetalCluster{}
+	baremetalCluster := &capbmv1.BareMetalCluster{}
 	baremetalClusterKey := types.NamespacedName{
 		Namespace: bmMachine.Namespace,
 		Name:      clusterName,
@@ -455,7 +457,7 @@ func (r *BareMetalMachineReconciler) getBareMetalCluster(ctx context.Context, bm
 	return baremetalCluster, nil
 }
 
-func (r *BareMetalMachineReconciler) getCredentials(ctx context.Context, bmMachine *infrav1.BareMetalMachine) (*ssh.Credentials, error) {
+func (r *BareMetalMachineReconciler) getCredentials(ctx context.Context, bmMachine *capbmv1.BareMetalMachine) (*ssh.Credentials, error) {
 	if bmMachine.Spec.CredentialsRef == nil {
 		return nil, fmt.Errorf("credentialsRef is not set")
 	}
@@ -486,22 +488,22 @@ func (r *BareMetalMachineReconciler) getCredentials(ctx context.Context, bmMachi
 	}, nil
 }
 
-func (r *BareMetalMachineReconciler) installComponents(ctx context.Context, bmMachine *infrav1.BareMetalMachine, sshConn *ssh.SSHConnection, k8sVersion string) (*installer.InstallResult, error) {
+func (r *BareMetalMachineReconciler) installComponents(ctx context.Context, bmMachine *capbmv1.BareMetalMachine, sshConn *ssh.SSHConnection, k8sVersion string) (*installer.InstallResult, error) {
 	log := ctrl.LoggerFrom(ctx)
 
 	config := bmMachine.Spec.ComponentInstall
 	if config == nil {
-		config = &infrav1.ComponentInstallConfig{
+		config = &capbmv1.ComponentInstallConfig{
 			Enabled:  true,
-			Strategy: infrav1.InstallIfMissing,
-			ContainerRuntime: infrav1.ContainerRuntimeConfig{
+			Strategy: capbmv1.InstallIfMissing,
+			ContainerRuntime: capbmv1.ContainerRuntimeConfig{
 				Type: "containerd",
 			},
 			MaxRetries: 3,
 		}
 	}
 
-	if !config.Enabled || config.Strategy == infrav1.Skip {
+	if !config.Enabled || config.Strategy == capbmv1.Skip {
 		log.Info("Component installation disabled or skipped")
 		return &installer.InstallResult{Completed: true, Success: true, Progress: "Installation disabled or skipped"}, nil
 	}
@@ -513,7 +515,7 @@ func (r *BareMetalMachineReconciler) installComponents(ctx context.Context, bmMa
 
 	// Try to install via ReleaseImage if ReleaseImageRef is set
 	if bmMachine.Spec.ReleaseImageRef != nil {
-		releaseImage := &infrav1.ReleaseImage{}
+		releaseImage := &cfov1.ReleaseImage{}
 		if err := r.Get(ctx, types.NamespacedName{Name: bmMachine.Spec.ReleaseImageRef.Name}, releaseImage); err != nil {
 			log.Error(err, "Failed to get ReleaseImage, falling back to legacy install", "releaseImageRef", bmMachine.Spec.ReleaseImageRef.Name)
 		} else {
@@ -527,7 +529,7 @@ func (r *BareMetalMachineReconciler) installComponents(ctx context.Context, bmMa
 	return inst.Install(ctx)
 }
 
-func (r *BareMetalMachineReconciler) configureFirewall(ctx context.Context, bmMachine *infrav1.BareMetalMachine, sshConn *ssh.SSHConnection) error {
+func (r *BareMetalMachineReconciler) configureFirewall(ctx context.Context, bmMachine *capbmv1.BareMetalMachine, sshConn *ssh.SSHConnection) error {
 	role := bmMachine.Spec.Role
 	if role == "" {
 		role = "worker"
@@ -537,7 +539,7 @@ func (r *BareMetalMachineReconciler) configureFirewall(ctx context.Context, bmMa
 	return fwManager.Configure(ctx)
 }
 
-func (r *BareMetalMachineReconciler) configureSELinux(ctx context.Context, bmMachine *infrav1.BareMetalMachine, sshConn *ssh.SSHConnection) error {
+func (r *BareMetalMachineReconciler) configureSELinux(ctx context.Context, bmMachine *capbmv1.BareMetalMachine, sshConn *ssh.SSHConnection) error {
 	selinuxManager := network.NewSELinuxManager(sshConn, bmMachine.Spec.SELinux)
 	return selinuxManager.Configure(ctx)
 }
@@ -556,7 +558,7 @@ func extractK8sVersion(machine *clusterv1.Machine) string {
 	return version
 }
 
-func (r *BareMetalMachineReconciler) installCNI(ctx context.Context, bmMachine *infrav1.BareMetalMachine, sshConn *ssh.SSHConnection) (*cni.InstallResult, error) {
+func (r *BareMetalMachineReconciler) installCNI(ctx context.Context, bmMachine *capbmv1.BareMetalMachine, sshConn *ssh.SSHConnection) (*cni.InstallResult, error) {
 	log := ctrl.LoggerFrom(ctx)
 
 	if bmMachine.Spec.ComponentInstall == nil {
@@ -576,7 +578,7 @@ func (r *BareMetalMachineReconciler) installCNI(ctx context.Context, bmMachine *
 
 	// Try to use ReleaseImage if available
 	if bmMachine.Spec.ReleaseImageRef != nil {
-		releaseImage := &infrav1.ReleaseImage{}
+		releaseImage := &cfov1.ReleaseImage{}
 		if err := r.Get(ctx, types.NamespacedName{Name: bmMachine.Spec.ReleaseImageRef.Name}, releaseImage); err == nil {
 			inst := cni.NewFromReleaseImage(sshConn, releaseImage, cniConfig, podCIDR)
 			return inst.Install(ctx)
@@ -588,7 +590,7 @@ func (r *BareMetalMachineReconciler) installCNI(ctx context.Context, bmMachine *
 	return inst.Install(ctx)
 }
 
-func (r *BareMetalMachineReconciler) installCSI(ctx context.Context, bmMachine *infrav1.BareMetalMachine, sshConn *ssh.SSHConnection) (*csi.InstallResult, error) {
+func (r *BareMetalMachineReconciler) installCSI(ctx context.Context, bmMachine *capbmv1.BareMetalMachine, sshConn *ssh.SSHConnection) (*csi.InstallResult, error) {
 	log := ctrl.LoggerFrom(ctx)
 
 	if bmMachine.Spec.ComponentInstall == nil {
@@ -603,7 +605,7 @@ func (r *BareMetalMachineReconciler) installCSI(ctx context.Context, bmMachine *
 
 	// Try to use ReleaseImage if available
 	if bmMachine.Spec.ReleaseImageRef != nil {
-		releaseImage := &infrav1.ReleaseImage{}
+		releaseImage := &cfov1.ReleaseImage{}
 		if err := r.Get(ctx, types.NamespacedName{Name: bmMachine.Spec.ReleaseImageRef.Name}, releaseImage); err == nil {
 			inst := csi.NewFromReleaseImage(sshConn, releaseImage, csiConfig)
 			return inst.Install(ctx)
@@ -618,10 +620,10 @@ func (r *BareMetalMachineReconciler) installCSI(ctx context.Context, bmMachine *
 // SetupWithManager sets up the controller with the Manager.
 func (r *BareMetalMachineReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&infrav1.BareMetalMachine{}).
+		For(&capbmv1.BareMetalMachine{}).
 		Watches(
 			&clusterv1.Machine{},
-			handler.EnqueueRequestsFromMapFunc(util.MachineToInfrastructureMapFunc(infrav1.GroupVersion.WithKind("BareMetalMachine"))),
+			handler.EnqueueRequestsFromMapFunc(util.MachineToInfrastructureMapFunc(capbmv1.GroupVersion.WithKind("BareMetalMachine"))),
 		).
 		Complete(r)
 }

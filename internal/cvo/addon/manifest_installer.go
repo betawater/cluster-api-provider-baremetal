@@ -28,7 +28,8 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	cfov1 "github.com/BetaWater/cluster-api-provider-baremetal/api/cvo/v1beta1"`n`n`tcommonv1 "github.com/BetaWater/cluster-api-provider-baremetal/api/common/v1beta1"
+	cfov1 "github.com/BetaWater/cluster-api-provider-baremetal/api/cvo/v1beta1"
+	commonv1 "github.com/BetaWater/cluster-api-provider-baremetal/api/common/v1beta1"
 )
 
 // ManifestInstaller installs addons from manifest templates.

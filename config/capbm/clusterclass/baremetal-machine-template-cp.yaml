@@ -1,0 +1,13 @@
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+kind: BareMetalMachineTemplate
+metadata:
+  name: baremetal-clusterclass-v0.1.0-control-plane
+spec:
+  template:
+    spec:
+      sshPort: 22
+      hostInventoryRef:
+        name: ""
+      credentialsRef:
+        name: ""
+      role: "control-plane"

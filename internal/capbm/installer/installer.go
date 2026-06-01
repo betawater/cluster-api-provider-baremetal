@@ -22,19 +22,21 @@ import (
 	"strings"
 	"time"
 
-	infrav1 "github.com/BetaWater/cluster-api-provider-baremetal/api/v1beta1"
-	sshclient "github.com/BetaWater/cluster-api-provider-baremetal/internal/ssh"
+	capbmv1 "github.com/BetaWater/cluster-api-provider-baremetal/api/capbm/v1beta1"
+	
+	cfov1 "github.com/BetaWater/cluster-api-provider-baremetal/api/cvo/v1beta1"
+	sshclient "github.com/BetaWater/cluster-api-provider-baremetal/internal/capbm/ssh"
 )
 
 type Installer struct {
 	sshConn      *sshclient.SSHConnection
-	config       *infrav1.ComponentInstallConfig
-	releaseImage *infrav1.ReleaseImage
+	config       *capbmv1.ComponentInstallConfig
+	releaseImage *cfov1.ReleaseImage
 	k8sVersion   string
 	role         string
 }
 
-func New(sshConn *sshclient.SSHConnection, config *infrav1.ComponentInstallConfig, k8sVersion string, role string) *Installer {
+func New(sshConn *sshclient.SSHConnection, config *capbmv1.ComponentInstallConfig, k8sVersion string, role string) *Installer {
 	return &Installer{
 		sshConn:    sshConn,
 		config:     config,
@@ -45,7 +47,7 @@ func New(sshConn *sshclient.SSHConnection, config *infrav1.ComponentInstallConfi
 
 // NewWithReleaseImage creates an Installer driven by a ReleaseImage.
 // Component versions are sourced from releaseImage.Spec.Components.
-func NewWithReleaseImage(sshConn *sshclient.SSHConnection, releaseImage *infrav1.ReleaseImage, config *infrav1.ComponentInstallConfig, role string) *Installer {
+func NewWithReleaseImage(sshConn *sshclient.SSHConnection, releaseImage *cfov1.ReleaseImage, config *capbmv1.ComponentInstallConfig, role string) *Installer {
 	k8sVersion := ""
 	if releaseImage.Spec.Components.Kubernetes.Version != "" {
 		k8sVersion = strings.TrimPrefix(releaseImage.Spec.Components.Kubernetes.Version, "v")
@@ -82,7 +84,7 @@ func (i *Installer) Install(ctx context.Context) (*InstallResult, error) {
 		return &InstallResult{Completed: true, Success: true, Progress: "Installation disabled"}, nil
 	}
 
-	if i.config.Strategy == infrav1.Skip {
+	if i.config.Strategy == capbmv1.Skip {
 		return &InstallResult{Completed: true, Success: true, Progress: "Installation skipped"}, nil
 	}
 
@@ -100,7 +102,7 @@ func (i *Installer) Install(ctx context.Context) (*InstallResult, error) {
 		return &InstallResult{Completed: false, Success: false, Progress: "OS detection failed", Error: err.Error()}, err
 	}
 
-	if i.config.Strategy == infrav1.InstallIfMissing {
+	if i.config.Strategy == capbmv1.InstallIfMissing {
 		existing, err := i.checkExistingComponents(ctx, osInfo)
 		if err != nil {
 			return &InstallResult{Completed: false, Success: false, Progress: "Component check failed", Error: err.Error()}, err

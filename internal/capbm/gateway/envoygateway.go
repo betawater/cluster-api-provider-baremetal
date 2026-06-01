@@ -20,17 +20,17 @@ import (
 	"context"
 	"fmt"
 
-	infrav1 "github.com/BetaWater/cluster-api-provider-baremetal/api/v1beta1"
+	capbmv1 "github.com/BetaWater/cluster-api-provider-baremetal/api/capbm/v1beta1"
 )
 
 // EnvoyGatewayInstaller installs Envoy Gateway Controller.
 type EnvoyGatewayInstaller struct {
 	version string
-	config  *infrav1.EnvoyGatewayConfig
+	config  *capbmv1.EnvoyGatewayConfig
 }
 
 // NewEnvoyGatewayInstaller creates a new Envoy Gateway installer.
-func NewEnvoyGatewayInstaller(version string, config *infrav1.EnvoyGatewayConfig) *EnvoyGatewayInstaller {
+func NewEnvoyGatewayInstaller(version string, config *capbmv1.EnvoyGatewayConfig) *EnvoyGatewayInstaller {
 	return &EnvoyGatewayInstaller{
 		version: version,
 		config:  config,

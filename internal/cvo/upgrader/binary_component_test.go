@@ -21,11 +21,12 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	infrav1 "github.com/BetaWater/cluster-api-provider-baremetal/api/v1beta1"
+	cfov1 "github.com/BetaWater/cluster-api-provider-baremetal/api/cvo/v1beta1"
+	commonv1 "github.com/BetaWater/cluster-api-provider-baremetal/api/common/v1beta1"
 )
 
 func TestBinaryInstallStrategyDefaults(t *testing.T) {
-	strategy := &infrav1.BinaryInstallStrategy{
+	strategy := &commonv1.BinaryInstallStrategy{
 		Timeout:     &metav1.Duration{Duration: 300000000000},
 		RetryCount:  3,
 		Method:      "package",
@@ -44,7 +45,7 @@ func TestBinaryInstallStrategyDefaults(t *testing.T) {
 }
 
 func TestBinaryUpgradeStrategyDefaults(t *testing.T) {
-	strategy := &infrav1.BinaryUpgradeStrategy{
+	strategy := &commonv1.BinaryUpgradeStrategy{
 		Type:          "Rolling",
 		MaxConcurrent: 1,
 		Timeout:       &metav1.Duration{Duration: 600000000000},
@@ -64,28 +65,28 @@ func TestBinaryUpgradeStrategyDefaults(t *testing.T) {
 }
 
 func TestBinaryComponentWithAllFields(t *testing.T) {
-	component := infrav1.BinaryComponent{
+	component := commonv1.BinaryComponent{
 		Version:       "1.7.24",
-		Type:          infrav1.ComponentTypeBinary,
+		Type:          commonv1.ComponentTypeBinary,
 		Path:          "/opt/capbm/binaries/containerd",
 		Architectures: []string{"amd64", "arm64"},
-		Files: infrav1.BinaryFiles{
+		Files: commonv1.BinaryFiles{
 			Archive: "containerd-1.7.24.tar.gz",
 		},
-		InstallStrategy: &infrav1.BinaryInstallStrategy{
+		InstallStrategy: &commonv1.BinaryInstallStrategy{
 			Timeout:     &metav1.Duration{Duration: 300000000000},
 			RetryCount:  3,
 			Method:      "package",
 			ServiceName: "containerd",
 		},
-		UpgradeStrategy: &infrav1.BinaryUpgradeStrategy{
+		UpgradeStrategy: &commonv1.BinaryUpgradeStrategy{
 			Type:          "Rolling",
 			MaxConcurrent: 1,
 			Timeout:       &metav1.Duration{Duration: 600000000000},
 			RetryCount:    3,
 			Drain:         true,
 		},
-		PreHooks: []infrav1.AddonHook{
+		PreHooks: []commonv1.AddonHook{
 			{
 				Name:      "stop-containerd",
 				Command:   "systemctl stop containerd",
@@ -93,7 +94,7 @@ func TestBinaryComponentWithAllFields(t *testing.T) {
 				OnFailure: "Abort",
 			},
 		},
-		PostHooks: []infrav1.AddonHook{
+		PostHooks: []commonv1.AddonHook{
 			{
 				Name:      "start-containerd",
 				Command:   "systemctl start containerd",
@@ -101,18 +102,18 @@ func TestBinaryComponentWithAllFields(t *testing.T) {
 				OnFailure: "Abort",
 			},
 		},
-		Upgrade: &infrav1.ComponentUpgradeConfig{
-			Backup: infrav1.ComponentBackupConfig{
+		Upgrade: &commonv1.ComponentUpgradeConfig{
+			Backup: commonv1.ComponentBackupConfig{
 				Enabled: true,
-				Config: []infrav1.BackupItem{
+				Config: []commonv1.BackupItem{
 					{Path: "/etc/containerd/config.toml", Type: "file"},
 				},
 			},
-			Rollback: infrav1.ComponentRollbackConfig{
+			Rollback: commonv1.ComponentRollbackConfig{
 				Script:  "scripts/rollback-containerd.sh",
 				Timeout: &metav1.Duration{Duration: 300000000000},
 			},
-			HealthCheck: infrav1.ComponentHealthCheckConfig{
+			HealthCheck: commonv1.ComponentHealthCheckConfig{
 				Command: "systemctl is-active containerd",
 				Timeout: &metav1.Duration{Duration: 30000000000},
 				Retries: 3,
@@ -141,11 +142,11 @@ func TestBinaryComponentWithAllFields(t *testing.T) {
 }
 
 func TestKubernetesComponentWithAllFields(t *testing.T) {
-	component := infrav1.KubernetesComponent{
+	component := commonv1.KubernetesComponent{
 		Version: "v1.31.0",
-		Type:    infrav1.ComponentTypeBinary,
+		Type:    commonv1.ComponentTypeBinary,
 		Path:    "/opt/capbm/binaries/kubernetes",
-		Platforms: map[string]infrav1.K8SPlatform{
+		Platforms: map[string]commonv1.K8SPlatform{
 			"ubuntu": {
 				Architectures: []string{"amd64", "arm64"},
 				Packages: map[string]string{
@@ -155,20 +156,20 @@ func TestKubernetesComponentWithAllFields(t *testing.T) {
 				},
 			},
 		},
-		InstallStrategy: &infrav1.BinaryInstallStrategy{
+		InstallStrategy: &commonv1.BinaryInstallStrategy{
 			Timeout:     &metav1.Duration{Duration: 600000000000},
 			RetryCount:  3,
 			Method:      "package",
 			ServiceName: "kubelet",
 		},
-		UpgradeStrategy: &infrav1.BinaryUpgradeStrategy{
+		UpgradeStrategy: &commonv1.BinaryUpgradeStrategy{
 			Type:          "Rolling",
 			MaxConcurrent: 1,
 			Timeout:       &metav1.Duration{Duration: 900000000000},
 			RetryCount:    3,
 			Drain:         true,
 		},
-		PreHooks: []infrav1.AddonHook{
+		PreHooks: []commonv1.AddonHook{
 			{
 				Name:      "drain-node",
 				Command:   "kubectl drain {{.NodeName}} --ignore-daemonsets --delete-emptydir-data",
@@ -176,7 +177,7 @@ func TestKubernetesComponentWithAllFields(t *testing.T) {
 				OnFailure: "Abort",
 			},
 		},
-		PostHooks: []infrav1.AddonHook{
+		PostHooks: []commonv1.AddonHook{
 			{
 				Name:      "uncordon-node",
 				Command:   "kubectl uncordon {{.NodeName}}",
@@ -184,19 +185,19 @@ func TestKubernetesComponentWithAllFields(t *testing.T) {
 				OnFailure: "Abort",
 			},
 		},
-		Upgrade: &infrav1.ComponentUpgradeConfig{
-			Backup: infrav1.ComponentBackupConfig{
+		Upgrade: &commonv1.ComponentUpgradeConfig{
+			Backup: commonv1.ComponentBackupConfig{
 				Enabled:      true,
 				EtcdSnapshot: true,
-				Config: []infrav1.BackupItem{
+				Config: []commonv1.BackupItem{
 					{Path: "/etc/kubernetes", Type: "directory"},
 				},
 			},
-			Rollback: infrav1.ComponentRollbackConfig{
+			Rollback: commonv1.ComponentRollbackConfig{
 				Script:  "scripts/rollback-kubernetes.sh",
 				Timeout: &metav1.Duration{Duration: 600000000000},
 			},
-			HealthCheck: infrav1.ComponentHealthCheckConfig{
+			HealthCheck: commonv1.ComponentHealthCheckConfig{
 				Command: "kubectl get nodes {{.NodeName}} -o jsonpath='{.status.conditions[?(@.type==\"Ready\")].status}'",
 				Timeout: &metav1.Duration{Duration: 60000000000},
 				Retries: 3,
@@ -239,7 +240,7 @@ func TestBinaryUpgradeStrategyTypes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			strategy := infrav1.BinaryUpgradeStrategy{
+			strategy := commonv1.BinaryUpgradeStrategy{
 				Type: tt.typ,
 			}
 			if strategy.Type != tt.typ {
@@ -261,7 +262,7 @@ func TestBinaryInstallStrategyMethods(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			strategy := infrav1.BinaryInstallStrategy{
+			strategy := commonv1.BinaryInstallStrategy{
 				Method: tt.method,
 			}
 			if strategy.Method != tt.method {
@@ -272,54 +273,54 @@ func TestBinaryInstallStrategyMethods(t *testing.T) {
 }
 
 func TestReleaseImageWithBinaryComponents(t *testing.T) {
-	releaseImage := infrav1.ReleaseImage{
-		Spec: infrav1.ReleaseImageSpec{
+	releaseImage := cfov1.ReleaseImage{
+		Spec: cfov1.ReleaseImageSpec{
 			Version: "v1.31.0",
 			Image:   "registry.example.com/capbm/release:v1.31.0",
-			Components: infrav1.ReleaseComponentVersions{
-				Kubernetes: infrav1.KubernetesComponent{
+			Components: commonv1.ReleaseComponentVersions{
+				Kubernetes: commonv1.KubernetesComponent{
 					Version: "v1.31.0",
-					Type:    infrav1.ComponentTypeBinary,
-					InstallStrategy: &infrav1.BinaryInstallStrategy{
+					Type:    commonv1.ComponentTypeBinary,
+					InstallStrategy: &commonv1.BinaryInstallStrategy{
 						Timeout:     &metav1.Duration{Duration: 600000000000},
 						RetryCount:  3,
 						Method:      "package",
 						ServiceName: "kubelet",
 					},
-					UpgradeStrategy: &infrav1.BinaryUpgradeStrategy{
+					UpgradeStrategy: &commonv1.BinaryUpgradeStrategy{
 						Type:          "Rolling",
 						MaxConcurrent: 1,
 						Timeout:       &metav1.Duration{Duration: 900000000000},
 						RetryCount:    3,
 						Drain:         true,
 					},
-					PreHooks: []infrav1.AddonHook{
+					PreHooks: []commonv1.AddonHook{
 						{Name: "drain-node", Command: "kubectl drain {{.NodeName}}", OnFailure: "Abort"},
 					},
-					PostHooks: []infrav1.AddonHook{
+					PostHooks: []commonv1.AddonHook{
 						{Name: "uncordon-node", Command: "kubectl uncordon {{.NodeName}}", OnFailure: "Abort"},
 					},
 				},
-				Containerd: infrav1.BinaryComponent{
+				Containerd: commonv1.BinaryComponent{
 					Version: "1.7.24",
-					Type:    infrav1.ComponentTypeBinary,
-					InstallStrategy: &infrav1.BinaryInstallStrategy{
+					Type:    commonv1.ComponentTypeBinary,
+					InstallStrategy: &commonv1.BinaryInstallStrategy{
 						Timeout:     &metav1.Duration{Duration: 300000000000},
 						RetryCount:  3,
 						Method:      "package",
 						ServiceName: "containerd",
 					},
-					UpgradeStrategy: &infrav1.BinaryUpgradeStrategy{
+					UpgradeStrategy: &commonv1.BinaryUpgradeStrategy{
 						Type:          "Rolling",
 						MaxConcurrent: 1,
 						Timeout:       &metav1.Duration{Duration: 600000000000},
 						RetryCount:    3,
 						Drain:         true,
 					},
-					PreHooks: []infrav1.AddonHook{
+					PreHooks: []commonv1.AddonHook{
 						{Name: "stop-containerd", Command: "systemctl stop containerd", OnFailure: "Abort"},
 					},
-					PostHooks: []infrav1.AddonHook{
+					PostHooks: []commonv1.AddonHook{
 						{Name: "start-containerd", Command: "systemctl start containerd", OnFailure: "Abort"},
 					},
 				},

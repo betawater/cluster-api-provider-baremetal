@@ -23,7 +23,7 @@ import (
 	"os"
 	"path/filepath"
 
-	infrav1 "github.com/BetaWater/cluster-api-provider-baremetal/api/v1beta1"
+	cfov1 "github.com/BetaWater/cluster-api-provider-baremetal/api/cvo/v1beta1"
 )
 
 const (
@@ -42,7 +42,7 @@ func NewOCIPuller(workDir string) *OCIPuller {
 	return &OCIPuller{workDir: workDir}
 }
 
-func (p *OCIPuller) PullAndParseCatalog(ctx context.Context, image string) (*infrav1.ReleaseCatalogStatus, error) {
+func (p *OCIPuller) PullAndParseCatalog(ctx context.Context, image string) (*cfov1.ReleaseCatalogStatus, error) {
 	dir, err := p.pullImage(ctx, image, "catalog")
 	if err != nil {
 		return nil, fmt.Errorf("failed to pull catalog image: %w", err)
@@ -53,7 +53,7 @@ func (p *OCIPuller) PullAndParseCatalog(ctx context.Context, image string) (*inf
 		return nil, fmt.Errorf("failed to read catalog.json: %w", err)
 	}
 
-	var status infrav1.ReleaseCatalogStatus
+	var status cfov1.ReleaseCatalogStatus
 	if err := json.Unmarshal(catalogData, &status); err != nil {
 		return nil, fmt.Errorf("failed to parse catalog.json: %w", err)
 	}
@@ -61,7 +61,7 @@ func (p *OCIPuller) PullAndParseCatalog(ctx context.Context, image string) (*inf
 	return &status, nil
 }
 
-func (p *OCIPuller) PullAndParseUpgradePath(ctx context.Context, image string) (*infrav1.UpgradePathSpec, error) {
+func (p *OCIPuller) PullAndParseUpgradePath(ctx context.Context, image string) (*cfov1.UpgradePathSpec, error) {
 	dir, err := p.pullImage(ctx, image, "upgradepath")
 	if err != nil {
 		return nil, fmt.Errorf("failed to pull upgrade path image: %w", err)
@@ -72,7 +72,7 @@ func (p *OCIPuller) PullAndParseUpgradePath(ctx context.Context, image string) (
 		return nil, fmt.Errorf("failed to read upgrade-path.json: %w", err)
 	}
 
-	var spec infrav1.UpgradePathSpec
+	var spec cfov1.UpgradePathSpec
 	if err := json.Unmarshal(pathData, &spec); err != nil {
 		return nil, fmt.Errorf("failed to parse upgrade-path.json: %w", err)
 	}
@@ -80,7 +80,7 @@ func (p *OCIPuller) PullAndParseUpgradePath(ctx context.Context, image string) (
 	return &spec, nil
 }
 
-func (p *OCIPuller) PullAndParseReleaseImage(ctx context.Context, image string) (*infrav1.ReleaseImageSpec, error) {
+func (p *OCIPuller) PullAndParseReleaseImage(ctx context.Context, image string) (*cfov1.ReleaseImageSpec, error) {
 	dir, err := p.pullImage(ctx, image, "release")
 	if err != nil {
 		return nil, fmt.Errorf("failed to pull release image: %w", err)
@@ -91,7 +91,7 @@ func (p *OCIPuller) PullAndParseReleaseImage(ctx context.Context, image string) 
 		return nil, fmt.Errorf("failed to read release.json: %w", err)
 	}
 
-	var spec infrav1.ReleaseImageSpec
+	var spec cfov1.ReleaseImageSpec
 	if err := json.Unmarshal(releaseData, &spec); err != nil {
 		return nil, fmt.Errorf("failed to parse release.json: %w", err)
 	}

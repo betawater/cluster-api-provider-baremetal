@@ -20,7 +20,7 @@ import (
 	"context"
 	"fmt"
 
-	infrav1 "github.com/BetaWater/cluster-api-provider-baremetal/api/v1beta1"
+	capbmv1 "github.com/BetaWater/cluster-api-provider-baremetal/api/capbm/v1beta1"
 )
 
 // Backend represents a load balancer backend server.
@@ -46,7 +46,7 @@ type Provider interface {
 }
 
 // NewProvider creates a new load balancer provider based on the configuration.
-func NewProvider(config *infrav1.LoadBalancerConfig) (Provider, error) {
+func NewProvider(config *capbmv1.LoadBalancerConfig) (Provider, error) {
 	if config == nil {
 		return nil, nil
 	}

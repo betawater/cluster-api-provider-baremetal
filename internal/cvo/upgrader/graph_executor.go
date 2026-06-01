@@ -24,7 +24,8 @@ import (
 	"sort"
 	"time"
 
-	infrav1 "github.com/BetaWater/cluster-api-provider-baremetal/api/v1beta1"
+	cfov1 "github.com/BetaWater/cluster-api-provider-baremetal/api/cvo/v1beta1"
+	commonv1 "github.com/BetaWater/cluster-api-provider-baremetal/api/common/v1beta1"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -42,12 +43,12 @@ func NewGraphExecutor(c client.Client, puller *OCIPuller, healthChecker *HealthC
 	return &GraphExecutor{client: c, puller: puller, healthChecker: healthChecker}
 }
 
-func (e *GraphExecutor) ValidateUpgradePath(ctx context.Context, cv *infrav1.ClusterVersion) error {
+func (e *GraphExecutor) ValidateUpgradePath(ctx context.Context, cv *cfov1.ClusterVersion) error {
 	if cv.Spec.DesiredUpdate == nil || cv.Spec.DesiredUpdate.Version == "" {
 		return nil
 	}
 
-	upgradePath := &infrav1.UpgradePath{}
+	upgradePath := &cfov1.UpgradePath{}
 	if err := e.client.Get(ctx, types.NamespacedName{Name: "global"}, upgradePath); err != nil {
 		return fmt.Errorf("failed to get UpgradePath: %w", err)
 	}
@@ -83,25 +84,25 @@ func (e *GraphExecutor) ValidateUpgradePath(ctx context.Context, cv *infrav1.Clu
 	return nil
 }
 
-func (e *GraphExecutor) ComputeAvailableUpdates(ctx context.Context, cv *infrav1.ClusterVersion) ([]infrav1.Release, error) {
-	upgradePath := &infrav1.UpgradePath{}
+func (e *GraphExecutor) ComputeAvailableUpdates(ctx context.Context, cv *cfov1.ClusterVersion) ([]commonv1.Release, error) {
+	upgradePath := &cfov1.UpgradePath{}
 	if err := e.client.Get(ctx, types.NamespacedName{Name: "global"}, upgradePath); err != nil {
 		return nil, err
 	}
 
-	releaseCatalog := &infrav1.ReleaseCatalog{}
+	releaseCatalog := &cfov1.ReleaseCatalog{}
 	if err := e.client.Get(ctx, types.NamespacedName{Name: "global"}, releaseCatalog); err != nil {
 		return nil, err
 	}
 
 	from := cv.Status.ActualVersion
-	var updates []infrav1.Release
+	var updates []commonv1.Release
 
 	for _, edge := range upgradePath.Spec.Graph.Edges {
 		if matchVersion(edge.From, from) {
 			for _, entry := range releaseCatalog.Status.Releases {
 				if matchVersion(edge.To, entry.Version) {
-					updates = append(updates, infrav1.Release{
+					updates = append(updates, commonv1.Release{
 						Version: entry.Version,
 						Image:   entry.Image,
 					})
@@ -118,7 +119,7 @@ func (e *GraphExecutor) ComputeAvailableUpdates(ctx context.Context, cv *infrav1
 	return updates, nil
 }
 
-func (e *GraphExecutor) ExecuteUpgradeGraph(ctx context.Context, cv *infrav1.ClusterVersion, releaseImage *infrav1.ReleaseImage) error {
+func (e *GraphExecutor) ExecuteUpgradeGraph(ctx context.Context, cv *cfov1.ClusterVersion, releaseImage *cfov1.ReleaseImage) error {
 	phases := releaseImage.Spec.UpgradeGraph
 	sort.Slice(phases, func(i, j int) bool {
 		return phases[i].Order < phases[j].Order
@@ -140,7 +141,7 @@ func (e *GraphExecutor) ExecuteUpgradeGraph(ctx context.Context, cv *infrav1.Clu
 	return nil
 }
 
-func (e *GraphExecutor) executePhase(ctx context.Context, phase infrav1.UpgradePhase, releaseImage *infrav1.ReleaseImage, completed map[string]bool) error {
+func (e *GraphExecutor) executePhase(ctx context.Context, phase commonv1.UpgradePhase, releaseImage *cfov1.ReleaseImage, completed map[string]bool) error {
 	depGraph := buildDependencyGraph(phase.Components)
 	sorted := topologicalSort(depGraph)
 
@@ -166,7 +167,7 @@ func (e *GraphExecutor) executePhase(ctx context.Context, phase infrav1.UpgradeP
 	return nil
 }
 
-func (e *GraphExecutor) executeComponent(ctx context.Context, comp infrav1.UpgradeComponent, releaseImage *infrav1.ReleaseImage) error {
+func (e *GraphExecutor) executeComponent(ctx context.Context, comp commonv1.UpgradeComponent, releaseImage *cfov1.ReleaseImage) error {
 	if len(comp.Manifests) > 0 {
 		if err := e.applyManifests(ctx, comp.Manifests, releaseImage); err != nil {
 			return err
@@ -185,7 +186,7 @@ func (e *GraphExecutor) executeComponent(ctx context.Context, comp infrav1.Upgra
 	return nil
 }
 
-func (e *GraphExecutor) applyManifests(ctx context.Context, manifests []string, releaseImage *infrav1.ReleaseImage) error {
+func (e *GraphExecutor) applyManifests(ctx context.Context, manifests []string, releaseImage *cfov1.ReleaseImage) error {
 	manifestDir, err := e.puller.GetManifestDir(ctx, releaseImage.Spec.Image)
 	if err != nil {
 		return fmt.Errorf("failed to get manifest dir: %w", err)
@@ -215,7 +216,7 @@ func (e *GraphExecutor) applyManifests(ctx context.Context, manifests []string, 
 	return nil
 }
 
-func (e *GraphExecutor) executeScripts(ctx context.Context, scripts []string, releaseImage *infrav1.ReleaseImage) error {
+func (e *GraphExecutor) executeScripts(ctx context.Context, scripts []string, releaseImage *cfov1.ReleaseImage) error {
 	scriptsDir, err := e.puller.GetScriptsDir(ctx, releaseImage.Spec.Image)
 	if err != nil {
 		return fmt.Errorf("failed to get scripts dir: %w", err)
@@ -235,7 +236,7 @@ func (e *GraphExecutor) executeScripts(ctx context.Context, scripts []string, re
 	return nil
 }
 
-func (e *GraphExecutor) runHealthCheck(ctx context.Context, hc *infrav1.HealthCheck) error {
+func (e *GraphExecutor) runHealthCheck(ctx context.Context, hc *commonv1.HealthCheck) error {
 	if e.healthChecker == nil {
 		return nil
 	}
@@ -306,7 +307,7 @@ type depNode struct {
 	deps []string
 }
 
-func buildDependencyGraph(components []infrav1.UpgradeComponent) map[string]*depNode {
+func buildDependencyGraph(components []commonv1.UpgradeComponent) map[string]*depNode {
 	graph := make(map[string]*depNode)
 	for _, comp := range components {
 		graph[comp.Name] = &depNode{name: comp.Name, deps: comp.DependsOn}
@@ -346,7 +347,7 @@ func topologicalSort(graph map[string]*depNode) []string {
 	return result
 }
 
-func findComponent(components []infrav1.UpgradeComponent, name string) *infrav1.UpgradeComponent {
+func findComponent(components []commonv1.UpgradeComponent, name string) *commonv1.UpgradeComponent {
 	for i := range components {
 		if components[i].Name == name {
 			return &components[i]

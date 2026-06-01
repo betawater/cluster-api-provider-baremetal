@@ -32,8 +32,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	infrav1 "github.com/BetaWater/cluster-api-provider-baremetal/api/v1beta1"
-	"github.com/BetaWater/cluster-api-provider-baremetal/internal/lb"
+	capbmv1 "github.com/BetaWater/cluster-api-provider-baremetal/api/capbm/v1beta1"
+	"github.com/BetaWater/cluster-api-provider-baremetal/internal/capbm/lb"
 )
 
 const (
@@ -61,7 +61,7 @@ func (r *BareMetalClusterReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	log := ctrl.LoggerFrom(ctx)
 	log.Info("Reconciling BareMetalCluster")
 
-	cluster := &infrav1.BareMetalCluster{}
+	cluster := &capbmv1.BareMetalCluster{}
 	if err := r.Get(ctx, req.NamespacedName, cluster); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -73,10 +73,10 @@ func (r *BareMetalClusterReconciler) Reconcile(ctx context.Context, req ctrl.Req
 	return r.reconcileNormal(ctx, cluster)
 }
 
-func (r *BareMetalClusterReconciler) reconcileNormal(ctx context.Context, bmCluster *infrav1.BareMetalCluster) (ctrl.Result, error) {
+func (r *BareMetalClusterReconciler) reconcileNormal(ctx context.Context, bmCluster *capbmv1.BareMetalCluster) (ctrl.Result, error) {
 	log := ctrl.LoggerFrom(ctx)
 
-	controllerutil.AddFinalizer(bmCluster, infrav1.ClusterFinalizer)
+	controllerutil.AddFinalizer(bmCluster, capbmv1.ClusterFinalizer)
 	if err := r.Update(ctx, bmCluster); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -94,7 +94,7 @@ func (r *BareMetalClusterReconciler) reconcileNormal(ctx context.Context, bmClus
 
 	endpoint, source, err := r.resolveControlPlaneEndpoint(ctx, bmCluster, capiCluster)
 	if err != nil {
-		markConditionFalse(&bmCluster.Status.Conditions, clusterv1.ReadyCondition, infrav1.EndpointNotSetReason, clusterv1.ConditionSeverityError, err.Error())
+		markConditionFalse(&bmCluster.Status.Conditions, clusterv1.ReadyCondition, capbmv1.EndpointNotSetReason, clusterv1.ConditionSeverityError, err.Error())
 		return ctrl.Result{}, r.Status().Update(ctx, bmCluster)
 	}
 
@@ -102,7 +102,7 @@ func (r *BareMetalClusterReconciler) reconcileNormal(ctx context.Context, bmClus
 		log.Info("ControlPlaneEndpoint not available from any source",
 			"clusterEndpoint", capiCluster.Spec.ControlPlaneEndpoint,
 			"infraEndpoint", bmCluster.Spec.ControlPlaneEndpoint)
-		markConditionFalse(&bmCluster.Status.Conditions, clusterv1.ReadyCondition, infrav1.EndpointNotSetReason, clusterv1.ConditionSeverityInfo, "Waiting for ControlPlaneEndpoint to be set")
+		markConditionFalse(&bmCluster.Status.Conditions, clusterv1.ReadyCondition, capbmv1.EndpointNotSetReason, clusterv1.ConditionSeverityInfo, "Waiting for ControlPlaneEndpoint to be set")
 		return ctrl.Result{RequeueAfter: defaultRequeueTime}, nil
 	}
 
@@ -118,7 +118,7 @@ func (r *BareMetalClusterReconciler) reconcileNormal(ctx context.Context, bmClus
 
 	if err := r.reconcileLoadBalancer(ctx, bmCluster, capiCluster); err != nil {
 		log.Error(err, "failed to sync load balancer backends")
-		markConditionFalse(&bmCluster.Status.Conditions, infrav1.LoadBalancerReadyCondition, infrav1.LBSyncFailedReason, clusterv1.ConditionSeverityWarning, err.Error())
+		markConditionFalse(&bmCluster.Status.Conditions, capbmv1.LoadBalancerReadyCondition, capbmv1.LBSyncFailedReason, clusterv1.ConditionSeverityWarning, err.Error())
 		if err := r.Status().Update(ctx, bmCluster); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -126,12 +126,12 @@ func (r *BareMetalClusterReconciler) reconcileNormal(ctx context.Context, bmClus
 	}
 
 	if bmCluster.Spec.LoadBalancer != nil {
-		markConditionTrue(&bmCluster.Status.Conditions, infrav1.LoadBalancerReadyCondition, "Load balancer backends are synced")
+		markConditionTrue(&bmCluster.Status.Conditions, capbmv1.LoadBalancerReadyCondition, "Load balancer backends are synced")
 	}
 
 	if err := r.reconcileIngressLoadBalancer(ctx, bmCluster, capiCluster); err != nil {
 		log.Error(err, "failed to sync ingress load balancer backends")
-		markConditionFalse(&bmCluster.Status.Conditions, infrav1.IngressLoadBalancerReadyCondition, infrav1.IngressLBSyncFailedReason, clusterv1.ConditionSeverityWarning, err.Error())
+		markConditionFalse(&bmCluster.Status.Conditions, capbmv1.IngressLoadBalancerReadyCondition, capbmv1.IngressLBSyncFailedReason, clusterv1.ConditionSeverityWarning, err.Error())
 		if err := r.Status().Update(ctx, bmCluster); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -139,14 +139,14 @@ func (r *BareMetalClusterReconciler) reconcileNormal(ctx context.Context, bmClus
 	}
 
 	if bmCluster.Spec.IngressLoadBalancer != nil && bmCluster.Spec.IngressLoadBalancer.Enabled {
-		markConditionTrue(&bmCluster.Status.Conditions, infrav1.IngressLoadBalancerReadyCondition, "Ingress load balancer backends are synced")
+		markConditionTrue(&bmCluster.Status.Conditions, capbmv1.IngressLoadBalancerReadyCondition, "Ingress load balancer backends are synced")
 	}
 
 	bmCluster.Spec.ControlPlaneEndpoint = endpoint
 	bmCluster.Status.Ready = true
 
 	provisioned := true
-	bmCluster.Status.Initialization = &infrav1.BareMetalClusterInitializationStatus{
+	bmCluster.Status.Initialization = &capbmv1.BareMetalClusterInitializationStatus{
 		Provisioned: &provisioned,
 	}
 
@@ -155,7 +155,7 @@ func (r *BareMetalClusterReconciler) reconcileNormal(ctx context.Context, bmClus
 	return ctrl.Result{}, r.Status().Update(ctx, bmCluster)
 }
 
-func (r *BareMetalClusterReconciler) resolveControlPlaneEndpoint(ctx context.Context, bmCluster *infrav1.BareMetalCluster, capiCluster *clusterv1.Cluster) (clusterv1.APIEndpoint, string, error) {
+func (r *BareMetalClusterReconciler) resolveControlPlaneEndpoint(ctx context.Context, bmCluster *capbmv1.BareMetalCluster, capiCluster *clusterv1.Cluster) (clusterv1.APIEndpoint, string, error) {
 	log := ctrl.LoggerFrom(ctx)
 
 	clusterEndpoint := capiCluster.Spec.ControlPlaneEndpoint
@@ -186,7 +186,7 @@ func (r *BareMetalClusterReconciler) resolveControlPlaneEndpoint(ctx context.Con
 	}
 }
 
-func (r *BareMetalClusterReconciler) reconcileNetworkConfig(ctx context.Context, bmCluster *infrav1.BareMetalCluster, capiCluster *clusterv1.Cluster) error {
+func (r *BareMetalClusterReconciler) reconcileNetworkConfig(ctx context.Context, bmCluster *capbmv1.BareMetalCluster, capiCluster *clusterv1.Cluster) error {
 	clusterNetwork := capiCluster.Spec.ClusterNetwork
 
 	if bmCluster.Spec.Network.PodCIDR == "" {
@@ -212,7 +212,7 @@ func (r *BareMetalClusterReconciler) reconcileNetworkConfig(ctx context.Context,
 	return r.Update(ctx, bmCluster)
 }
 
-func (r *BareMetalClusterReconciler) reconcileLoadBalancer(ctx context.Context, bmCluster *infrav1.BareMetalCluster, capiCluster *clusterv1.Cluster) error {
+func (r *BareMetalClusterReconciler) reconcileLoadBalancer(ctx context.Context, bmCluster *capbmv1.BareMetalCluster, capiCluster *clusterv1.Cluster) error {
 	log := ctrl.LoggerFrom(ctx)
 
 	lbConfig := bmCluster.Spec.LoadBalancer
@@ -289,7 +289,7 @@ func getMachineIP(machine clusterv1.Machine) string {
 	return ""
 }
 
-func (r *BareMetalClusterReconciler) reconcileIngressLoadBalancer(ctx context.Context, bmCluster *infrav1.BareMetalCluster, capiCluster *clusterv1.Cluster) error {
+func (r *BareMetalClusterReconciler) reconcileIngressLoadBalancer(ctx context.Context, bmCluster *capbmv1.BareMetalCluster, capiCluster *clusterv1.Cluster) error {
 	ingressConfig := bmCluster.Spec.IngressLoadBalancer
 	if ingressConfig == nil || !ingressConfig.Enabled {
 		return nil
@@ -312,7 +312,7 @@ func (r *BareMetalClusterReconciler) reconcileIngressLoadBalancer(ctx context.Co
 	}
 }
 
-func (r *BareMetalClusterReconciler) syncIngressHAProxy(ctx context.Context, config *infrav1.IngressHAProxyConfig, workerMachines []clusterv1.Machine) error {
+func (r *BareMetalClusterReconciler) syncIngressHAProxy(ctx context.Context, config *capbmv1.IngressHAProxyConfig, workerMachines []clusterv1.Machine) error {
 	if config == nil {
 		return nil
 	}
@@ -352,7 +352,7 @@ func (r *BareMetalClusterReconciler) syncIngressHAProxy(ctx context.Context, con
 		}
 	}
 
-	haproxyConfig := &infrav1.HAProxyConfig{
+	haproxyConfig := &capbmv1.HAProxyConfig{
 		AdminHost:   config.AdminHost,
 		AdminPort:   config.AdminPort,
 		SSHHost:     config.SSHHost,
@@ -378,7 +378,7 @@ func (r *BareMetalClusterReconciler) syncIngressHAProxy(ctx context.Context, con
 	return r.syncBackends(ctx, provider, desiredBackends)
 }
 
-func (r *BareMetalClusterReconciler) syncIngressF5(ctx context.Context, config *infrav1.IngressF5Config, workerMachines []clusterv1.Machine) error {
+func (r *BareMetalClusterReconciler) syncIngressF5(ctx context.Context, config *capbmv1.IngressF5Config, workerMachines []clusterv1.Machine) error {
 	if config == nil {
 		return nil
 	}
@@ -423,7 +423,7 @@ func (r *BareMetalClusterReconciler) syncIngressF5(ctx context.Context, config *
 		}
 	}
 
-	f5Config := &infrav1.F5Config{
+	f5Config := &capbmv1.F5Config{
 		Host:           config.Host,
 		Port:           config.Port,
 		CredentialsRef: config.CredentialsRef,
@@ -449,7 +449,7 @@ func (r *BareMetalClusterReconciler) syncIngressF5(ctx context.Context, config *
 	return r.syncBackends(ctx, provider, desiredHTTPSBackends)
 }
 
-func (r *BareMetalClusterReconciler) syncIngressMetalLB(ctx context.Context, config *infrav1.IngressMetalLBConfig, workerMachines []clusterv1.Machine) error {
+func (r *BareMetalClusterReconciler) syncIngressMetalLB(ctx context.Context, config *capbmv1.IngressMetalLBConfig, workerMachines []clusterv1.Machine) error {
 	if config == nil {
 		return nil
 	}
@@ -516,11 +516,11 @@ func (r *BareMetalClusterReconciler) syncBackends(ctx context.Context, provider 
 	return nil
 }
 
-func (r *BareMetalClusterReconciler) reconcileDelete(ctx context.Context, cluster *infrav1.BareMetalCluster) (ctrl.Result, error) {
+func (r *BareMetalClusterReconciler) reconcileDelete(ctx context.Context, cluster *capbmv1.BareMetalCluster) (ctrl.Result, error) {
 	log := ctrl.LoggerFrom(ctx)
 	log.Info("Deleting BareMetalCluster")
 
-	controllerutil.RemoveFinalizer(cluster, infrav1.ClusterFinalizer)
+	controllerutil.RemoveFinalizer(cluster, capbmv1.ClusterFinalizer)
 	if err := r.Update(ctx, cluster); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -528,7 +528,7 @@ func (r *BareMetalClusterReconciler) reconcileDelete(ctx context.Context, cluste
 	return ctrl.Result{}, nil
 }
 
-func (r *BareMetalClusterReconciler) getOwnerCluster(ctx context.Context, bmCluster *infrav1.BareMetalCluster) (*clusterv1.Cluster, error) {
+func (r *BareMetalClusterReconciler) getOwnerCluster(ctx context.Context, bmCluster *capbmv1.BareMetalCluster) (*clusterv1.Cluster, error) {
 	for _, ref := range bmCluster.OwnerReferences {
 		if ref.Kind == "Cluster" && ref.APIVersion == clusterv1.GroupVersion.String() {
 			cluster := &clusterv1.Cluster{}
@@ -606,7 +606,7 @@ func clusterToBareMetalCluster(mgr ctrl.Manager) handler.MapFunc {
 // SetupWithManager sets up the controller with the Manager.
 func (r *BareMetalClusterReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&infrav1.BareMetalCluster{}).
+		For(&capbmv1.BareMetalCluster{}).
 		Watches(
 			&clusterv1.Cluster{},
 			handler.EnqueueRequestsFromMapFunc(clusterToBareMetalCluster(mgr)),

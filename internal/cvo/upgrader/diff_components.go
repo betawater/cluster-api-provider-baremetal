@@ -16,7 +16,10 @@ limitations under the License.
 
 package upgrader
 
-import infrav1 "github.com/BetaWater/cluster-api-provider-baremetal/api/v1beta1"
+import (
+	cfov1 "github.com/BetaWater/cluster-api-provider-baremetal/api/cvo/v1beta1"
+	commonv1 "github.com/BetaWater/cluster-api-provider-baremetal/api/common/v1beta1"
+)
 
 // ComponentDiff records component version changes between two ReleaseImages.
 type ComponentDiff struct {
@@ -35,7 +38,7 @@ type ComponentChange struct {
 
 // DiffComponents compares the components of two ReleaseImages and returns a diff.
 // It does NOT use shell commands -- all version info comes from ReleaseImage.Spec.Components.
-func DiffComponents(current, target *infrav1.ReleaseImage) *ComponentDiff {
+func DiffComponents(current, target *cfov1.ReleaseImage) *ComponentDiff {
 	if current == nil || target == nil {
 		return &ComponentDiff{}
 	}
@@ -106,7 +109,7 @@ func DiffComponents(current, target *infrav1.ReleaseImage) *ComponentDiff {
 }
 
 // findAddonByName finds an addon by name in the ReleaseImage.
-func findAddonByName(ri *infrav1.ReleaseImage, name string) *infrav1.AddonDefinition {
+func findAddonByName(ri *cfov1.ReleaseImage, name string) *commonv1.AddonDefinition {
 	for i := range ri.Spec.Addons {
 		if ri.Spec.Addons[i].Name == name {
 			return &ri.Spec.Addons[i]
@@ -116,8 +119,8 @@ func findAddonByName(ri *infrav1.ReleaseImage, name string) *infrav1.AddonDefini
 }
 
 // buildAddonMap builds a map of addon name to addon definition.
-func buildAddonMap(ri *infrav1.ReleaseImage) map[string]*infrav1.AddonDefinition {
-	result := make(map[string]*infrav1.AddonDefinition)
+func buildAddonMap(ri *cfov1.ReleaseImage) map[string]*commonv1.AddonDefinition {
+	result := make(map[string]*commonv1.AddonDefinition)
 	for i := range ri.Spec.Addons {
 		result[ri.Spec.Addons[i].Name] = &ri.Spec.Addons[i]
 	}
@@ -125,7 +128,7 @@ func buildAddonMap(ri *infrav1.ReleaseImage) map[string]*infrav1.AddonDefinition
 }
 
 // getComponentVersionByName returns the version of a named component from a ReleaseImage.
-func getComponentVersionByName(ri *infrav1.ReleaseImage, name string) string {
+func getComponentVersionByName(ri *cfov1.ReleaseImage, name string) string {
 	switch name {
 	case "containerd":
 		return ri.Spec.Components.Containerd.Version

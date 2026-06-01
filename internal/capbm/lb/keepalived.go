@@ -22,16 +22,16 @@ import (
 	"net"
 	"time"
 
-	infrav1 "github.com/BetaWater/cluster-api-provider-baremetal/api/v1beta1"
+	capbmv1 "github.com/BetaWater/cluster-api-provider-baremetal/api/capbm/v1beta1"
 )
 
 // KeepalivedProvider implements the Provider interface for Keepalived.
 type KeepalivedProvider struct {
-	config *infrav1.KeepalivedConfig
+	config *capbmv1.KeepalivedConfig
 }
 
 // NewKeepalivedProvider creates a new Keepalived provider.
-func NewKeepalivedProvider(config *infrav1.KeepalivedConfig) (Provider, error) {
+func NewKeepalivedProvider(config *capbmv1.KeepalivedConfig) (Provider, error) {
 	if config == nil {
 		return nil, fmt.Errorf("Keepalived configuration is required")
 	}

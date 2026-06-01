@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cvo-controller-manager
+  namespace: cvo-system
+  labels:
+    control-plane: cvo-controller-manager
+spec:
+  selector:
+    matchLabels:
+      control-plane: cvo-controller-manager
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        control-plane: cvo-controller-manager
+    spec:
+      serviceAccountName: cvo-controller-manager
+      containers:
+      - command:
+        - /cvo-manager
+        args:
+        - --leader-elect
+        image: cvo-manager:latest
+        name: manager
+        ports:
+        - containerPort: 8082
+          name: metrics
+          protocol: TCP
+        - containerPort: 8083
+          name: health
+          protocol: TCP
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: health
+          initialDelaySeconds: 15
+          periodSeconds: 20
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: health
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        resources:
+          limits:
+            cpu: 500m
+            memory: 128Mi
+          requests:
+            cpu: 100m
+            memory: 64Mi
+        securityContext:
+          allowPrivilegeEscalation: false
+      terminationGracePeriodSeconds: 10

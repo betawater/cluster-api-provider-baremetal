@@ -22,7 +22,9 @@ import (
 
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 
-	cfov1 "github.com/BetaWater/cluster-api-provider-baremetal/api/cvo/v1beta1"`n`n`tcommonv1 "github.com/BetaWater/cluster-api-provider-baremetal/api/common/v1beta1"
+	
+
+	commonv1 "github.com/BetaWater/cluster-api-provider-baremetal/api/common/v1beta1"
 )
 
 // MergeValues merges default values with user-provided values.
@@ -73,7 +75,7 @@ func deepMerge(base, override interface{}) interface{} {
 }
 
 // ValidateVariables validates user-provided values against variable definitions.
-func ValidateVariables(values map[string]apiextensionsv1.JSON, vars []infrav1.AddonVariable) error {
+func ValidateVariables(values map[string]apiextensionsv1.JSON, vars []commonv1.AddonVariable) error {
 	// Check required variables
 	for _, v := range vars {
 		if v.Required {
@@ -112,7 +114,7 @@ func ValidateVariables(values map[string]apiextensionsv1.JSON, vars []infrav1.Ad
 }
 
 // findVariable finds a variable definition by name.
-func findVariable(vars []infrav1.AddonVariable, name string) *infrav1.AddonVariable {
+func findVariable(vars []commonv1.AddonVariable, name string) *commonv1.AddonVariable {
 	for i := range vars {
 		if vars[i].Name == name {
 			return &vars[i]
@@ -122,21 +124,21 @@ func findVariable(vars []infrav1.AddonVariable, name string) *infrav1.AddonVaria
 }
 
 // validateType validates a value against the expected type.
-func validateType(val interface{}, expectedType infrav1.VariableType) error {
+func validateType(val interface{}, expectedType commonv1.VariableType) error {
 	switch expectedType {
-	case infrav1.VariableTypeString:
+	case commonv1.VariableTypeString:
 		if _, ok := val.(string); !ok {
 			return fmt.Errorf("expected string, got %T", val)
 		}
-	case infrav1.VariableTypeNumber:
+	case commonv1.VariableTypeNumber:
 		if _, ok := val.(float64); !ok {
 			return fmt.Errorf("expected number, got %T", val)
 		}
-	case infrav1.VariableTypeBoolean:
+	case commonv1.VariableTypeBoolean:
 		if _, ok := val.(bool); !ok {
 			return fmt.Errorf("expected boolean, got %T", val)
 		}
-	case infrav1.VariableTypeObject:
+	case commonv1.VariableTypeObject:
 		if _, ok := val.(map[string]interface{}); !ok {
 			return fmt.Errorf("expected object, got %T", val)
 		}

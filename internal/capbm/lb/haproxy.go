@@ -24,16 +24,16 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
-	infrav1 "github.com/BetaWater/cluster-api-provider-baremetal/api/v1beta1"
+	capbmv1 "github.com/BetaWater/cluster-api-provider-baremetal/api/capbm/v1beta1"
 )
 
 // HAProxyProvider implements the Provider interface for HAProxy.
 type HAProxyProvider struct {
-	config *infrav1.HAProxyConfig
+	config *capbmv1.HAProxyConfig
 }
 
 // NewHAProxyProvider creates a new HAProxy provider.
-func NewHAProxyProvider(config *infrav1.HAProxyConfig) (Provider, error) {
+func NewHAProxyProvider(config *capbmv1.HAProxyConfig) (Provider, error) {
 	if config == nil {
 		return nil, fmt.Errorf("HAProxy configuration is required")
 	}

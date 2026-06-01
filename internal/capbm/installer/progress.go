@@ -21,7 +21,7 @@ import (
 	"fmt"
 	"time"
 
-	sshclient "github.com/BetaWater/cluster-api-provider-baremetal/internal/ssh"
+	sshclient "github.com/BetaWater/cluster-api-provider-baremetal/internal/capbm/ssh"
 )
 
 const progressFile = "/tmp/.capbm_install_progress"

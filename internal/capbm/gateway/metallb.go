@@ -21,17 +21,17 @@ import (
 	"fmt"
 	"strings"
 
-	infrav1 "github.com/BetaWater/cluster-api-provider-baremetal/api/v1beta1"
+	capbmv1 "github.com/BetaWater/cluster-api-provider-baremetal/api/capbm/v1beta1"
 )
 
 // MetalLBInstaller installs MetalLB.
 type MetalLBInstaller struct {
 	version string
-	config  *infrav1.GatewayMetalLBConfig
+	config  *capbmv1.GatewayMetalLBConfig
 }
 
 // NewMetalLBInstaller creates a new MetalLB installer.
-func NewMetalLBInstaller(version string, config *infrav1.GatewayMetalLBConfig) *MetalLBInstaller {
+func NewMetalLBInstaller(version string, config *capbmv1.GatewayMetalLBConfig) *MetalLBInstaller {
 	return &MetalLBInstaller{
 		version: version,
 		config:  config,

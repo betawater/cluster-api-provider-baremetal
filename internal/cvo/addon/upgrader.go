@@ -30,7 +30,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
-	cfov1 "github.com/BetaWater/cluster-api-provider-baremetal/api/cvo/v1beta1"`n`n`tcommonv1 "github.com/BetaWater/cluster-api-provider-baremetal/api/common/v1beta1"
+	cfov1 "github.com/BetaWater/cluster-api-provider-baremetal/api/cvo/v1beta1"
+
+	commonv1 "github.com/BetaWater/cluster-api-provider-baremetal/api/common/v1beta1"
 )
 
 // Upgrader handles addon upgrades with high-cohesion configuration.
@@ -516,7 +518,7 @@ func (u *Upgrader) executeHook(ctx context.Context, addon *cfov1.ClusterAddon, h
 }
 
 // runHealthCheck runs a health check after upgrade.
-func (u *Upgrader) runHealthCheck(ctx context.Context, addon *cfov1.ClusterAddon, hc *commonv1.ComponentUpgradeConfig) error {
+func (u *Upgrader) runHealthCheck(ctx context.Context, addon *cfov1.ClusterAddon, hc *commonv1.ComponentHealthCheckConfig) error {
 	timeout := 5 * time.Minute
 	if hc.Timeout != nil {
 		timeout = hc.Timeout.Duration

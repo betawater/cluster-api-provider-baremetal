@@ -28,7 +28,7 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	infrav1 "github.com/BetaWater/cluster-api-provider-baremetal/api/v1beta1"
+	cfov1 "github.com/BetaWater/cluster-api-provider-baremetal/api/cvo/v1beta1"
 )
 
 const (
@@ -69,7 +69,7 @@ func NewImporter(c client.Client, releaseServer, namespace string) *Importer {
 }
 
 // ImportImages creates a Job to import images from ReleaseImage to target registry.
-func (i *Importer) ImportImages(ctx context.Context, releaseImage *infrav1.ReleaseImage) error {
+func (i *Importer) ImportImages(ctx context.Context, releaseImage *cfov1.ReleaseImage) error {
 	if releaseImage.Spec.ImageRegistry == nil || !releaseImage.Spec.ImageRegistry.Enabled {
 		return nil
 	}
@@ -97,7 +97,7 @@ func (i *Importer) ImportImages(ctx context.Context, releaseImage *infrav1.Relea
 }
 
 // buildImportJob builds an image import Job using containerd (ctr).
-func (i *Importer) buildImportJob(releaseImage *infrav1.ReleaseImage) *batchv1.Job {
+func (i *Importer) buildImportJob(releaseImage *cfov1.ReleaseImage) *batchv1.Job {
 	registryConfig := releaseImage.Spec.ImageRegistry
 
 	// Build image list for all components and addons

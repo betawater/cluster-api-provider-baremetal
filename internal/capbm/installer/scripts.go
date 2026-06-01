@@ -19,10 +19,11 @@ package installer
 import (
 	"fmt"
 
-	infrav1 "github.com/BetaWater/cluster-api-provider-baremetal/api/v1beta1"
+	capbmv1 "github.com/BetaWater/cluster-api-provider-baremetal/api/capbm/v1beta1"
+	
 )
 
-func getContainerRuntimeScript(runtimeType, osType string, config *infrav1.ComponentInstallConfig) (string, error) {
+func getContainerRuntimeScript(runtimeType, osType string, config *capbmv1.ComponentInstallConfig) (string, error) {
 	switch runtimeType {
 	case "containerd":
 		return getContainerdScript(osType, config)
@@ -35,7 +36,7 @@ func getContainerRuntimeScript(runtimeType, osType string, config *infrav1.Compo
 	}
 }
 
-func getContainerdScript(osType string, config *infrav1.ComponentInstallConfig) (string, error) {
+func getContainerdScript(osType string, config *capbmv1.ComponentInstallConfig) (string, error) {
 	switch osType {
 	case "ubuntu", "debian":
 		return containerdUbuntuScript, nil
@@ -50,7 +51,7 @@ func getContainerdScript(osType string, config *infrav1.ComponentInstallConfig) 
 	}
 }
 
-func getKubernetesScript(osType string, config *infrav1.ComponentInstallConfig) (string, error) {
+func getKubernetesScript(osType string, config *capbmv1.ComponentInstallConfig) (string, error) {
 	switch osType {
 	case "ubuntu", "debian":
 		return kubernetesUbuntuScript, nil
@@ -65,7 +66,7 @@ func getKubernetesScript(osType string, config *infrav1.ComponentInstallConfig) 
 	}
 }
 
-func getCRIOScript(osType string, config *infrav1.ComponentInstallConfig) (string, error) {
+func getCRIOScript(osType string, config *capbmv1.ComponentInstallConfig) (string, error) {
 	switch osType {
 	case "ubuntu", "debian":
 		return crioUbuntuScript, nil
@@ -76,7 +77,7 @@ func getCRIOScript(osType string, config *infrav1.ComponentInstallConfig) (strin
 	}
 }
 
-func getDockerScript(osType string, config *infrav1.ComponentInstallConfig) (string, error) {
+func getDockerScript(osType string, config *capbmv1.ComponentInstallConfig) (string, error) {
 	return dockerScript, nil
 }
 

@@ -21,8 +21,9 @@ import (
 	"fmt"
 	"time"
 
-	infrav1 "github.com/BetaWater/cluster-api-provider-baremetal/api/v1beta1"
-	sshclient "github.com/BetaWater/cluster-api-provider-baremetal/internal/ssh"
+	cfov1 "github.com/BetaWater/cluster-api-provider-baremetal/api/cvo/v1beta1"
+	commonv1 "github.com/BetaWater/cluster-api-provider-baremetal/api/common/v1beta1"
+	capbmssh "github.com/BetaWater/cluster-api-provider-baremetal/internal/capbm/ssh"
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -31,11 +32,11 @@ import (
 // Each component defines its own backup/rollback configuration.
 type BackupRollbackExecutor struct {
 	client     client.Client
-	sshManager *sshclient.SSHManager
+	sshManager *capbmssh.SSHManager
 }
 
 // NewBackupRollbackExecutor creates a new backup/rollback executor.
-func NewBackupRollbackExecutor(c client.Client, sshManager *sshclient.SSHManager) *BackupRollbackExecutor {
+func NewBackupRollbackExecutor(c client.Client, sshManager *capbmssh.SSHManager) *BackupRollbackExecutor {
 	return &BackupRollbackExecutor{
 		client:     c,
 		sshManager: sshManager,
@@ -43,7 +44,7 @@ func NewBackupRollbackExecutor(c client.Client, sshManager *sshclient.SSHManager
 }
 
 // BackupComponents backs up all components before upgrade.
-func (e *BackupRollbackExecutor) BackupComponents(ctx context.Context, cluster *infrav1.ClusterVersion, releaseImage *infrav1.ReleaseImage) error {
+func (e *BackupRollbackExecutor) BackupComponents(ctx context.Context, cluster *cfov1.ClusterVersion, releaseImage *cfov1.ReleaseImage) error {
 	// Get all component upgrade configs with names
 	componentConfigs := e.getComponentUpgradeConfigsWithNames(releaseImage)
 
@@ -77,7 +78,7 @@ func (e *BackupRollbackExecutor) BackupComponents(ctx context.Context, cluster *
 }
 
 // RollbackComponent rolls back a single component using its high-cohesion config.
-func (e *BackupRollbackExecutor) RollbackComponent(ctx context.Context, cluster *infrav1.ClusterVersion, componentName string, releaseImage *infrav1.ReleaseImage) error {
+func (e *BackupRollbackExecutor) RollbackComponent(ctx context.Context, cluster *cfov1.ClusterVersion, componentName string, releaseImage *cfov1.ReleaseImage) error {
 	// Get component upgrade config
 	upgradeConfig := e.getComponentUpgradeConfig(releaseImage, componentName)
 	if upgradeConfig == nil {
@@ -129,7 +130,7 @@ func (e *BackupRollbackExecutor) RollbackComponent(ctx context.Context, cluster 
 }
 
 // backupComponent backs up a single component using its high-cohesion config.
-func (e *BackupRollbackExecutor) backupComponent(ctx context.Context, cluster *infrav1.ClusterVersion, componentName string, uc *infrav1.ComponentUpgradeConfig) error {
+func (e *BackupRollbackExecutor) backupComponent(ctx context.Context, cluster *cfov1.ClusterVersion, componentName string, uc *commonv1.ComponentUpgradeConfig) error {
 	// Create backup ConfigMap/Secret
 	backupName := fmt.Sprintf("backup-%s-%s", cluster.Name, time.Now().Format("20060102150405"))
 
@@ -151,7 +152,7 @@ func (e *BackupRollbackExecutor) backupComponent(ctx context.Context, cluster *i
 }
 
 // backupConfigItem backs up a single config item (file or directory).
-func (e *BackupRollbackExecutor) backupConfigItem(ctx context.Context, cluster *infrav1.ClusterVersion, backupName string, item infrav1.BackupItem) error {
+func (e *BackupRollbackExecutor) backupConfigItem(ctx context.Context, cluster *cfov1.ClusterVersion, backupName string, item commonv1.BackupItem) error {
 	// In production, this would:
 	// 1. SSH to nodes
 	// 2. Read the file/directory content
@@ -165,7 +166,7 @@ func (e *BackupRollbackExecutor) backupConfigItem(ctx context.Context, cluster *
 }
 
 // createEtcdSnapshot creates an etcd snapshot for control-plane backup.
-func (e *BackupRollbackExecutor) createEtcdSnapshot(ctx context.Context, cluster *infrav1.ClusterVersion, backupName string) error {
+func (e *BackupRollbackExecutor) createEtcdSnapshot(ctx context.Context, cluster *cfov1.ClusterVersion, backupName string) error {
 	// In production, this would:
 	// 1. SSH to control-plane nodes
 	// 2. Run etcdctl snapshot save
@@ -192,7 +193,7 @@ func (e *BackupRollbackExecutor) executeRollbackScript(ctx context.Context, node
 }
 
 // runHealthCheck runs health check after upgrade/rollback.
-func (e *BackupRollbackExecutor) runHealthCheck(ctx context.Context, cluster *infrav1.ClusterVersion, hc *infrav1.ComponentHealthCheckConfig) error {
+func (e *BackupRollbackExecutor) runHealthCheck(ctx context.Context, cluster *cfov1.ClusterVersion, hc *commonv1.ComponentHealthCheckConfig) error {
 	if hc == nil || hc.Command == "" {
 		return nil
 	}
@@ -217,8 +218,8 @@ func (e *BackupRollbackExecutor) runHealthCheck(ctx context.Context, cluster *in
 }
 
 // getComponentUpgradeConfigsWithNames gets all component upgrade configs from release image with their names.
-func (e *BackupRollbackExecutor) getComponentUpgradeConfigsWithNames(releaseImage *infrav1.ReleaseImage) map[string]*infrav1.ComponentUpgradeConfig {
-	configs := make(map[string]*infrav1.ComponentUpgradeConfig)
+func (e *BackupRollbackExecutor) getComponentUpgradeConfigsWithNames(releaseImage *cfov1.ReleaseImage) map[string]*commonv1.ComponentUpgradeConfig {
+	configs := make(map[string]*commonv1.ComponentUpgradeConfig)
 
 	// Binary components
 	if releaseImage.Spec.Components.Kubernetes.Upgrade != nil {
@@ -239,7 +240,7 @@ func (e *BackupRollbackExecutor) getComponentUpgradeConfigsWithNames(releaseImag
 }
 
 // getComponentUpgradeConfig gets upgrade config for a specific component.
-func (e *BackupRollbackExecutor) getComponentUpgradeConfig(releaseImage *infrav1.ReleaseImage, componentName string) *infrav1.ComponentUpgradeConfig {
+func (e *BackupRollbackExecutor) getComponentUpgradeConfig(releaseImage *cfov1.ReleaseImage, componentName string) *commonv1.ComponentUpgradeConfig {
 	// Check binary components
 	if componentName == "kubernetes" && releaseImage.Spec.Components.Kubernetes.Upgrade != nil {
 		return releaseImage.Spec.Components.Kubernetes.Upgrade
@@ -259,7 +260,7 @@ func (e *BackupRollbackExecutor) getComponentUpgradeConfig(releaseImage *infrav1
 }
 
 // getClusterNodes gets all nodes for a cluster.
-func (e *BackupRollbackExecutor) getClusterNodes(ctx context.Context, cluster *infrav1.ClusterVersion) ([]*corev1.Node, error) {
+func (e *BackupRollbackExecutor) getClusterNodes(ctx context.Context, cluster *cfov1.ClusterVersion) ([]*corev1.Node, error) {
 	nodeList := &corev1.NodeList{}
 	if err := e.client.List(ctx, nodeList, client.MatchingLabels{
 		"cluster.x-k8s.io/cluster-name": cluster.Spec.ClusterRef.Name,
@@ -275,31 +276,31 @@ func (e *BackupRollbackExecutor) getClusterNodes(ctx context.Context, cluster *i
 }
 
 // executePreBackupHooks executes pre-backup hooks for a component.
-func (e *BackupRollbackExecutor) executePreBackupHooks(ctx context.Context, nodes []*corev1.Node, componentName string, releaseImage *infrav1.ReleaseImage) error {
+func (e *BackupRollbackExecutor) executePreBackupHooks(ctx context.Context, nodes []*corev1.Node, componentName string, releaseImage *cfov1.ReleaseImage) error {
 	hooks := e.getComponentPreHooks(releaseImage, componentName)
 	return e.executeHooksOnNodes(ctx, nodes, hooks, componentName, "pre-backup")
 }
 
 // executePostBackupHooks executes post-backup hooks for a component.
-func (e *BackupRollbackExecutor) executePostBackupHooks(ctx context.Context, nodes []*corev1.Node, componentName string, releaseImage *infrav1.ReleaseImage) error {
+func (e *BackupRollbackExecutor) executePostBackupHooks(ctx context.Context, nodes []*corev1.Node, componentName string, releaseImage *cfov1.ReleaseImage) error {
 	hooks := e.getComponentPostHooks(releaseImage, componentName)
 	return e.executeHooksOnNodes(ctx, nodes, hooks, componentName, "post-backup")
 }
 
 // executePreRollbackHooks executes pre-rollback hooks for a component.
-func (e *BackupRollbackExecutor) executePreRollbackHooks(ctx context.Context, nodes []*corev1.Node, componentName string, releaseImage *infrav1.ReleaseImage) error {
+func (e *BackupRollbackExecutor) executePreRollbackHooks(ctx context.Context, nodes []*corev1.Node, componentName string, releaseImage *cfov1.ReleaseImage) error {
 	hooks := e.getComponentPreHooks(releaseImage, componentName)
 	return e.executeHooksOnNodes(ctx, nodes, hooks, componentName, "pre-rollback")
 }
 
 // executePostRollbackHooks executes post-rollback hooks for a component.
-func (e *BackupRollbackExecutor) executePostRollbackHooks(ctx context.Context, nodes []*corev1.Node, componentName string, releaseImage *infrav1.ReleaseImage) error {
+func (e *BackupRollbackExecutor) executePostRollbackHooks(ctx context.Context, nodes []*corev1.Node, componentName string, releaseImage *cfov1.ReleaseImage) error {
 	hooks := e.getComponentPostHooks(releaseImage, componentName)
 	return e.executeHooksOnNodes(ctx, nodes, hooks, componentName, "post-rollback")
 }
 
 // getComponentPreHooks gets pre-hooks for a component.
-func (e *BackupRollbackExecutor) getComponentPreHooks(releaseImage *infrav1.ReleaseImage, componentName string) []infrav1.AddonHook {
+func (e *BackupRollbackExecutor) getComponentPreHooks(releaseImage *cfov1.ReleaseImage, componentName string) []commonv1.AddonHook {
 	// Check binary components
 	if componentName == "kubernetes" {
 		return releaseImage.Spec.Components.Kubernetes.PreHooks
@@ -319,7 +320,7 @@ func (e *BackupRollbackExecutor) getComponentPreHooks(releaseImage *infrav1.Rele
 }
 
 // getComponentPostHooks gets post-hooks for a component.
-func (e *BackupRollbackExecutor) getComponentPostHooks(releaseImage *infrav1.ReleaseImage, componentName string) []infrav1.AddonHook {
+func (e *BackupRollbackExecutor) getComponentPostHooks(releaseImage *cfov1.ReleaseImage, componentName string) []commonv1.AddonHook {
 	// Check binary components
 	if componentName == "kubernetes" {
 		return releaseImage.Spec.Components.Kubernetes.PostHooks
@@ -339,7 +340,7 @@ func (e *BackupRollbackExecutor) getComponentPostHooks(releaseImage *infrav1.Rel
 }
 
 // executeHooksOnNodes executes hooks on all nodes.
-func (e *BackupRollbackExecutor) executeHooksOnNodes(ctx context.Context, nodes []*corev1.Node, hooks []infrav1.AddonHook, componentName, phase string) error {
+func (e *BackupRollbackExecutor) executeHooksOnNodes(ctx context.Context, nodes []*corev1.Node, hooks []commonv1.AddonHook, componentName, phase string) error {
 	for _, hook := range hooks {
 		for _, node := range nodes {
 			if err := e.executeHookOnNode(ctx, node, hook, componentName, phase); err != nil {
@@ -360,7 +361,7 @@ func (e *BackupRollbackExecutor) executeHooksOnNodes(ctx context.Context, nodes 
 }
 
 // executeHookOnNode executes a single hook on a node.
-func (e *BackupRollbackExecutor) executeHookOnNode(ctx context.Context, node *corev1.Node, hook infrav1.AddonHook, componentName, phase string) error {
+func (e *BackupRollbackExecutor) executeHookOnNode(ctx context.Context, node *corev1.Node, hook commonv1.AddonHook, componentName, phase string) error {
 	timeout := 5 * time.Minute
 	if hook.Timeout != nil {
 		timeout = hook.Timeout.Duration
@@ -383,7 +384,7 @@ func (e *BackupRollbackExecutor) executeHookOnNode(ctx context.Context, node *co
 }
 
 // getSSHConnection gets SSH connection to a node.
-func (e *BackupRollbackExecutor) getSSHConnection(ctx context.Context, node *corev1.Node) (*sshclient.SSHConnection, error) {
+func (e *BackupRollbackExecutor) getSSHConnection(ctx context.Context, node *corev1.Node) (*capbmssh.SSHConnection, error) {
 	// In production, this would:
 	// 1. Get node IP
 	// 2. Get SSH credentials from secret

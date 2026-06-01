@@ -21,13 +21,15 @@ import (
 	"fmt"
 	"strings"
 
-	infrav1 "github.com/BetaWater/cluster-api-provider-baremetal/api/v1beta1"
-	sshclient "github.com/BetaWater/cluster-api-provider-baremetal/internal/ssh"
+	capbmv1 "github.com/BetaWater/cluster-api-provider-baremetal/api/capbm/v1beta1"
+	commonv1 "github.com/BetaWater/cluster-api-provider-baremetal/api/common/v1beta1"
+	cfov1 "github.com/BetaWater/cluster-api-provider-baremetal/api/cvo/v1beta1"
+	sshclient "github.com/BetaWater/cluster-api-provider-baremetal/internal/capbm/ssh"
 )
 
 type Installer struct {
 	sshConn *sshclient.SSHConnection
-	config  infrav1.CSIConfig
+	config  capbmv1.CSIConfig
 }
 
 type InstallResult struct {
@@ -37,14 +39,14 @@ type InstallResult struct {
 	Error     string `json:"error,omitempty"`
 }
 
-func New(sshConn *sshclient.SSHConnection, config infrav1.CSIConfig) *Installer {
+func New(sshConn *sshclient.SSHConnection, config capbmv1.CSIConfig) *Installer {
 	return &Installer{
 		sshConn: sshConn,
 		config:  config,
 	}
 }
 
-func NewFromReleaseImage(sshConn *sshclient.SSHConnection, releaseImage *infrav1.ReleaseImage, config infrav1.CSIConfig) *Installer {
+func NewFromReleaseImage(sshConn *sshclient.SSHConnection, releaseImage *cfov1.ReleaseImage, config capbmv1.CSIConfig) *Installer {
 	if config.Driver == "" {
 		if addon := findCSIAddon(releaseImage, "ceph-csi"); addon != nil {
 			config.Driver = "ceph-csi"
@@ -63,7 +65,7 @@ func NewFromReleaseImage(sshConn *sshclient.SSHConnection, releaseImage *infrav1
 }
 
 // findCSIAddon finds a CSI addon by name in the ReleaseImage.
-func findCSIAddon(releaseImage *infrav1.ReleaseImage, name string) *infrav1.AddonDefinition {
+func findCSIAddon(releaseImage *cfov1.ReleaseImage, name string) *commonv1.AddonDefinition {
 	for i := range releaseImage.Spec.Addons {
 		if releaseImage.Spec.Addons[i].Name == name {
 			return &releaseImage.Spec.Addons[i]
@@ -201,7 +203,7 @@ CEPH_MONITORS="${CEPH_MONITORS}"
 CEPH_RBD_POOL="${CEPH_RBD_POOL:-kubernetes}"
 SC_NAME="${SC_NAME:-ceph-rbd}"
 
-echo "=== CSI 安装开始 (driver=$CSI_DRIVER, version=$CSI_VERSION, source=$INSTALL_SOURCE) ==="
+echo "=== CSI 安装开�?(driver=$CSI_DRIVER, version=$CSI_VERSION, source=$INSTALL_SOURCE) ==="
 
 fetch_resource() {
     local resource="$1"
@@ -210,7 +212,7 @@ fetch_resource() {
         online) curl -fsSL "$resource" -o "$dest" ;;
         http)   curl -fsSL "${RELEASE_SERVER}/${resource}" -o "$dest" ;;
         local)  cp "${LOCAL_PATH}/${resource}" "$dest" ;;
-        *)      echo "ERROR: 不支持的安装源: $INSTALL_SOURCE"; exit 1 ;;
+        *)      echo "ERROR: 不支持的安装�? $INSTALL_SOURCE"; exit 1 ;;
     esac
 }
 
@@ -318,7 +320,7 @@ EOF
 }
 
 verify_csi() {
-    kubectl get storageclass "$SC_NAME" &>/dev/null && echo "StorageClass ($SC_NAME): OK" || { echo "ERROR: StorageClass 不存在"; return 1; }
+    kubectl get storageclass "$SC_NAME" &>/dev/null && echo "StorageClass ($SC_NAME): OK" || { echo "ERROR: StorageClass 不存�?; return 1; }
     echo "CSI 验证完成"
 }
 
@@ -370,7 +372,7 @@ RELEASE_SERVER="${RELEASE_SERVER:-}"
 LOCAL_PATH="${LOCAL_PATH:-}"
 SC_NAME="${SC_NAME:-local-path}"
 
-echo "=== Local-CSI 安装开始 (source=$INSTALL_SOURCE) ==="
+echo "=== Local-CSI 安装开�?(source=$INSTALL_SOURCE) ==="
 
 fetch_resource() {
     local resource="$1"
@@ -379,7 +381,7 @@ fetch_resource() {
         online) curl -fsSL "$resource" -o "$dest" ;;
         http)   curl -fsSL "${RELEASE_SERVER}/${resource}" -o "$dest" ;;
         local)  cp "${LOCAL_PATH}/${resource}" "$dest" ;;
-        *)      echo "ERROR: 不支持的安装源: $INSTALL_SOURCE"; exit 1 ;;
+        *)      echo "ERROR: 不支持的安装�? $INSTALL_SOURCE"; exit 1 ;;
     esac
 }
 
@@ -400,7 +402,7 @@ install_local_csi() {
 }
 
 verify_csi() {
-    kubectl get storageclass "$SC_NAME" &>/dev/null && echo "StorageClass ($SC_NAME): OK" || { echo "ERROR: StorageClass 不存在"; return 1; }
+    kubectl get storageclass "$SC_NAME" &>/dev/null && echo "StorageClass ($SC_NAME): OK" || { echo "ERROR: StorageClass 不存�?; return 1; }
     echo "CSI 验证完成"
 }
 

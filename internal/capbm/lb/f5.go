@@ -27,12 +27,12 @@ import (
 	"net/url"
 	"strings"
 
-	infrav1 "github.com/BetaWater/cluster-api-provider-baremetal/api/v1beta1"
+	capbmv1 "github.com/BetaWater/cluster-api-provider-baremetal/api/capbm/v1beta1"
 )
 
 // F5Provider implements the Provider interface for F5 BIG-IP.
 type F5Provider struct {
-	config     *infrav1.F5Config
+	config     *capbmv1.F5Config
 	baseURL    string
 	httpClient *http.Client
 }
@@ -58,7 +58,7 @@ type F5PoolMemberItem struct {
 }
 
 // NewF5Provider creates a new F5 provider.
-func NewF5Provider(config *infrav1.F5Config) (Provider, error) {
+func NewF5Provider(config *capbmv1.F5Config) (Provider, error) {
 	if config == nil {
 		return nil, fmt.Errorf("F5 configuration is required")
 	}

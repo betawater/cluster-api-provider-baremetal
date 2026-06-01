@@ -21,8 +21,9 @@ import (
 	"fmt"
 	"time"
 
-	infrav1 "github.com/BetaWater/cluster-api-provider-baremetal/api/v1beta1"
-	sshclient "github.com/BetaWater/cluster-api-provider-baremetal/internal/ssh"
+	cfov1 "github.com/BetaWater/cluster-api-provider-baremetal/api/cvo/v1beta1"
+	commonv1 "github.com/BetaWater/cluster-api-provider-baremetal/api/common/v1beta1"
+	capbmssh "github.com/BetaWater/cluster-api-provider-baremetal/internal/capbm/ssh"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -32,7 +33,7 @@ import (
 // ControlPlaneUpgrader coordinates control plane in-place upgrades with KCP.
 type ControlPlaneUpgrader struct {
 	client     client.Client
-	sshManager *sshclient.SSHManager
+	sshManager *capbmssh.SSHManager
 	config     ControlPlaneUpgradeConfig
 }
 
@@ -118,7 +119,7 @@ type RollbackConfig struct {
 }
 
 // NewControlPlaneUpgrader creates a new control plane upgrader.
-func NewControlPlaneUpgrader(c client.Client, sshManager *sshclient.SSHManager, config ControlPlaneUpgradeConfig) *ControlPlaneUpgrader {
+func NewControlPlaneUpgrader(c client.Client, sshManager *capbmssh.SSHManager, config ControlPlaneUpgradeConfig) *ControlPlaneUpgrader {
 	return &ControlPlaneUpgrader{
 		client:     c,
 		sshManager: sshManager,
@@ -127,7 +128,7 @@ func NewControlPlaneUpgrader(c client.Client, sshManager *sshclient.SSHManager, 
 }
 
 // ExecuteUpgrade executes the control plane rolling upgrade.
-func (u *ControlPlaneUpgrader) ExecuteUpgrade(ctx context.Context, cv *infrav1.ClusterVersion, releaseImage *infrav1.ReleaseImage) error {
+func (u *ControlPlaneUpgrader) ExecuteUpgrade(ctx context.Context, cv *cfov1.ClusterVersion, releaseImage *cfov1.ReleaseImage) error {
 	// 1. Pre-upgrade checks
 	if err := u.preUpgradeChecks(ctx, cv); err != nil {
 		return fmt.Errorf("pre-upgrade checks failed: %w", err)
@@ -169,7 +170,7 @@ func (u *ControlPlaneUpgrader) ExecuteUpgrade(ctx context.Context, cv *infrav1.C
 }
 
 // upgradeNode upgrades a single control plane node.
-func (u *ControlPlaneUpgrader) upgradeNode(ctx context.Context, cv *infrav1.ClusterVersion, node *corev1.Node, releaseImage *infrav1.ReleaseImage) error {
+func (u *ControlPlaneUpgrader) upgradeNode(ctx context.Context, cv *cfov1.ClusterVersion, node *corev1.Node, releaseImage *cfov1.ReleaseImage) error {
 	// 1. Execute component pre-hooks (containerd)
 	if err := u.executeComponentPreHooks(ctx, node, releaseImage.Spec.Components.Containerd.PreHooks, "containerd"); err != nil {
 		return err
@@ -223,7 +224,7 @@ func (u *ControlPlaneUpgrader) upgradeNode(ctx context.Context, cv *infrav1.Clus
 }
 
 // preUpgradeChecks performs pre-upgrade checks.
-func (u *ControlPlaneUpgrader) preUpgradeChecks(ctx context.Context, cv *infrav1.ClusterVersion) error {
+func (u *ControlPlaneUpgrader) preUpgradeChecks(ctx context.Context, cv *cfov1.ClusterVersion) error {
 	// 1. Check cluster health
 	if err := u.checkClusterHealth(ctx, cv); err != nil {
 		return err
@@ -247,7 +248,7 @@ func (u *ControlPlaneUpgrader) preUpgradeChecks(ctx context.Context, cv *infrav1
 }
 
 // backupBeforeUpgrade performs backup before upgrade.
-func (u *ControlPlaneUpgrader) backupBeforeUpgrade(ctx context.Context, cv *infrav1.ClusterVersion, releaseImage *infrav1.ReleaseImage) error {
+func (u *ControlPlaneUpgrader) backupBeforeUpgrade(ctx context.Context, cv *cfov1.ClusterVersion, releaseImage *cfov1.ReleaseImage) error {
 	if !u.config.EtcdBackup.Enabled {
 		return nil
 	}
@@ -300,13 +301,13 @@ func (u *ControlPlaneUpgrader) uncordonNode(ctx context.Context, node *corev1.No
 }
 
 // upgradeContainerd upgrades containerd on a node using the component's strategy.
-func (u *ControlPlaneUpgrader) upgradeContainerd(ctx context.Context, node *corev1.Node, releaseImage *infrav1.ReleaseImage) error {
+func (u *ControlPlaneUpgrader) upgradeContainerd(ctx context.Context, node *corev1.Node, releaseImage *cfov1.ReleaseImage) error {
 	containerd := releaseImage.Spec.Components.Containerd
 
 	// Get upgrade strategy or use defaults
 	strategy := containerd.UpgradeStrategy
 	if strategy == nil {
-		strategy = &infrav1.BinaryUpgradeStrategy{
+		strategy = &commonv1.BinaryUpgradeStrategy{
 			Type:        "Rolling",
 			RetryCount:  3,
 			Timeout:     &metav1.Duration{Duration: 10 * time.Minute},
@@ -317,7 +318,7 @@ func (u *ControlPlaneUpgrader) upgradeContainerd(ctx context.Context, node *core
 	// Get install strategy for service restart info
 	installStrategy := containerd.InstallStrategy
 	if installStrategy == nil {
-		installStrategy = &infrav1.BinaryInstallStrategy{
+		installStrategy = &commonv1.BinaryInstallStrategy{
 			Timeout:     &metav1.Duration{Duration: 5 * time.Minute},
 			RetryCount:  3,
 			Method:      "package",
@@ -339,7 +340,7 @@ func (u *ControlPlaneUpgrader) upgradeContainerd(ctx context.Context, node *core
 }
 
 // upgradeContainerdRolling performs a rolling upgrade of containerd.
-func (u *ControlPlaneUpgrader) upgradeContainerdRolling(ctx context.Context, node *corev1.Node, containerd infrav1.BinaryComponent, strategy *infrav1.BinaryUpgradeStrategy, installStrategy *infrav1.BinaryInstallStrategy) error {
+func (u *ControlPlaneUpgrader) upgradeContainerdRolling(ctx context.Context, node *corev1.Node, containerd commonv1.BinaryComponent, strategy *commonv1.BinaryUpgradeStrategy, installStrategy *commonv1.BinaryInstallStrategy) error {
 	// In production, this would:
 	// 1. SSH to node
 	// 2. Stop service (if ServiceName defined)
@@ -357,7 +358,7 @@ func (u *ControlPlaneUpgrader) upgradeContainerdRolling(ctx context.Context, nod
 }
 
 // upgradeContainerdDrainAndUpgrade performs drain then upgrade.
-func (u *ControlPlaneUpgrader) upgradeContainerdDrainAndUpgrade(ctx context.Context, node *corev1.Node, containerd infrav1.BinaryComponent, strategy *infrav1.BinaryUpgradeStrategy, installStrategy *infrav1.BinaryInstallStrategy) error {
+func (u *ControlPlaneUpgrader) upgradeContainerdDrainAndUpgrade(ctx context.Context, node *corev1.Node, containerd commonv1.BinaryComponent, strategy *commonv1.BinaryUpgradeStrategy, installStrategy *commonv1.BinaryInstallStrategy) error {
 	// Drain node first
 	if err := u.drainNode(ctx, node); err != nil {
 		return err
@@ -368,14 +369,14 @@ func (u *ControlPlaneUpgrader) upgradeContainerdDrainAndUpgrade(ctx context.Cont
 }
 
 // upgradeContainerdParallel performs parallel upgrade (not recommended for production).
-func (u *ControlPlaneUpgrader) upgradeContainerdParallel(ctx context.Context, node *corev1.Node, containerd infrav1.BinaryComponent, strategy *infrav1.BinaryUpgradeStrategy, installStrategy *infrav1.BinaryInstallStrategy) error {
+func (u *ControlPlaneUpgrader) upgradeContainerdParallel(ctx context.Context, node *corev1.Node, containerd commonv1.BinaryComponent, strategy *commonv1.BinaryUpgradeStrategy, installStrategy *commonv1.BinaryInstallStrategy) error {
 	// Parallel upgrade - same as rolling but without waiting for other nodes
 	// In production, this would upgrade multiple nodes concurrently up to MaxConcurrent
 	return u.upgradeContainerdRolling(ctx, node, containerd, strategy, installStrategy)
 }
 
 // upgradeCNI upgrades CNI components on a node.
-func (u *ControlPlaneUpgrader) upgradeCNI(ctx context.Context, node *corev1.Node, releaseImage *infrav1.ReleaseImage) error {
+func (u *ControlPlaneUpgrader) upgradeCNI(ctx context.Context, node *corev1.Node, releaseImage *cfov1.ReleaseImage) error {
 	// In production, this would:
 	// 1. SSH to node
 	// 2. Backup /etc/cni/net.d
@@ -389,7 +390,7 @@ func (u *ControlPlaneUpgrader) upgradeCNI(ctx context.Context, node *corev1.Node
 }
 
 // upgradeCSI upgrades CSI components on a node.
-func (u *ControlPlaneUpgrader) upgradeCSI(ctx context.Context, node *corev1.Node, releaseImage *infrav1.ReleaseImage) error {
+func (u *ControlPlaneUpgrader) upgradeCSI(ctx context.Context, node *corev1.Node, releaseImage *cfov1.ReleaseImage) error {
 	// In production, this would:
 	// 1. SSH to node
 	// 2. Backup CSI configuration
@@ -403,7 +404,7 @@ func (u *ControlPlaneUpgrader) upgradeCSI(ctx context.Context, node *corev1.Node
 }
 
 // verifyNodeUpgrade verifies node upgrade.
-func (u *ControlPlaneUpgrader) verifyNodeUpgrade(ctx context.Context, node *corev1.Node, releaseImage *infrav1.ReleaseImage) error {
+func (u *ControlPlaneUpgrader) verifyNodeUpgrade(ctx context.Context, node *corev1.Node, releaseImage *cfov1.ReleaseImage) error {
 	// In production, this would:
 	// 1. Check node Ready status
 	// 2. Check component versions
@@ -415,7 +416,7 @@ func (u *ControlPlaneUpgrader) verifyNodeUpgrade(ctx context.Context, node *core
 }
 
 // waitForKCPUpgrade waits for KCP to complete upgrade.
-func (u *ControlPlaneUpgrader) waitForKCPUpgrade(ctx context.Context, cv *infrav1.ClusterVersion) error {
+func (u *ControlPlaneUpgrader) waitForKCPUpgrade(ctx context.Context, cv *cfov1.ClusterVersion) error {
 	// Wait for KCP.status.version == desiredVersion
 	// Wait for KCP.status.conditions[Ready] == True
 	return wait.PollUntilContextTimeout(ctx, 10*time.Second, 10*time.Minute, true, func(ctx context.Context) (bool, error) {
@@ -428,7 +429,7 @@ func (u *ControlPlaneUpgrader) waitForKCPUpgrade(ctx context.Context, cv *infrav
 }
 
 // postUpgradeVerification performs post-upgrade verification.
-func (u *ControlPlaneUpgrader) postUpgradeVerification(ctx context.Context, cv *infrav1.ClusterVersion, releaseImage *infrav1.ReleaseImage) error {
+func (u *ControlPlaneUpgrader) postUpgradeVerification(ctx context.Context, cv *cfov1.ClusterVersion, releaseImage *cfov1.ReleaseImage) error {
 	// 1. Check all control plane nodes Ready
 	if err := u.checkControlPlaneNodesReady(ctx, cv); err != nil {
 		return err
@@ -453,7 +454,7 @@ func (u *ControlPlaneUpgrader) postUpgradeVerification(ctx context.Context, cv *
 }
 
 // checkClusterHealth checks cluster health.
-func (u *ControlPlaneUpgrader) checkClusterHealth(ctx context.Context, cv *infrav1.ClusterVersion) error {
+func (u *ControlPlaneUpgrader) checkClusterHealth(ctx context.Context, cv *cfov1.ClusterVersion) error {
 	// In production, this would check cluster health
 	_ = ctx
 	_ = cv
@@ -461,7 +462,7 @@ func (u *ControlPlaneUpgrader) checkClusterHealth(ctx context.Context, cv *infra
 }
 
 // checkControlPlaneNodesReady checks all control plane nodes are Ready.
-func (u *ControlPlaneUpgrader) checkControlPlaneNodesReady(ctx context.Context, cv *infrav1.ClusterVersion) error {
+func (u *ControlPlaneUpgrader) checkControlPlaneNodesReady(ctx context.Context, cv *cfov1.ClusterVersion) error {
 	// In production, this would check node Ready status
 	_ = ctx
 	_ = cv
@@ -469,7 +470,7 @@ func (u *ControlPlaneUpgrader) checkControlPlaneNodesReady(ctx context.Context, 
 }
 
 // checkEtcdHealth checks etcd cluster health.
-func (u *ControlPlaneUpgrader) checkEtcdHealth(ctx context.Context, cv *infrav1.ClusterVersion) error {
+func (u *ControlPlaneUpgrader) checkEtcdHealth(ctx context.Context, cv *cfov1.ClusterVersion) error {
 	// In production, this would run etcdctl endpoint health
 	_ = ctx
 	_ = cv
@@ -477,7 +478,7 @@ func (u *ControlPlaneUpgrader) checkEtcdHealth(ctx context.Context, cv *infrav1.
 }
 
 // checkControlPlanePods checks control plane Pods are running.
-func (u *ControlPlaneUpgrader) checkControlPlanePods(ctx context.Context, cv *infrav1.ClusterVersion) error {
+func (u *ControlPlaneUpgrader) checkControlPlanePods(ctx context.Context, cv *cfov1.ClusterVersion) error {
 	// In production, this would check control plane Pods
 	_ = ctx
 	_ = cv
@@ -485,7 +486,7 @@ func (u *ControlPlaneUpgrader) checkControlPlanePods(ctx context.Context, cv *in
 }
 
 // checkAPIServerHealth checks API Server health.
-func (u *ControlPlaneUpgrader) checkAPIServerHealth(ctx context.Context, cv *infrav1.ClusterVersion) error {
+func (u *ControlPlaneUpgrader) checkAPIServerHealth(ctx context.Context, cv *cfov1.ClusterVersion) error {
 	// In production, this would check API Server health endpoint
 	_ = ctx
 	_ = cv
@@ -493,7 +494,7 @@ func (u *ControlPlaneUpgrader) checkAPIServerHealth(ctx context.Context, cv *inf
 }
 
 // rollback performs rollback on failure.
-func (u *ControlPlaneUpgrader) rollback(ctx context.Context, cv *infrav1.ClusterVersion, releaseImage *infrav1.ReleaseImage) error {
+func (u *ControlPlaneUpgrader) rollback(ctx context.Context, cv *cfov1.ClusterVersion, releaseImage *cfov1.ReleaseImage) error {
 	// In production, this would:
 	// 1. Restore etcd snapshot
 	// 2. Restore component configurations
@@ -506,7 +507,7 @@ func (u *ControlPlaneUpgrader) rollback(ctx context.Context, cv *infrav1.Cluster
 }
 
 // getControlPlaneNodes gets all control plane nodes for a cluster.
-func (u *ControlPlaneUpgrader) getControlPlaneNodes(ctx context.Context, cv *infrav1.ClusterVersion) ([]*corev1.Node, error) {
+func (u *ControlPlaneUpgrader) getControlPlaneNodes(ctx context.Context, cv *cfov1.ClusterVersion) ([]*corev1.Node, error) {
 	nodeList := &corev1.NodeList{}
 	if err := u.client.List(ctx, nodeList, client.MatchingLabels{
 		"node-role.kubernetes.io/control-plane": "",
@@ -522,7 +523,7 @@ func (u *ControlPlaneUpgrader) getControlPlaneNodes(ctx context.Context, cv *inf
 }
 
 // getSSHConnection gets SSH connection to a node.
-func (u *ControlPlaneUpgrader) getSSHConnection(ctx context.Context, node *corev1.Node) (*sshclient.SSHConnection, error) {
+func (u *ControlPlaneUpgrader) getSSHConnection(ctx context.Context, node *corev1.Node) (*capbmssh.SSHConnection, error) {
 	// In production, this would:
 	// 1. Get node IP
 	// 2. Get SSH credentials from secret
@@ -534,7 +535,7 @@ func (u *ControlPlaneUpgrader) getSSHConnection(ctx context.Context, node *corev
 }
 
 // executeComponentPreHooks executes pre-install/upgrade hooks for a component.
-func (u *ControlPlaneUpgrader) executeComponentPreHooks(ctx context.Context, node *corev1.Node, hooks []infrav1.AddonHook, componentName string) error {
+func (u *ControlPlaneUpgrader) executeComponentPreHooks(ctx context.Context, node *corev1.Node, hooks []commonv1.AddonHook, componentName string) error {
 	for _, hook := range hooks {
 		if err := u.executeHookOnNode(ctx, node, hook, componentName, "pre"); err != nil {
 			switch hook.OnFailure {
@@ -553,7 +554,7 @@ func (u *ControlPlaneUpgrader) executeComponentPreHooks(ctx context.Context, nod
 }
 
 // executeComponentPostHooks executes post-install/upgrade hooks for a component.
-func (u *ControlPlaneUpgrader) executeComponentPostHooks(ctx context.Context, node *corev1.Node, hooks []infrav1.AddonHook, componentName string) error {
+func (u *ControlPlaneUpgrader) executeComponentPostHooks(ctx context.Context, node *corev1.Node, hooks []commonv1.AddonHook, componentName string) error {
 	for _, hook := range hooks {
 		if err := u.executeHookOnNode(ctx, node, hook, componentName, "post"); err != nil {
 			switch hook.OnFailure {
@@ -572,7 +573,7 @@ func (u *ControlPlaneUpgrader) executeComponentPostHooks(ctx context.Context, no
 }
 
 // executeHookOnNode executes a single hook on a node via SSH.
-func (u *ControlPlaneUpgrader) executeHookOnNode(ctx context.Context, node *corev1.Node, hook infrav1.AddonHook, componentName, phase string) error {
+func (u *ControlPlaneUpgrader) executeHookOnNode(ctx context.Context, node *corev1.Node, hook commonv1.AddonHook, componentName, phase string) error {
 	timeout := 5 * time.Minute
 	if hook.Timeout != nil {
 		timeout = hook.Timeout.Duration
