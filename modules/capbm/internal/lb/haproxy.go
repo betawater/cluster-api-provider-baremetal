@@ -78,7 +78,7 @@ func (p *HAProxyProvider) GetBackends(ctx context.Context) ([]Backend, error) {
 
 // HealthCheck checks if a backend is healthy.
 func (p *HAProxyProvider) HealthCheck(ctx context.Context, backend Backend) (bool, error) {
-	addr := fmt.Sprintf("%s:%d", backend.IP, backend.Port)
+	addr := net.JoinHostPort(backend.IP, fmt.Sprintf("%d", backend.Port))
 	conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
 	if err != nil {
 		return false, nil
@@ -92,7 +92,7 @@ func (p *HAProxyProvider) registerViaRuntimeAPI(ctx context.Context, backend Bac
 	cmd := fmt.Sprintf("add server %s/%s %s:%d check inter 5s fall 3 rise 2",
 		p.config.BackendName, backend.Name, backend.IP, backend.Port)
 
-	addr := fmt.Sprintf("%s:%d", p.config.AdminHost, p.config.AdminPort)
+	addr := net.JoinHostPort(p.config.AdminHost, fmt.Sprintf("%d", p.config.AdminPort))
 	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
 	if err != nil {
 		return fmt.Errorf("failed to connect to HAProxy Runtime API: %w", err)
@@ -122,7 +122,7 @@ func (p *HAProxyProvider) registerViaRuntimeAPI(ctx context.Context, backend Bac
 func (p *HAProxyProvider) unregisterViaRuntimeAPI(ctx context.Context, backend Backend) error {
 	cmd := fmt.Sprintf("del server %s/%s", p.config.BackendName, backend.Name)
 
-	addr := fmt.Sprintf("%s:%d", p.config.AdminHost, p.config.AdminPort)
+	addr := net.JoinHostPort(p.config.AdminHost, fmt.Sprintf("%d", p.config.AdminPort))
 	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
 	if err != nil {
 		return fmt.Errorf("failed to connect to HAProxy Runtime API: %w", err)
@@ -141,7 +141,7 @@ func (p *HAProxyProvider) unregisterViaRuntimeAPI(ctx context.Context, backend B
 func (p *HAProxyProvider) getBackendsViaRuntimeAPI(ctx context.Context) ([]Backend, error) {
 	cmd := fmt.Sprintf("show servers state %s", p.config.BackendName)
 
-	addr := fmt.Sprintf("%s:%d", p.config.AdminHost, p.config.AdminPort)
+	addr := net.JoinHostPort(p.config.AdminHost, fmt.Sprintf("%d", p.config.AdminPort))
 	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to HAProxy Runtime API: %w", err)
@@ -276,7 +276,7 @@ func (p *HAProxyProvider) createSSHClient() (*ssh.Client, error) {
 		Timeout:         10 * time.Second,
 	}
 
-	addr := fmt.Sprintf("%s:%d", p.config.SSHHost, p.config.SSHPort)
+	addr := net.JoinHostPort(p.config.SSHHost, fmt.Sprintf("%d", p.config.SSHPort))
 	return ssh.Dial("tcp", addr, config)
 }
 

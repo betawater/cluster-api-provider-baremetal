@@ -55,7 +55,7 @@ func (p *MetalLBProvider) GetBackends(ctx context.Context) ([]Backend, error) {
 
 // HealthCheck checks if a backend is healthy.
 func (p *MetalLBProvider) HealthCheck(ctx context.Context, backend Backend) (bool, error) {
-	addr := fmt.Sprintf("%s:%d", backend.IP, backend.Port)
+	addr := net.JoinHostPort(backend.IP, fmt.Sprintf("%d", backend.Port))
 	conn, err := net.DialTimeout("tcp", addr, 3*time.Second)
 	if err != nil {
 		return false, nil
