@@ -43,26 +43,25 @@ help: ## Display this help.
 
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
-	$(CONTROLLER_GEN) rbac:roleName=capbm-manager-role crd webhook paths="./api/capbm/..." output:crd:artifacts:config=config/capbm/crd/bases
-	$(CONTROLLER_GEN) rbac:roleName=cvo-manager-role crd webhook paths="./api/cvo/..." output:crd:artifacts:config=config/cvo/crd/bases
+	$(CONTROLLER_GEN) rbac:roleName=capbm-manager-role crd webhook paths="./modules/capbm/api/..." output:crd:artifacts:config=modules/capbm/config/crd/bases
+	$(CONTROLLER_GEN) rbac:roleName=cvo-manager-role crd webhook paths="./modules/cvo/api/..." output:crd:artifacts:config=modules/cvo/config/crd/bases
 
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
-	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./api/common/..."
-	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./api/cvo/..."
-	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./api/capbm/..."
+	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./modules/cvo/api/..."
+	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./modules/capbm/api/..."
 
 .PHONY: fmt
 fmt: ## Run go fmt against code.
-	go fmt ./...
+	go fmt ./modules/...
 
 .PHONY: vet
 vet: ## Run go vet against code.
-	go vet ./...
+	go vet ./modules/...
 
 .PHONY: test
 test: manifests generate fmt vet envtest ## Run tests.
-	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
+	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test ./modules/cvo/... ./modules/capbm/... -coverprofile cover.out
 
 ##@ Build
 
@@ -71,19 +70,19 @@ build: build-capbm build-cvo
 
 .PHONY: build-capbm
 build-capbm: manifests generate fmt vet ## Build CAPBM manager binary.
-	go build -o bin/capbm-manager ./cmd/capbm-manager/
+	cd modules/capbm && go build -o ../../bin/capbm-manager ./cmd/manager/
 
 .PHONY: build-cvo
 build-cvo: manifests generate fmt vet ## Build CVO manager binary.
-	go build -o bin/cvo-manager ./cmd/cvo-manager/
+	cd modules/cvo && go build -o ../../bin/cvo-manager ./cmd/manager/
 
 .PHONY: run-capbm
 run-capbm: manifests generate fmt vet ## Run CAPBM controller from your host.
-	go run ./cmd/capbm-manager/
+	go run ./modules/capbm/cmd/manager/
 
 .PHONY: run-cvo
 run-cvo: manifests generate fmt vet ## Run CVO controller from your host.
-	go run ./cmd/cvo-manager/
+	go run ./modules/cvo/cmd/manager/
 
 .PHONY: docker-build-capbm
 docker-build-capbm: test ## Build docker image with the CAPBM manager.

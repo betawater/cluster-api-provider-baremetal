@@ -1,0 +1,31 @@
+# Build the manager binary
+FROM golang:1.25 AS builder
+
+ARG TARGETOS
+ARG TARGETARCH
+
+WORKDIR /workspace
+
+# Copy the go modules
+COPY modules/cvo/go.mod modules/cvo/go.mod
+COPY modules/cvo/go.sum modules/cvo/go.sum
+
+# Copy the common types (included in cvo module)
+COPY modules/cvo/api/ modules/cvo/api/
+
+# Copy the source code
+COPY modules/cvo/cmd/ modules/cvo/cmd/
+COPY modules/cvo/internal/ modules/cvo/internal/
+COPY modules/cvo/pkg/ modules/cvo/pkg/
+
+# Build
+WORKDIR /workspace/modules/cvo
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o manager ./cmd/manager/
+
+# Use distroless as minimal base image to package the manager binary
+FROM gcr.io/distroless/static:nonroot
+WORKDIR /
+COPY --from=builder /workspace/modules/cvo/manager .
+USER 65532:65532
+
+ENTRYPOINT ["/manager"]

@@ -1,0 +1,34 @@
+# Build the manager binary
+FROM golang:1.25 AS builder
+
+ARG TARGETOS
+ARG TARGETARCH
+
+WORKDIR /workspace
+
+# Copy the go modules
+COPY modules/cvo/go.mod modules/cvo/go.mod
+COPY modules/cvo/go.sum modules/cvo/go.sum
+COPY modules/capbm/go.mod modules/capbm/go.mod
+COPY modules/capbm/go.sum modules/capbm/go.sum
+
+# Copy the CVO module (CAPBM depends on it)
+COPY modules/cvo/api/ modules/cvo/api/
+COPY modules/cvo/pkg/ modules/cvo/pkg/
+
+# Copy the CAPBM source code
+COPY modules/capbm/api/ modules/capbm/api/
+COPY modules/capbm/cmd/ modules/capbm/cmd/
+COPY modules/capbm/internal/ modules/capbm/internal/
+
+# Build
+WORKDIR /workspace/modules/capbm
+RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o manager ./cmd/manager/
+
+# Use distroless as minimal base image to package the manager binary
+FROM gcr.io/distroless/static:nonroot
+WORKDIR /
+COPY --from=builder /workspace/modules/capbm/manager .
+USER 65532:65532
+
+ENTRYPOINT ["/manager"]
