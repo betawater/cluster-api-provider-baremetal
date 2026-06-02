@@ -29,7 +29,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	infrav1 "github.com/BetaWater/cluster-api-provider-baremetal/api/v1beta1"
+	infrav1 "github.com/BetaWater/cluster-api-provider-baremetal/modules/cvo/api/v1beta1"
 )
 
 var cfg *rest.Config

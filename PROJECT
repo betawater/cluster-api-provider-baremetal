@@ -11,7 +11,7 @@ resources:
 - api:
     crdVersion: v1
     namespaced: true
-    path: github.com/BetaWater/cluster-api-provider-baremetal/api/v1beta1
+    path: github.com/BetaWater/cluster-api-provider-baremetal/modules/capbm/api/v1beta1
   controller: true
   domain: cluster.x-k8s.io
   group: infrastructure
@@ -20,7 +20,7 @@ resources:
 - api:
     crdVersion: v1
     namespaced: true
-    path: github.com/BetaWater/cluster-api-provider-baremetal/api/v1beta1
+    path: github.com/BetaWater/cluster-api-provider-baremetal/modules/capbm/api/v1beta1
   controller: true
   domain: cluster.x-k8s.io
   group: infrastructure
@@ -29,7 +29,7 @@ resources:
 - api:
     crdVersion: v1
     namespaced: true
-    path: github.com/BetaWater/cluster-api-provider-baremetal/api/v1beta1
+    path: github.com/BetaWater/cluster-api-provider-baremetal/modules/capbm/api/v1beta1
   controller: true
   domain: cluster.x-k8s.io
   group: infrastructure
@@ -38,7 +38,7 @@ resources:
 - api:
     crdVersion: v1
     namespaced: true
-    path: github.com/BetaWater/cluster-api-provider-baremetal/api/v1beta1
+    path: github.com/BetaWater/cluster-api-provider-baremetal/modules/capbm/api/v1beta1
   controller: true
   domain: cluster.x-k8s.io
   group: infrastructure
