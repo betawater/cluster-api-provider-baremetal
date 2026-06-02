@@ -48,8 +48,11 @@ const (
 	UpgradeFailedReason      = "UpgradeFailed"
 
 	// Addon upgrade conditions
+	//nolint:staticcheck // ConditionType deprecated in CAPI v1beta2, will migrate when ready
 	AddonUpgradeProgressing clusterv1.ConditionType = "AddonUpgradeProgressing"
+	//nolint:staticcheck // ConditionType deprecated in CAPI v1beta2, will migrate when ready
 	AddonUpgradeFailing     clusterv1.ConditionType = "AddonUpgradeFailing"
+	//nolint:staticcheck // ConditionType deprecated in CAPI v1beta2, will migrate when ready
 	AddonUpgradeCompleted   clusterv1.ConditionType = "AddonUpgradeCompleted"
 
 	AddonUpgradeProgressingReason = "AddonUpgrading"

@@ -266,7 +266,9 @@ func (i *ManifestInstaller) waitForJob(ctx context.Context, job *batchv1.Job, st
 // parseTimeoutSeconds parses a timeout string like "300s" to seconds.
 func parseTimeoutSeconds(timeout string) int {
 	var seconds int
-	fmt.Sscanf(timeout, "%ds", &seconds)
+	if _, err := fmt.Sscanf(timeout, "%ds", &seconds); err != nil {
+		return 300
+	}
 	if seconds == 0 {
 		seconds = 300
 	}

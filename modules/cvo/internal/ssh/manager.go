@@ -63,7 +63,7 @@ func (m *SSHManager) Connect(host string, port int, creds Credentials) (*SSHConn
 	m.mu.RLock()
 	if conn, exists := m.connections[key]; exists {
 		if time.Since(conn.LastUsed) < m.idleTimeout {
-			if _, _, err := conn.Client.Conn.SendRequest("keepalive@google.com", true, nil); err == nil {
+			if _, _, err := conn.Client.SendRequest("keepalive@google.com", true, nil); err == nil {
 				conn.LastUsed = time.Now()
 				m.mu.RUnlock()
 				return conn, nil
@@ -111,7 +111,7 @@ func (m *SSHManager) Close(conn *SSHConnection) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	conn.Client.Close()
+	_ = conn.Client.Close()
 	delete(m.connections, key)
 }
 
@@ -122,7 +122,7 @@ func (m *SSHManager) Cleanup() {
 
 	for key, conn := range m.connections {
 		if time.Since(conn.LastUsed) > m.idleTimeout {
-			conn.Client.Close()
+			_ = conn.Client.Close()
 			delete(m.connections, key)
 		}
 	}

@@ -50,7 +50,7 @@ func EncryptFile(inputFile, outputFile string) error {
 	if err != nil {
 		return fmt.Errorf("failed to create output file: %w", err)
 	}
-	defer output.Close()
+	defer func() { _ = output.Close() }()
 	
 	// Write key first, then ciphertext
 	if _, err := output.Write(key); err != nil {

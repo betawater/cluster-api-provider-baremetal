@@ -42,7 +42,7 @@ func (c *SSHConnection) ExecuteCommand(ctx context.Context, command string) (*Co
 	if err != nil {
 		return nil, fmt.Errorf("failed to create SSH session: %w", err)
 	}
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 
 	var stdout, stderr bytes.Buffer
 	session.Stdout = &stdout
@@ -70,7 +70,7 @@ func (c *SSHConnection) ExecuteCommand(ctx context.Context, command string) (*Co
 			ExitCode: exitCode,
 		}, nil
 	case <-ctx.Done():
-		session.Signal(ssh.SIGKILL)
+		_ = session.Signal(ssh.SIGKILL)
 		return nil, ctx.Err()
 	}
 }
