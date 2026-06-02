@@ -560,6 +560,7 @@ func (r *ClusterVersionReconciler) updateAddonStatus(cv *cfov1.ClusterVersion, r
 	cv.Status.AddonStatus = addonStatus
 }
 
+//nolint:staticcheck // ConditionType deprecated in CAPI v1beta2, will migrate when ready
 func setCVCondition(cv *cfov1.ClusterVersion, condType clusterv1.ConditionType, status metav1.ConditionStatus, reason, message string) {
 	condition := metav1.Condition{
 		Type:               string(condType),
