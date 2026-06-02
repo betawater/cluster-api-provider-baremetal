@@ -1,6 +1,6 @@
 module github.com/BetaWater/cluster-api-provider-baremetal/modules/capbm
 
-go 1.25.0
+go 1.24
 
 require (
 	github.com/BetaWater/cluster-api-provider-baremetal/modules/cvo v0.0.0
