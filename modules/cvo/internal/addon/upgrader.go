@@ -275,7 +275,7 @@ func (u *Upgrader) recreateUpgrade(ctx context.Context, addon *cfov1.ClusterAddo
 						{
 							Name:    "delete",
 							Image:   "bitnami/kubectl:latest",
-							Command: []string{"sh", "-c", fmt.Sprintf("kubectl delete -f /manifests/addon.yaml --ignore-not-found")},
+							Command: []string{"sh", "-c", "kubectl delete -f /manifests/addon.yaml --ignore-not-found"},
 						},
 					},
 					RestartPolicy: corev1.RestartPolicyNever,

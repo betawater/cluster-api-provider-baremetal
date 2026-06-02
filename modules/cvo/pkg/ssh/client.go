@@ -70,7 +70,7 @@ func (c *SSHConnection) ExecuteCommand(ctx context.Context, command string) (*Co
 			ExitCode: exitCode,
 		}, nil
 	case <-ctx.Done():
-		session.Signal(ssh.SIGKILL)
+		_ = session.Signal(ssh.SIGKILL)
 		return nil, ctx.Err()
 	}
 }
@@ -87,6 +87,6 @@ func (c *SSHConnection) IsAlive() bool {
 	if c.Client == nil {
 		return false
 	}
-	_, _, err := c.Client.Conn.SendRequest("keepalive@google.com", true, nil)
+	_, _, err := c.Client.SendRequest("keepalive@google.com", true, nil)
 	return err == nil
 }

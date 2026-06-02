@@ -87,6 +87,6 @@ func (c *SSHConnection) IsAlive() bool {
 	if c.Client == nil {
 		return false
 	}
-	_, _, err := c.Client.Conn.SendRequest("keepalive@google.com", true, nil)
+	_, _, err := c.Client.SendRequest("keepalive@google.com", true, nil)
 	return err == nil
 }

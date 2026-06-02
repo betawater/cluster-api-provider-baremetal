@@ -107,16 +107,6 @@ func DiffComponents(current, target *cfov1.ReleaseImage) *ComponentDiff {
 	return diff
 }
 
-// findAddonByName finds an addon by name in the ReleaseImage.
-func findAddonByName(ri *cfov1.ReleaseImage, name string) *cfov1.AddonDefinition {
-	for i := range ri.Spec.Addons {
-		if ri.Spec.Addons[i].Name == name {
-			return &ri.Spec.Addons[i]
-		}
-	}
-	return nil
-}
-
 // buildAddonMap builds a map of addon name to addon definition.
 func buildAddonMap(ri *cfov1.ReleaseImage) map[string]*cfov1.AddonDefinition {
 	result := make(map[string]*cfov1.AddonDefinition)
@@ -124,23 +114,6 @@ func buildAddonMap(ri *cfov1.ReleaseImage) map[string]*cfov1.AddonDefinition {
 		result[ri.Spec.Addons[i].Name] = &ri.Spec.Addons[i]
 	}
 	return result
-}
-
-// getComponentVersionByName returns the version of a named component from a ReleaseImage.
-func getComponentVersionByName(ri *cfov1.ReleaseImage, name string) string {
-	switch name {
-	case "containerd":
-		return ri.Spec.Components.Containerd.Version
-	case "kubernetes":
-		return ri.Spec.Components.Kubernetes.Version
-	default:
-		// Check all addons
-		addonMap := buildAddonMap(ri)
-		if addon, exists := addonMap[name]; exists {
-			return addon.Version
-		}
-		return ""
-	}
 }
 
 // NeedsUpgrade returns true if any component needs to be upgraded.

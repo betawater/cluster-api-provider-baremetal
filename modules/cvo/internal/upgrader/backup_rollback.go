@@ -381,15 +381,3 @@ func (e *BackupRollbackExecutor) executeHookOnNode(ctx context.Context, node *co
 	_ = phase
 	return nil
 }
-
-// getSSHConnection gets SSH connection to a node.
-func (e *BackupRollbackExecutor) getSSHConnection(ctx context.Context, node *corev1.Node) (*capbmssh.SSHConnection, error) {
-	// In production, this would:
-	// 1. Get node IP
-	// 2. Get SSH credentials from secret
-	// 3. Create SSH connection
-	// For now, this is a placeholder.
-	_ = ctx
-	_ = node
-	return nil, fmt.Errorf("not implemented")
-}

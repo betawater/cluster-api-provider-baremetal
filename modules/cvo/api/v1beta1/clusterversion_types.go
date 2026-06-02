@@ -27,10 +27,15 @@ import (
 const (
 	ClusterVersionFinalizer = "clusterversion.cvo.capbm.io"
 
+	//nolint:staticcheck // ConditionType deprecated in CAPI v1beta2, will migrate when ready
 	UpgradeAvailable   clusterv1.ConditionType = "Available"
+	//nolint:staticcheck // ConditionType deprecated in CAPI v1beta2, will migrate when ready
 	UpgradeProgressing clusterv1.ConditionType = "Progressing"
+	//nolint:staticcheck // ConditionType deprecated in CAPI v1beta2, will migrate when ready
 	UpgradeFailing     clusterv1.ConditionType = "Failing"
+	//nolint:staticcheck // ConditionType deprecated in CAPI v1beta2, will migrate when ready
 	UpgradeUpgradeable clusterv1.ConditionType = "Upgradeable"
+	//nolint:staticcheck // ConditionType deprecated in CAPI v1beta2, will migrate when ready
 	UpgradeRetrieved   clusterv1.ConditionType = "RetrievedUpdates"
 
 	UpgradeAvailableReason   = "AsExpected"

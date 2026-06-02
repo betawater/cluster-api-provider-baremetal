@@ -207,6 +207,7 @@ func (e *GraphExecutor) applyManifests(ctx context.Context, manifests []string, 
 			return fmt.Errorf("failed to decode manifest %s: %w", path, err)
 		}
 
+		//nolint:staticcheck // client.Apply deprecated, will migrate to Server-Side Apply when ready
 		if err := e.client.Patch(ctx, obj, client.Apply, client.ForceOwnership, client.FieldOwner("capbm-upgrader")); err != nil {
 			return fmt.Errorf("failed to apply manifest %s: %w", path, err)
 		}

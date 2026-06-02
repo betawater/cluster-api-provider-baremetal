@@ -249,7 +249,7 @@ func (r *ClusterVersionReconciler) validateUpgrade(ctx context.Context, cv *cfov
 func (r *ClusterVersionReconciler) preUpgradeHealthCheck(ctx context.Context, cv *cfov1.ClusterVersion) error {
 	// Check that all nodes are Ready before starting upgrade
 	nodeList := &corev1.NodeList{}
-	if err := r.Client.List(ctx, nodeList); err != nil {
+	if err := r.List(ctx, nodeList); err != nil {
 		return fmt.Errorf("failed to list nodes for health check: %w", err)
 	}
 	for _, node := range nodeList.Items {
@@ -427,7 +427,7 @@ func (r *ClusterVersionReconciler) executeAddonUpgrades(ctx context.Context, cv 
 					Namespace:       addonDef.Namespace,
 				},
 			}
-			if err := r.Client.Create(ctx, clusterAddon); err != nil {
+			if err := r.Create(ctx, clusterAddon); err != nil {
 				return fmt.Errorf("failed to create addon %s: %w", addonName, err)
 			}
 		} else if err != nil {
