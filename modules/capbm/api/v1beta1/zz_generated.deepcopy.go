@@ -21,10 +21,10 @@ limitations under the License.
 package v1beta1
 
 import (
-	commonv1beta1 "github.com/BetaWater/cluster-api-provider-baremetal/modules/cvo/api/v1beta1"
+	apiv1beta1 "github.com/BetaWater/cluster-api-provider-baremetal/modules/cvo/api/v1beta1"
 	"k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
+	runtime "k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/cluster-api/api/core/v1beta2"
 )
 
@@ -33,7 +33,7 @@ func (in *AirGapConfig) DeepCopyInto(out *AirGapConfig) {
 	*out = *in
 	if in.HTTPServerConfig != nil {
 		in, out := &in.HTTPServerConfig, &out.HTTPServerConfig
-		*out = new(commonv1beta1.HTTPServerConfig)
+		*out = new(apiv1beta1.HTTPServerConfig)
 		**out = **in
 	}
 	if in.PreloadImages != nil {
@@ -653,7 +653,7 @@ func (in *CNIAirGapConfig) DeepCopyInto(out *CNIAirGapConfig) {
 	*out = *in
 	if in.HTTPServerConfig != nil {
 		in, out := &in.HTTPServerConfig, &out.HTTPServerConfig
-		*out = new(commonv1beta1.HTTPServerConfig)
+		*out = new(apiv1beta1.HTTPServerConfig)
 		**out = **in
 	}
 }
@@ -728,7 +728,7 @@ func (in *CSIAirGapConfig) DeepCopyInto(out *CSIAirGapConfig) {
 	*out = *in
 	if in.HTTPServerConfig != nil {
 		in, out := &in.HTTPServerConfig, &out.HTTPServerConfig
-		*out = new(commonv1beta1.HTTPServerConfig)
+		*out = new(apiv1beta1.HTTPServerConfig)
 		**out = **in
 	}
 }
