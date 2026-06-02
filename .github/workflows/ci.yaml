@@ -62,5 +62,5 @@ jobs:
       - name: Run golangci-lint (capbm)
         uses: golangci/golangci-lint-action@v7
         with:
-          version: v2.1.6
+          version: latest
           working-directory: modules/capbm
