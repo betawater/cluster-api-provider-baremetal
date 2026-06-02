@@ -76,31 +76,44 @@ func (r *ClusterVersionReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	r.computeAvailableUpdates(ctx, cv)
 
-	if cv.Spec.DesiredUpdate == nil || cv.Status.ActualVersion == cv.Spec.DesiredUpdate.Version {
+	if cv.Spec.DesiredUpdate == nil {
 		setCVCondition(cv, cfov1.UpgradeAvailable, metav1.ConditionTrue, cfov1.UpgradeAvailableReason, "")
 		setCVCondition(cv, cfov1.UpgradeProgressing, metav1.ConditionFalse, cfov1.UpgradeProgressingReason, "")
 		return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
 	}
 
-	if err := r.validateUpgrade(ctx, cv); err != nil {
-		setCVCondition(cv, cfov1.UpgradeFailing, metav1.ConditionTrue, cfov1.ValidationFailedReason, err.Error())
-		setCVCondition(cv, cfov1.UpgradeUpgradeable, metav1.ConditionFalse, cfov1.ValidationFailedReason, err.Error())
-		return ctrl.Result{RequeueAfter: 60 * time.Second}, nil
-	}
-
-	// Pre-upgrade health check
-	if err := r.preUpgradeHealthCheck(ctx, cv); err != nil {
-		setCVCondition(cv, cfov1.UpgradeFailing, metav1.ConditionTrue, "PreUpgradeHealthCheckFailed", err.Error())
-		setCVCondition(cv, cfov1.UpgradeUpgradeable, metav1.ConditionFalse, "PreUpgradeHealthCheckFailed", err.Error())
-		return ctrl.Result{RequeueAfter: 60 * time.Second}, nil
-	}
-
-	setCVCondition(cv, cfov1.UpgradeUpgradeable, metav1.ConditionTrue, cfov1.UpgradeUpgradeableReason, "All preconditions passed")
+	// Check if we need any upgrades (K8S or Addon)
+	needsK8SUpgrade := cv.Status.ActualVersion != cv.Spec.DesiredUpdate.Version
 
 	releaseImage, err := r.fetchReleaseImage(ctx, cv)
 	if err != nil {
 		setCVCondition(cv, cfov1.UpgradeFailing, metav1.ConditionTrue, cfov1.PullFailedReason, err.Error())
 		return ctrl.Result{RequeueAfter: 60 * time.Second}, nil
+	}
+
+	needsAddonUpgrade := r.needsAddonUpgrade(ctx, cv, releaseImage)
+
+	if !needsK8SUpgrade && !needsAddonUpgrade {
+		setCVCondition(cv, cfov1.UpgradeAvailable, metav1.ConditionTrue, cfov1.UpgradeAvailableReason, "")
+		setCVCondition(cv, cfov1.UpgradeProgressing, metav1.ConditionFalse, cfov1.UpgradeProgressingReason, "")
+		return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
+	}
+
+	if needsK8SUpgrade {
+		if err := r.validateUpgrade(ctx, cv); err != nil {
+			setCVCondition(cv, cfov1.UpgradeFailing, metav1.ConditionTrue, cfov1.ValidationFailedReason, err.Error())
+			setCVCondition(cv, cfov1.UpgradeUpgradeable, metav1.ConditionFalse, cfov1.ValidationFailedReason, err.Error())
+			return ctrl.Result{RequeueAfter: 60 * time.Second}, nil
+		}
+
+		// Pre-upgrade health check
+		if err := r.preUpgradeHealthCheck(ctx, cv); err != nil {
+			setCVCondition(cv, cfov1.UpgradeFailing, metav1.ConditionTrue, "PreUpgradeHealthCheckFailed", err.Error())
+			setCVCondition(cv, cfov1.UpgradeUpgradeable, metav1.ConditionFalse, "PreUpgradeHealthCheckFailed", err.Error())
+			return ctrl.Result{RequeueAfter: 60 * time.Second}, nil
+		}
+
+		setCVCondition(cv, cfov1.UpgradeUpgradeable, metav1.ConditionTrue, cfov1.UpgradeUpgradeableReason, "All preconditions passed")
 	}
 
 	cv.Status.History = prependHistory(cv.Status.History, cfov1.UpdateHistory{
@@ -111,9 +124,11 @@ func (r *ClusterVersionReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		StartedTime: metav1.Now(),
 	})
 
-	setCVCondition(cv, cfov1.UpgradeProgressing, metav1.ConditionTrue, "Upgrading", fmt.Sprintf("Upgrading to %s", cv.Spec.DesiredUpdate.Version))
+	if needsK8SUpgrade {
+		setCVCondition(cv, cfov1.UpgradeProgressing, metav1.ConditionTrue, "Upgrading", fmt.Sprintf("Upgrading to %s", cv.Spec.DesiredUpdate.Version))
+	}
 
-	if err := r.executeUpgrade(ctx, cv, releaseImage); err != nil {
+	if err := r.executeUpgrade(ctx, cv, releaseImage, needsK8SUpgrade); err != nil {
 		setCVCondition(cv, cfov1.UpgradeFailing, metav1.ConditionTrue, cfov1.UpgradeFailedReason, err.Error())
 		return ctrl.Result{RequeueAfter: 60 * time.Second}, nil
 	}
@@ -307,22 +322,32 @@ func (r *ClusterVersionReconciler) fetchReleaseImage(ctx context.Context, cv *cf
 	return releaseImage, nil
 }
 
-func (r *ClusterVersionReconciler) executeUpgrade(ctx context.Context, cv *cfov1.ClusterVersion, releaseImage *cfov1.ReleaseImage) error {
+func (r *ClusterVersionReconciler) executeUpgrade(ctx context.Context, cv *cfov1.ClusterVersion, releaseImage *cfov1.ReleaseImage, needsK8SUpgrade bool) error {
 	if r.Puller == nil {
 		return nil
 	}
 
-	// Initialize ComponentStatus from ReleaseImage components
-	cv.Status.ComponentStatus = r.initComponentStatus(releaseImage)
+	// Phase 1: K8S upgrade (only when K8S version changes)
+	if needsK8SUpgrade {
+		// Initialize ComponentStatus from ReleaseImage components
+		cv.Status.ComponentStatus = r.initComponentStatus(releaseImage)
 
-	// Execute addon upgrades first (including CAPI Core)
+		// Execute component upgrade graph
+		executor := upgrader.NewGraphExecutor(r.Client, r.Puller, nil)
+		if err := executor.ExecuteUpgradeGraph(ctx, cv, releaseImage); err != nil {
+			return fmt.Errorf("k8s upgrade failed: %w", err)
+		}
+	}
+
+	// Phase 2: Addon upgrade (always execute)
 	if err := r.executeAddonUpgrades(ctx, cv, releaseImage); err != nil {
 		return fmt.Errorf("addon upgrades failed: %w", err)
 	}
 
-	// Execute component upgrade graph
-	executor := upgrader.NewGraphExecutor(r.Client, r.Puller, nil)
-	return executor.ExecuteUpgradeGraph(ctx, cv, releaseImage)
+	// Update addon status
+	r.updateAddonStatus(cv, releaseImage)
+
+	return nil
 }
 
 func (r *ClusterVersionReconciler) initComponentStatus(releaseImage *cfov1.ReleaseImage) []cfov1.ComponentStatus {
@@ -470,6 +495,69 @@ func findAddonDefByName(releaseImage *cfov1.ReleaseImage, name string) *cfov1.Ad
 		}
 	}
 	return nil
+}
+
+// needsAddonUpgrade checks if any addon needs upgrade by comparing current ClusterAddon versions
+// with target ReleaseImage addon versions.
+func (r *ClusterVersionReconciler) needsAddonUpgrade(ctx context.Context, cv *cfov1.ClusterVersion, releaseImage *cfov1.ReleaseImage) bool {
+	for _, addonDef := range releaseImage.Spec.Addons {
+		if addonDef.Version == "" {
+			continue
+		}
+
+		clusterAddon := &cfov1.ClusterAddon{}
+		err := r.Get(ctx, types.NamespacedName{Name: addonDef.Name, Namespace: cv.Namespace}, clusterAddon)
+
+		if apierrors.IsNotFound(err) {
+			// New addon, needs installation
+			return true
+		}
+
+		if err != nil {
+			continue
+		}
+
+		// Version mismatch, needs upgrade
+		if clusterAddon.Status.Version != addonDef.Version {
+			return true
+		}
+	}
+	return false
+}
+
+// updateAddonStatus updates the ClusterVersion status with current addon versions.
+func (r *ClusterVersionReconciler) updateAddonStatus(cv *cfov1.ClusterVersion, releaseImage *cfov1.ReleaseImage) {
+	var addonStatus []cfov1.AddonVersionStatus
+
+	for _, addonDef := range releaseImage.Spec.Addons {
+		if addonDef.Version == "" {
+			continue
+		}
+
+		status := cfov1.AddonVersionStatus{
+			Name:          addonDef.Name,
+			TargetVersion: addonDef.Version,
+			Phase:         cfov1.AddonPhaseInstalled,
+		}
+
+		clusterAddon := &cfov1.ClusterAddon{}
+		err := r.Get(context.Background(), types.NamespacedName{Name: addonDef.Name, Namespace: cv.Namespace}, clusterAddon)
+
+		if apierrors.IsNotFound(err) {
+			status.Phase = cfov1.AddonPhasePending
+			status.Version = ""
+		} else if err == nil {
+			status.Version = clusterAddon.Status.Version
+			if clusterAddon.Status.Version != addonDef.Version {
+				status.Phase = cfov1.AddonPhaseUpgrading
+			}
+		}
+
+		status.LastTransitionTime = metav1.Now()
+		addonStatus = append(addonStatus, status)
+	}
+
+	cv.Status.AddonStatus = addonStatus
 }
 
 func setCVCondition(cv *cfov1.ClusterVersion, condType clusterv1.ConditionType, status metav1.ConditionStatus, reason, message string) {

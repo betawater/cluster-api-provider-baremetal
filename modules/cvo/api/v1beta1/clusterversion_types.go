@@ -41,6 +41,15 @@ const (
 	ValidationFailedReason   = "ValidationFailed"
 	PullFailedReason         = "PullFailed"
 	UpgradeFailedReason      = "UpgradeFailed"
+
+	// Addon upgrade conditions
+	AddonUpgradeProgressing clusterv1.ConditionType = "AddonUpgradeProgressing"
+	AddonUpgradeFailing     clusterv1.ConditionType = "AddonUpgradeFailing"
+	AddonUpgradeCompleted   clusterv1.ConditionType = "AddonUpgradeCompleted"
+
+	AddonUpgradeProgressingReason = "AddonUpgrading"
+	AddonUpgradeFailingReason     = "AddonUpgradeFailed"
+	AddonUpgradeCompletedReason   = "AddonUpgradeComplete"
 )
 
 // +kubebuilder:object:root=true
@@ -71,6 +80,31 @@ type ClusterVersionStatus struct {
 	Conditions         []metav1.Condition       `json:"conditions,omitempty"`
 	AvailableUpdates   []Release       `json:"availableUpdates,omitempty"`
 	ComponentStatus    []ComponentStatus `json:"componentStatus,omitempty"`
+
+	// AddonStatus tracks addon versions after upgrade.
+	// +optional
+	AddonStatus []AddonVersionStatus `json:"addonStatus,omitempty"`
+}
+
+// AddonVersionStatus tracks the status of a single addon.
+type AddonVersionStatus struct {
+	// Name is the addon name.
+	Name string `json:"name"`
+
+	// Version is the currently installed version.
+	Version string `json:"version"`
+
+	// TargetVersion is the desired version from the target ReleaseImage.
+	// +optional
+	TargetVersion string `json:"targetVersion,omitempty"`
+
+	// Phase is the current upgrade phase.
+	// +optional
+	Phase AddonPhase `json:"phase,omitempty"`
+
+	// LastTransitionTime is the last time the status changed.
+	// +optional
+	LastTransitionTime metav1.Time `json:"lastTransitionTime,omitempty"`
 }
 
 // +kubebuilder:object:root=true
