@@ -1,5 +1,5 @@
 # Build the manager binary
-FROM golang:1.25 AS builder
+FROM golang:1.26 AS builder
 
 ARG TARGETOS
 ARG TARGETARCH
@@ -9,6 +9,9 @@ WORKDIR /workspace
 # Copy the go modules
 COPY modules/cvo/go.mod modules/cvo/go.mod
 COPY modules/cvo/go.sum modules/cvo/go.sum
+
+# Download dependencies
+RUN cd modules/cvo && go mod download
 
 # Copy the common types (included in cvo module)
 COPY modules/cvo/api/ modules/cvo/api/
