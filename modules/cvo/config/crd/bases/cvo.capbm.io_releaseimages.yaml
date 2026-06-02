@@ -1,0 +1,1487 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: releaseimages.cvo.capbm.io
+spec:
+  group: cvo.capbm.io
+  names:
+    kind: ReleaseImage
+    listKind: ReleaseImageList
+    plural: releaseimages
+    singular: releaseimage
+  scope: Namespaced
+  versions:
+  - name: v1beta1
+    schema:
+      openAPIV3Schema:
+        description: ReleaseImage is the Schema for the releaseimages API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ReleaseImageSpec defines the desired state of ReleaseImage.
+            properties:
+              addons:
+                items:
+                  description: AddonDefinition defines an addon included in a release.
+                  properties:
+                    contentPath:
+                      description: |-
+                        ContentPath is the path to the addon content in the release image.
+                        For manifest type: path to YAML file
+                        For helm type: path to chart tarball
+                      type: string
+                    defaultValues:
+                      additionalProperties:
+                        x-kubernetes-preserve-unknown-fields: true
+                      description: |-
+                        DefaultValues are the default values for the addon.
+                        For Helm: helm values
+                        For Manifest: variable substitutions
+                      type: object
+                    dependencies:
+                      description: Dependencies lists other addons that must be installed
+                        first.
+                      items:
+                        type: string
+                      type: array
+                    healthCheck:
+                      description: HealthCheck defines health check configuration
+                        (deprecated, use Upgrade.HealthCheck).
+                      properties:
+                        name:
+                          description: Name is the resource name to check.
+                          type: string
+                        namespace:
+                          description: Namespace is the namespace to check.
+                          type: string
+                        selector:
+                          description: Selector is the label selector for resources
+                            to check.
+                          properties:
+                            matchExpressions:
+                              description: matchExpressions is a list of label selector
+                                requirements. The requirements are ANDed.
+                              items:
+                                description: |-
+                                  A label selector requirement is a selector that contains values, a key, and an operator that
+                                  relates the key and values.
+                                properties:
+                                  key:
+                                    description: key is the label key that the selector
+                                      applies to.
+                                    type: string
+                                  operator:
+                                    description: |-
+                                      operator represents a key's relationship to a set of values.
+                                      Valid operators are In, NotIn, Exists and DoesNotExist.
+                                    type: string
+                                  values:
+                                    description: |-
+                                      values is an array of string values. If the operator is In or NotIn,
+                                      the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                      the values array must be empty. This array is replaced during a strategic
+                                      merge patch.
+                                    items:
+                                      type: string
+                                    type: array
+                                    x-kubernetes-list-type: atomic
+                                required:
+                                - key
+                                - operator
+                                type: object
+                              type: array
+                              x-kubernetes-list-type: atomic
+                            matchLabels:
+                              additionalProperties:
+                                type: string
+                              description: |-
+                                matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                                map is equivalent to an element of matchExpressions, whose key field is "key", the
+                                operator is "In", and the values array contains only "value". The requirements are ANDed.
+                              type: object
+                          type: object
+                          x-kubernetes-map-type: atomic
+                        type:
+                          description: Type is the health check type.
+                          type: string
+                      required:
+                      - type
+                      type: object
+                    installStrategy:
+                      description: InstallStrategy defines installation behavior.
+                      properties:
+                        createNamespace:
+                          default: true
+                          description: CreateNamespace indicates whether to create
+                            the namespace if not exists.
+                          type: boolean
+                        retryCount:
+                          default: 3
+                          description: RetryCount is the number of retries on failure.
+                          type: integer
+                        timeout:
+                          description: Timeout is the maximum time allowed for installation.
+                          type: string
+                        wait:
+                          default: true
+                          description: Wait indicates whether to wait for resources
+                            to be ready.
+                          type: boolean
+                      type: object
+                    name:
+                      description: Name is the addon name.
+                      type: string
+                    namespace:
+                      description: Namespace is the default namespace for the addon.
+                      type: string
+                    postHooks:
+                      description: PostHooks are scripts/commands to run after install/upgrade.
+                      items:
+                        description: AddonHook defines a pre/post hook for install/upgrade.
+                        properties:
+                          command:
+                            description: Command is the command to execute.
+                            type: string
+                          name:
+                            description: Name is the hook name.
+                            type: string
+                          onFailure:
+                            default: Abort
+                            description: 'OnFailure indicates behavior on hook failure:
+                              Continue, Abort, or Ignore.'
+                            enum:
+                            - Continue
+                            - Abort
+                            - Ignore
+                            type: string
+                          timeout:
+                            description: Timeout is the maximum time allowed for the
+                              hook.
+                            type: string
+                        required:
+                        - command
+                        - name
+                        type: object
+                      type: array
+                    preHooks:
+                      description: PreHooks are scripts/commands to run before install/upgrade.
+                      items:
+                        description: AddonHook defines a pre/post hook for install/upgrade.
+                        properties:
+                          command:
+                            description: Command is the command to execute.
+                            type: string
+                          name:
+                            description: Name is the hook name.
+                            type: string
+                          onFailure:
+                            default: Abort
+                            description: 'OnFailure indicates behavior on hook failure:
+                              Continue, Abort, or Ignore.'
+                            enum:
+                            - Continue
+                            - Abort
+                            - Ignore
+                            type: string
+                          timeout:
+                            description: Timeout is the maximum time allowed for the
+                              hook.
+                            type: string
+                        required:
+                        - command
+                        - name
+                        type: object
+                      type: array
+                    type:
+                      description: Type is the addon type (manifest/helm).
+                      type: string
+                    upgrade:
+                      description: Upgrade defines component-level upgrade configuration
+                        (high cohesion).
+                      properties:
+                        backup:
+                          description: Backup configuration for this component.
+                          properties:
+                            config:
+                              description: Config lists the configuration items to
+                                backup.
+                              items:
+                                description: BackupItem defines a single backup item.
+                                properties:
+                                  path:
+                                    description: Path is the file or directory path
+                                      to backup.
+                                    type: string
+                                  type:
+                                    description: 'Type is the backup item type: file
+                                      or directory.'
+                                    enum:
+                                    - file
+                                    - directory
+                                    type: string
+                                required:
+                                - path
+                                - type
+                                type: object
+                              type: array
+                            enabled:
+                              default: true
+                              description: Enabled indicates whether backup is enabled
+                                for this component.
+                              type: boolean
+                            etcdSnapshot:
+                              description: EtcdSnapshot indicates whether etcd snapshot
+                                is required (for control-plane components).
+                              type: boolean
+                          type: object
+                        healthCheck:
+                          description: HealthCheck configuration after upgrade.
+                          properties:
+                            command:
+                              description: Command is the health check command to
+                                execute.
+                              type: string
+                            retries:
+                              default: 3
+                              description: Retries is the number of retries before
+                                considering health check failed.
+                              type: integer
+                            timeout:
+                              description: Timeout is the maximum time allowed for
+                                health check.
+                              type: string
+                          required:
+                          - command
+                          type: object
+                        rollback:
+                          description: Rollback configuration for this component.
+                          properties:
+                            script:
+                              description: Script is the path to the rollback script
+                                (relative to release image scripts directory).
+                              type: string
+                            timeout:
+                              description: Timeout is the maximum time allowed for
+                                rollback.
+                              type: string
+                          required:
+                          - script
+                          type: object
+                      type: object
+                    upgradeStrategy:
+                      description: UpgradeStrategy defines upgrade behavior.
+                      properties:
+                        force:
+                          description: Force indicates whether to force upgrade even
+                            if version path is not recommended.
+                          type: boolean
+                        maxUnavailable:
+                          default: 1
+                          description: MaxUnavailable is the maximum number of pods
+                            that can be unavailable during upgrade.
+                          type: integer
+                        retryCount:
+                          default: 3
+                          description: RetryCount is the number of retries on failure.
+                          type: integer
+                        rollingUpdate:
+                          description: RollingUpdate defines rolling update configuration.
+                          properties:
+                            maxSurge:
+                              default: 1
+                              description: MaxSurge is the maximum number of pods
+                                that can be created above the desired count.
+                              type: integer
+                            partition:
+                              description: Partition indicates the ordinal at which
+                                to start the rolling update.
+                              type: integer
+                          type: object
+                        timeout:
+                          description: Timeout is the maximum time allowed for upgrade.
+                          type: string
+                        type:
+                          default: Rolling
+                          description: 'Type is the upgrade type: Rolling, Recreate,
+                            or BlueGreen.'
+                          enum:
+                          - Rolling
+                          - Recreate
+                          - BlueGreen
+                          type: string
+                      required:
+                      - type
+                      type: object
+                    variables:
+                      description: Variables defines the variables supported by this
+                        addon.
+                      items:
+                        description: AddonVariable defines a variable that can be
+                          customized.
+                        properties:
+                          default:
+                            description: Default is the default value.
+                            x-kubernetes-preserve-unknown-fields: true
+                          description:
+                            description: Description is the variable description.
+                            type: string
+                          enum:
+                            description: Enum lists allowed values.
+                            items:
+                              x-kubernetes-preserve-unknown-fields: true
+                            type: array
+                          name:
+                            description: Name is the variable name.
+                            type: string
+                          path:
+                            description: |-
+                              Path is the JSON path in the manifest where this variable is used.
+                              For Helm: not needed (uses values.yaml)
+                              For Manifest: e.g., ".spec.replicas" or ".metadata.namespace"
+                            type: string
+                          required:
+                            description: Required indicates if the variable is required.
+                            type: boolean
+                          type:
+                            description: Type is the variable type (string/number/boolean/object).
+                            type: string
+                        required:
+                        - name
+                        - type
+                        type: object
+                      type: array
+                    version:
+                      description: Version is the addon version.
+                      type: string
+                  required:
+                  - contentPath
+                  - name
+                  - type
+                  - version
+                  type: object
+                type: array
+              channels:
+                items:
+                  type: string
+                type: array
+              components:
+                description: |-
+                  ReleaseComponentVersions defines node-level binary component versions.
+                  These are installed directly on nodes via SSH.
+                properties:
+                  cniPlugins:
+                    description: BinaryComponent defines a binary component with multi-arch
+                      support.
+                    properties:
+                      architectures:
+                        items:
+                          type: string
+                        type: array
+                      files:
+                        description: BinaryFiles defines binary component file names.
+                        properties:
+                          archive:
+                            type: string
+                        required:
+                        - archive
+                        type: object
+                      installStrategy:
+                        description: InstallStrategy defines installation behavior
+                          for binary components.
+                        properties:
+                          method:
+                            description: 'Method is the installation method: package,
+                              archive, or manual.'
+                            enum:
+                            - package
+                            - archive
+                            - manual
+                            type: string
+                          retryCount:
+                            default: 3
+                            description: RetryCount is the number of retries on failure.
+                            type: integer
+                          serviceName:
+                            description: ServiceName is the service name to restart
+                              after installation.
+                            type: string
+                          timeout:
+                            description: Timeout is the maximum time allowed for installation.
+                            type: string
+                        type: object
+                      path:
+                        type: string
+                      postHooks:
+                        description: PostHooks are scripts/commands to run after install/upgrade.
+                        items:
+                          description: AddonHook defines a pre/post hook for install/upgrade.
+                          properties:
+                            command:
+                              description: Command is the command to execute.
+                              type: string
+                            name:
+                              description: Name is the hook name.
+                              type: string
+                            onFailure:
+                              default: Abort
+                              description: 'OnFailure indicates behavior on hook failure:
+                                Continue, Abort, or Ignore.'
+                              enum:
+                              - Continue
+                              - Abort
+                              - Ignore
+                              type: string
+                            timeout:
+                              description: Timeout is the maximum time allowed for
+                                the hook.
+                              type: string
+                          required:
+                          - command
+                          - name
+                          type: object
+                        type: array
+                      preHooks:
+                        description: PreHooks are scripts/commands to run before install/upgrade.
+                        items:
+                          description: AddonHook defines a pre/post hook for install/upgrade.
+                          properties:
+                            command:
+                              description: Command is the command to execute.
+                              type: string
+                            name:
+                              description: Name is the hook name.
+                              type: string
+                            onFailure:
+                              default: Abort
+                              description: 'OnFailure indicates behavior on hook failure:
+                                Continue, Abort, or Ignore.'
+                              enum:
+                              - Continue
+                              - Abort
+                              - Ignore
+                              type: string
+                            timeout:
+                              description: Timeout is the maximum time allowed for
+                                the hook.
+                              type: string
+                          required:
+                          - command
+                          - name
+                          type: object
+                        type: array
+                      type:
+                        description: ComponentType represents the installation type
+                          of a component.
+                        type: string
+                      upgrade:
+                        description: Upgrade defines component-level upgrade configuration
+                          (high cohesion).
+                        properties:
+                          backup:
+                            description: Backup configuration for this component.
+                            properties:
+                              config:
+                                description: Config lists the configuration items
+                                  to backup.
+                                items:
+                                  description: BackupItem defines a single backup
+                                    item.
+                                  properties:
+                                    path:
+                                      description: Path is the file or directory path
+                                        to backup.
+                                      type: string
+                                    type:
+                                      description: 'Type is the backup item type:
+                                        file or directory.'
+                                      enum:
+                                      - file
+                                      - directory
+                                      type: string
+                                  required:
+                                  - path
+                                  - type
+                                  type: object
+                                type: array
+                              enabled:
+                                default: true
+                                description: Enabled indicates whether backup is enabled
+                                  for this component.
+                                type: boolean
+                              etcdSnapshot:
+                                description: EtcdSnapshot indicates whether etcd snapshot
+                                  is required (for control-plane components).
+                                type: boolean
+                            type: object
+                          healthCheck:
+                            description: HealthCheck configuration after upgrade.
+                            properties:
+                              command:
+                                description: Command is the health check command to
+                                  execute.
+                                type: string
+                              retries:
+                                default: 3
+                                description: Retries is the number of retries before
+                                  considering health check failed.
+                                type: integer
+                              timeout:
+                                description: Timeout is the maximum time allowed for
+                                  health check.
+                                type: string
+                            required:
+                            - command
+                            type: object
+                          rollback:
+                            description: Rollback configuration for this component.
+                            properties:
+                              script:
+                                description: Script is the path to the rollback script
+                                  (relative to release image scripts directory).
+                                type: string
+                              timeout:
+                                description: Timeout is the maximum time allowed for
+                                  rollback.
+                                type: string
+                            required:
+                            - script
+                            type: object
+                        type: object
+                      upgradeStrategy:
+                        description: UpgradeStrategy defines upgrade behavior for
+                          binary components.
+                        properties:
+                          drain:
+                            description: Drain indicates whether to drain node before
+                              upgrade.
+                            type: boolean
+                          force:
+                            description: Force indicates whether to force upgrade
+                              even if version path is not recommended.
+                            type: boolean
+                          maxConcurrent:
+                            default: 1
+                            description: MaxConcurrent is the maximum number of nodes
+                              to upgrade concurrently.
+                            type: integer
+                          retryCount:
+                            default: 3
+                            description: RetryCount is the number of retries on failure.
+                            type: integer
+                          timeout:
+                            description: Timeout is the maximum time allowed for upgrade
+                              per node.
+                            type: string
+                          type:
+                            default: Rolling
+                            description: 'Type is the upgrade type: Rolling, DrainAndUpgrade,
+                              or Parallel.'
+                            enum:
+                            - Rolling
+                            - DrainAndUpgrade
+                            - Parallel
+                            type: string
+                        required:
+                        - type
+                        type: object
+                      version:
+                        type: string
+                    required:
+                    - architectures
+                    - path
+                    - type
+                    - version
+                    type: object
+                  containerd:
+                    description: BinaryComponent defines a binary component with multi-arch
+                      support.
+                    properties:
+                      architectures:
+                        items:
+                          type: string
+                        type: array
+                      files:
+                        description: BinaryFiles defines binary component file names.
+                        properties:
+                          archive:
+                            type: string
+                        required:
+                        - archive
+                        type: object
+                      installStrategy:
+                        description: InstallStrategy defines installation behavior
+                          for binary components.
+                        properties:
+                          method:
+                            description: 'Method is the installation method: package,
+                              archive, or manual.'
+                            enum:
+                            - package
+                            - archive
+                            - manual
+                            type: string
+                          retryCount:
+                            default: 3
+                            description: RetryCount is the number of retries on failure.
+                            type: integer
+                          serviceName:
+                            description: ServiceName is the service name to restart
+                              after installation.
+                            type: string
+                          timeout:
+                            description: Timeout is the maximum time allowed for installation.
+                            type: string
+                        type: object
+                      path:
+                        type: string
+                      postHooks:
+                        description: PostHooks are scripts/commands to run after install/upgrade.
+                        items:
+                          description: AddonHook defines a pre/post hook for install/upgrade.
+                          properties:
+                            command:
+                              description: Command is the command to execute.
+                              type: string
+                            name:
+                              description: Name is the hook name.
+                              type: string
+                            onFailure:
+                              default: Abort
+                              description: 'OnFailure indicates behavior on hook failure:
+                                Continue, Abort, or Ignore.'
+                              enum:
+                              - Continue
+                              - Abort
+                              - Ignore
+                              type: string
+                            timeout:
+                              description: Timeout is the maximum time allowed for
+                                the hook.
+                              type: string
+                          required:
+                          - command
+                          - name
+                          type: object
+                        type: array
+                      preHooks:
+                        description: PreHooks are scripts/commands to run before install/upgrade.
+                        items:
+                          description: AddonHook defines a pre/post hook for install/upgrade.
+                          properties:
+                            command:
+                              description: Command is the command to execute.
+                              type: string
+                            name:
+                              description: Name is the hook name.
+                              type: string
+                            onFailure:
+                              default: Abort
+                              description: 'OnFailure indicates behavior on hook failure:
+                                Continue, Abort, or Ignore.'
+                              enum:
+                              - Continue
+                              - Abort
+                              - Ignore
+                              type: string
+                            timeout:
+                              description: Timeout is the maximum time allowed for
+                                the hook.
+                              type: string
+                          required:
+                          - command
+                          - name
+                          type: object
+                        type: array
+                      type:
+                        description: ComponentType represents the installation type
+                          of a component.
+                        type: string
+                      upgrade:
+                        description: Upgrade defines component-level upgrade configuration
+                          (high cohesion).
+                        properties:
+                          backup:
+                            description: Backup configuration for this component.
+                            properties:
+                              config:
+                                description: Config lists the configuration items
+                                  to backup.
+                                items:
+                                  description: BackupItem defines a single backup
+                                    item.
+                                  properties:
+                                    path:
+                                      description: Path is the file or directory path
+                                        to backup.
+                                      type: string
+                                    type:
+                                      description: 'Type is the backup item type:
+                                        file or directory.'
+                                      enum:
+                                      - file
+                                      - directory
+                                      type: string
+                                  required:
+                                  - path
+                                  - type
+                                  type: object
+                                type: array
+                              enabled:
+                                default: true
+                                description: Enabled indicates whether backup is enabled
+                                  for this component.
+                                type: boolean
+                              etcdSnapshot:
+                                description: EtcdSnapshot indicates whether etcd snapshot
+                                  is required (for control-plane components).
+                                type: boolean
+                            type: object
+                          healthCheck:
+                            description: HealthCheck configuration after upgrade.
+                            properties:
+                              command:
+                                description: Command is the health check command to
+                                  execute.
+                                type: string
+                              retries:
+                                default: 3
+                                description: Retries is the number of retries before
+                                  considering health check failed.
+                                type: integer
+                              timeout:
+                                description: Timeout is the maximum time allowed for
+                                  health check.
+                                type: string
+                            required:
+                            - command
+                            type: object
+                          rollback:
+                            description: Rollback configuration for this component.
+                            properties:
+                              script:
+                                description: Script is the path to the rollback script
+                                  (relative to release image scripts directory).
+                                type: string
+                              timeout:
+                                description: Timeout is the maximum time allowed for
+                                  rollback.
+                                type: string
+                            required:
+                            - script
+                            type: object
+                        type: object
+                      upgradeStrategy:
+                        description: UpgradeStrategy defines upgrade behavior for
+                          binary components.
+                        properties:
+                          drain:
+                            description: Drain indicates whether to drain node before
+                              upgrade.
+                            type: boolean
+                          force:
+                            description: Force indicates whether to force upgrade
+                              even if version path is not recommended.
+                            type: boolean
+                          maxConcurrent:
+                            default: 1
+                            description: MaxConcurrent is the maximum number of nodes
+                              to upgrade concurrently.
+                            type: integer
+                          retryCount:
+                            default: 3
+                            description: RetryCount is the number of retries on failure.
+                            type: integer
+                          timeout:
+                            description: Timeout is the maximum time allowed for upgrade
+                              per node.
+                            type: string
+                          type:
+                            default: Rolling
+                            description: 'Type is the upgrade type: Rolling, DrainAndUpgrade,
+                              or Parallel.'
+                            enum:
+                            - Rolling
+                            - DrainAndUpgrade
+                            - Parallel
+                            type: string
+                        required:
+                        - type
+                        type: object
+                      version:
+                        type: string
+                    required:
+                    - architectures
+                    - path
+                    - type
+                    - version
+                    type: object
+                  helm:
+                    description: BinaryComponent defines a binary component with multi-arch
+                      support.
+                    properties:
+                      architectures:
+                        items:
+                          type: string
+                        type: array
+                      files:
+                        description: BinaryFiles defines binary component file names.
+                        properties:
+                          archive:
+                            type: string
+                        required:
+                        - archive
+                        type: object
+                      installStrategy:
+                        description: InstallStrategy defines installation behavior
+                          for binary components.
+                        properties:
+                          method:
+                            description: 'Method is the installation method: package,
+                              archive, or manual.'
+                            enum:
+                            - package
+                            - archive
+                            - manual
+                            type: string
+                          retryCount:
+                            default: 3
+                            description: RetryCount is the number of retries on failure.
+                            type: integer
+                          serviceName:
+                            description: ServiceName is the service name to restart
+                              after installation.
+                            type: string
+                          timeout:
+                            description: Timeout is the maximum time allowed for installation.
+                            type: string
+                        type: object
+                      path:
+                        type: string
+                      postHooks:
+                        description: PostHooks are scripts/commands to run after install/upgrade.
+                        items:
+                          description: AddonHook defines a pre/post hook for install/upgrade.
+                          properties:
+                            command:
+                              description: Command is the command to execute.
+                              type: string
+                            name:
+                              description: Name is the hook name.
+                              type: string
+                            onFailure:
+                              default: Abort
+                              description: 'OnFailure indicates behavior on hook failure:
+                                Continue, Abort, or Ignore.'
+                              enum:
+                              - Continue
+                              - Abort
+                              - Ignore
+                              type: string
+                            timeout:
+                              description: Timeout is the maximum time allowed for
+                                the hook.
+                              type: string
+                          required:
+                          - command
+                          - name
+                          type: object
+                        type: array
+                      preHooks:
+                        description: PreHooks are scripts/commands to run before install/upgrade.
+                        items:
+                          description: AddonHook defines a pre/post hook for install/upgrade.
+                          properties:
+                            command:
+                              description: Command is the command to execute.
+                              type: string
+                            name:
+                              description: Name is the hook name.
+                              type: string
+                            onFailure:
+                              default: Abort
+                              description: 'OnFailure indicates behavior on hook failure:
+                                Continue, Abort, or Ignore.'
+                              enum:
+                              - Continue
+                              - Abort
+                              - Ignore
+                              type: string
+                            timeout:
+                              description: Timeout is the maximum time allowed for
+                                the hook.
+                              type: string
+                          required:
+                          - command
+                          - name
+                          type: object
+                        type: array
+                      type:
+                        description: ComponentType represents the installation type
+                          of a component.
+                        type: string
+                      upgrade:
+                        description: Upgrade defines component-level upgrade configuration
+                          (high cohesion).
+                        properties:
+                          backup:
+                            description: Backup configuration for this component.
+                            properties:
+                              config:
+                                description: Config lists the configuration items
+                                  to backup.
+                                items:
+                                  description: BackupItem defines a single backup
+                                    item.
+                                  properties:
+                                    path:
+                                      description: Path is the file or directory path
+                                        to backup.
+                                      type: string
+                                    type:
+                                      description: 'Type is the backup item type:
+                                        file or directory.'
+                                      enum:
+                                      - file
+                                      - directory
+                                      type: string
+                                  required:
+                                  - path
+                                  - type
+                                  type: object
+                                type: array
+                              enabled:
+                                default: true
+                                description: Enabled indicates whether backup is enabled
+                                  for this component.
+                                type: boolean
+                              etcdSnapshot:
+                                description: EtcdSnapshot indicates whether etcd snapshot
+                                  is required (for control-plane components).
+                                type: boolean
+                            type: object
+                          healthCheck:
+                            description: HealthCheck configuration after upgrade.
+                            properties:
+                              command:
+                                description: Command is the health check command to
+                                  execute.
+                                type: string
+                              retries:
+                                default: 3
+                                description: Retries is the number of retries before
+                                  considering health check failed.
+                                type: integer
+                              timeout:
+                                description: Timeout is the maximum time allowed for
+                                  health check.
+                                type: string
+                            required:
+                            - command
+                            type: object
+                          rollback:
+                            description: Rollback configuration for this component.
+                            properties:
+                              script:
+                                description: Script is the path to the rollback script
+                                  (relative to release image scripts directory).
+                                type: string
+                              timeout:
+                                description: Timeout is the maximum time allowed for
+                                  rollback.
+                                type: string
+                            required:
+                            - script
+                            type: object
+                        type: object
+                      upgradeStrategy:
+                        description: UpgradeStrategy defines upgrade behavior for
+                          binary components.
+                        properties:
+                          drain:
+                            description: Drain indicates whether to drain node before
+                              upgrade.
+                            type: boolean
+                          force:
+                            description: Force indicates whether to force upgrade
+                              even if version path is not recommended.
+                            type: boolean
+                          maxConcurrent:
+                            default: 1
+                            description: MaxConcurrent is the maximum number of nodes
+                              to upgrade concurrently.
+                            type: integer
+                          retryCount:
+                            default: 3
+                            description: RetryCount is the number of retries on failure.
+                            type: integer
+                          timeout:
+                            description: Timeout is the maximum time allowed for upgrade
+                              per node.
+                            type: string
+                          type:
+                            default: Rolling
+                            description: 'Type is the upgrade type: Rolling, DrainAndUpgrade,
+                              or Parallel.'
+                            enum:
+                            - Rolling
+                            - DrainAndUpgrade
+                            - Parallel
+                            type: string
+                        required:
+                        - type
+                        type: object
+                      version:
+                        type: string
+                    required:
+                    - architectures
+                    - path
+                    - type
+                    - version
+                    type: object
+                  kubernetes:
+                    description: KubernetesComponent defines Kubernetes binaries with
+                      OS-specific packages.
+                    properties:
+                      imageList:
+                        items:
+                          type: string
+                        type: array
+                      installStrategy:
+                        description: InstallStrategy defines installation behavior
+                          for binary components.
+                        properties:
+                          method:
+                            description: 'Method is the installation method: package,
+                              archive, or manual.'
+                            enum:
+                            - package
+                            - archive
+                            - manual
+                            type: string
+                          retryCount:
+                            default: 3
+                            description: RetryCount is the number of retries on failure.
+                            type: integer
+                          serviceName:
+                            description: ServiceName is the service name to restart
+                              after installation.
+                            type: string
+                          timeout:
+                            description: Timeout is the maximum time allowed for installation.
+                            type: string
+                        type: object
+                      path:
+                        type: string
+                      platforms:
+                        additionalProperties:
+                          description: K8SPlatform defines OS-specific package configuration.
+                          properties:
+                            architectures:
+                              items:
+                                type: string
+                              type: array
+                            packages:
+                              additionalProperties:
+                                type: string
+                              type: object
+                          required:
+                          - architectures
+                          - packages
+                          type: object
+                        type: object
+                      postHooks:
+                        description: PostHooks are scripts/commands to run after install/upgrade.
+                        items:
+                          description: AddonHook defines a pre/post hook for install/upgrade.
+                          properties:
+                            command:
+                              description: Command is the command to execute.
+                              type: string
+                            name:
+                              description: Name is the hook name.
+                              type: string
+                            onFailure:
+                              default: Abort
+                              description: 'OnFailure indicates behavior on hook failure:
+                                Continue, Abort, or Ignore.'
+                              enum:
+                              - Continue
+                              - Abort
+                              - Ignore
+                              type: string
+                            timeout:
+                              description: Timeout is the maximum time allowed for
+                                the hook.
+                              type: string
+                          required:
+                          - command
+                          - name
+                          type: object
+                        type: array
+                      preHooks:
+                        description: PreHooks are scripts/commands to run before install/upgrade.
+                        items:
+                          description: AddonHook defines a pre/post hook for install/upgrade.
+                          properties:
+                            command:
+                              description: Command is the command to execute.
+                              type: string
+                            name:
+                              description: Name is the hook name.
+                              type: string
+                            onFailure:
+                              default: Abort
+                              description: 'OnFailure indicates behavior on hook failure:
+                                Continue, Abort, or Ignore.'
+                              enum:
+                              - Continue
+                              - Abort
+                              - Ignore
+                              type: string
+                            timeout:
+                              description: Timeout is the maximum time allowed for
+                                the hook.
+                              type: string
+                          required:
+                          - command
+                          - name
+                          type: object
+                        type: array
+                      type:
+                        description: ComponentType represents the installation type
+                          of a component.
+                        type: string
+                      upgrade:
+                        description: Upgrade defines component-level upgrade configuration
+                          (high cohesion).
+                        properties:
+                          backup:
+                            description: Backup configuration for this component.
+                            properties:
+                              config:
+                                description: Config lists the configuration items
+                                  to backup.
+                                items:
+                                  description: BackupItem defines a single backup
+                                    item.
+                                  properties:
+                                    path:
+                                      description: Path is the file or directory path
+                                        to backup.
+                                      type: string
+                                    type:
+                                      description: 'Type is the backup item type:
+                                        file or directory.'
+                                      enum:
+                                      - file
+                                      - directory
+                                      type: string
+                                  required:
+                                  - path
+                                  - type
+                                  type: object
+                                type: array
+                              enabled:
+                                default: true
+                                description: Enabled indicates whether backup is enabled
+                                  for this component.
+                                type: boolean
+                              etcdSnapshot:
+                                description: EtcdSnapshot indicates whether etcd snapshot
+                                  is required (for control-plane components).
+                                type: boolean
+                            type: object
+                          healthCheck:
+                            description: HealthCheck configuration after upgrade.
+                            properties:
+                              command:
+                                description: Command is the health check command to
+                                  execute.
+                                type: string
+                              retries:
+                                default: 3
+                                description: Retries is the number of retries before
+                                  considering health check failed.
+                                type: integer
+                              timeout:
+                                description: Timeout is the maximum time allowed for
+                                  health check.
+                                type: string
+                            required:
+                            - command
+                            type: object
+                          rollback:
+                            description: Rollback configuration for this component.
+                            properties:
+                              script:
+                                description: Script is the path to the rollback script
+                                  (relative to release image scripts directory).
+                                type: string
+                              timeout:
+                                description: Timeout is the maximum time allowed for
+                                  rollback.
+                                type: string
+                            required:
+                            - script
+                            type: object
+                        type: object
+                      upgradeStrategy:
+                        description: UpgradeStrategy defines upgrade behavior for
+                          binary components.
+                        properties:
+                          drain:
+                            description: Drain indicates whether to drain node before
+                              upgrade.
+                            type: boolean
+                          force:
+                            description: Force indicates whether to force upgrade
+                              even if version path is not recommended.
+                            type: boolean
+                          maxConcurrent:
+                            default: 1
+                            description: MaxConcurrent is the maximum number of nodes
+                              to upgrade concurrently.
+                            type: integer
+                          retryCount:
+                            default: 3
+                            description: RetryCount is the number of retries on failure.
+                            type: integer
+                          timeout:
+                            description: Timeout is the maximum time allowed for upgrade
+                              per node.
+                            type: string
+                          type:
+                            default: Rolling
+                            description: 'Type is the upgrade type: Rolling, DrainAndUpgrade,
+                              or Parallel.'
+                            enum:
+                            - Rolling
+                            - DrainAndUpgrade
+                            - Parallel
+                            type: string
+                        required:
+                        - type
+                        type: object
+                      version:
+                        type: string
+                    required:
+                    - path
+                    - platforms
+                    - type
+                    - version
+                    type: object
+                required:
+                - kubernetes
+                type: object
+              contentHash:
+                type: string
+              httpServer:
+                description: HTTPServerConfig defines the HTTP server configuration
+                  for serving release content.
+                properties:
+                  basePath:
+                    description: BasePath is the base path for serving content.
+                    type: string
+                  baseUrl:
+                    description: BaseURL is the HTTP server URL serving binary packages.
+                    type: string
+                  enabled:
+                    default: false
+                    description: Enabled enables the HTTP server.
+                    type: boolean
+                  insecureSkipVerify:
+                    description: InsecureSkipVerify skips TLS verification (for internal
+                      CAs).
+                    type: boolean
+                  port:
+                    default: 8080
+                    description: Port is the HTTP server port.
+                    type: integer
+                  tlsSecretRef:
+                    description: TLSSecretRef references a Secret containing TLS client
+                      certificate.
+                    type: string
+                type: object
+              image:
+                type: string
+              imageRegistry:
+                description: ImageRegistryConfig defines the target image registry
+                  configuration.
+                properties:
+                  caConfigMap:
+                    description: CAConfigMap is the ConfigMap name containing the
+                      registry CA certificate.
+                    type: string
+                  credentialsSecret:
+                    description: CredentialsSecret is the secret name containing registry
+                      credentials.
+                    type: string
+                  enabled:
+                    default: false
+                    description: Enabled enables image registry import.
+                    type: boolean
+                  imagePrefix:
+                    description: ImagePrefix is the prefix for image names.
+                    type: string
+                  insecureSkipVerify:
+                    description: InsecureSkipVerify skips TLS verification for the
+                      registry.
+                    type: boolean
+                  registry:
+                    description: Registry is the target registry URL (e.g., registry.example.com).
+                    type: string
+                  repository:
+                    default: capbm
+                    description: Repository is the repository path prefix (e.g., capbm).
+                    type: string
+                type: object
+              previousVersions:
+                items:
+                  type: string
+                type: array
+              upgradeGraph:
+                items:
+                  description: UpgradePhase defines a phase in the upgrade graph.
+                  properties:
+                    blocking:
+                      type: boolean
+                    components:
+                      items:
+                        description: UpgradeComponent defines a component in an upgrade
+                          phase.
+                        properties:
+                          blocking:
+                            type: boolean
+                          dependsOn:
+                            items:
+                              type: string
+                            type: array
+                          healthCheck:
+                            description: HealthCheck defines health check settings
+                              for an upgrade component.
+                            properties:
+                              endpoint:
+                                type: string
+                              labelSelector:
+                                type: string
+                              name:
+                                type: string
+                              namespace:
+                                type: string
+                              timeout:
+                                type: string
+                              type:
+                                type: string
+                            required:
+                            - type
+                            type: object
+                          manifests:
+                            items:
+                              type: string
+                            type: array
+                          name:
+                            type: string
+                          scripts:
+                            items:
+                              type: string
+                            type: array
+                        required:
+                        - blocking
+                        - name
+                        type: object
+                      type: array
+                    name:
+                      type: string
+                    order:
+                      type: integer
+                    rollingUpdate:
+                      description: RollingUpdate defines rolling update settings.
+                      properties:
+                        maxUnavailable:
+                          type: integer
+                      type: object
+                  required:
+                  - blocking
+                  - components
+                  - name
+                  - order
+                  type: object
+                type: array
+              version:
+                type: string
+            required:
+            - components
+            - image
+            - upgradeGraph
+            - version
+            type: object
+          status:
+            description: ReleaseImageStatus defines the observed state of ReleaseImage.
+            properties:
+              imagesImported:
+                type: boolean
+              importJobName:
+                type: string
+              importMessage:
+                type: string
+              importStatus:
+                type: string
+              importedImages:
+                items:
+                  description: ImportedImageStatus tracks the status of a single imported
+                    image.
+                  properties:
+                    component:
+                      description: Component is the component name.
+                      type: string
+                    image:
+                      description: Image is the image name.
+                      type: string
+                    message:
+                      description: Message is an optional status message.
+                      type: string
+                    status:
+                      description: Status is the import status (pending/imported/failed).
+                      type: string
+                    targetRef:
+                      description: TargetRef is the target registry reference.
+                      type: string
+                  required:
+                  - component
+                  - image
+                  - status
+                  - targetRef
+                  type: object
+                type: array
+              manifestCount:
+                type: integer
+              verified:
+                type: boolean
+            required:
+            - manifestCount
+            - verified
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

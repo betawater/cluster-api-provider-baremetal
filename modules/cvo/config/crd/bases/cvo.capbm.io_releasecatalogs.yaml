@@ -1,0 +1,97 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: releasecatalogs.cvo.capbm.io
+spec:
+  group: cvo.capbm.io
+  names:
+    kind: ReleaseCatalog
+    listKind: ReleaseCatalogList
+    plural: releasecatalogs
+    singular: releasecatalog
+  scope: Namespaced
+  versions:
+  - name: v1beta1
+    schema:
+      openAPIV3Schema:
+        description: ReleaseCatalog is the Schema for the releasecatalogs API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ReleaseCatalogSpec defines the desired state of ReleaseCatalog.
+            properties:
+              image:
+                type: string
+              syncInterval:
+                type: string
+            required:
+            - image
+            type: object
+          status:
+            description: ReleaseCatalogStatus defines the observed state of ReleaseCatalog.
+            properties:
+              channels:
+                additionalProperties:
+                  items:
+                    description: ChannelVersion defines a version in a channel.
+                    properties:
+                      version:
+                        type: string
+                    required:
+                    - version
+                    type: object
+                  type: array
+                type: object
+              imageDigest:
+                type: string
+              lastSyncTime:
+                format: date-time
+                type: string
+              releases:
+                items:
+                  description: ReleaseEntry defines a single release entry.
+                  properties:
+                    channels:
+                      items:
+                        type: string
+                      type: array
+                    image:
+                      type: string
+                    releaseDate:
+                      type: string
+                    version:
+                      type: string
+                  required:
+                  - image
+                  - version
+                  type: object
+                type: array
+              syncSucceeded:
+                type: boolean
+            required:
+            - syncSucceeded
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

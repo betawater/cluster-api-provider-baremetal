@@ -14,6 +14,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
+// +kubebuilder:object:generate=true
+// +groupName=cvo.capbm.io
 package v1beta1
 
 import (
@@ -22,9 +24,8 @@ import (
 )
 
 var (
-	// GroupVersion is group version used to register common types.
-	// These are not CRDs but shared Go types used by both CVO and CAPBM.
-	GroupVersion = schema.GroupVersion{Group: "common.capbm.io", Version: "v1beta1"}
+	// GroupVersion is group version used to register CVO types.
+	GroupVersion = schema.GroupVersion{Group: "cvo.capbm.io", Version: "v1beta1"}
 
 	// SchemeBuilder is used to add go types to the GroupVersionKind scheme.
 	SchemeBuilder = &scheme.Builder{GroupVersion: GroupVersion}
@@ -32,5 +33,3 @@ var (
 	// AddToScheme adds the types in this group-version to the given scheme.
 	AddToScheme = SchemeBuilder.AddToScheme
 )
-
-// +kubebuilder:object:generate=true

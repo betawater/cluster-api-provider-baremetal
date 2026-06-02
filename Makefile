@@ -43,13 +43,13 @@ help: ## Display this help.
 
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
-	$(CONTROLLER_GEN) rbac:roleName=capbm-manager-role crd webhook paths="./modules/capbm/api/..." output:crd:artifacts:config=modules/capbm/config/crd/bases
-	$(CONTROLLER_GEN) rbac:roleName=cvo-manager-role crd webhook paths="./modules/cvo/api/..." output:crd:artifacts:config=modules/cvo/config/crd/bases
+	cd modules/capbm && $(CONTROLLER_GEN) rbac:roleName=capbm-manager-role crd webhook paths="./api/v1beta1" output:crd:artifacts:config=config/crd/bases
+	cd modules/cvo && $(CONTROLLER_GEN) rbac:roleName=cvo-manager-role crd webhook paths="./api/v1beta1" output:crd:artifacts:config=config/crd/bases
 
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
-	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./modules/cvo/api/..."
-	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./modules/capbm/api/..."
+	cd modules/cvo && $(CONTROLLER_GEN) object:headerFile="../../hack/boilerplate.go.txt" paths="./api/v1beta1"
+	cd modules/capbm && $(CONTROLLER_GEN) object:headerFile="../../hack/boilerplate.go.txt" paths="./api/v1beta1"
 
 .PHONY: fmt
 fmt: ## Run go fmt against code.

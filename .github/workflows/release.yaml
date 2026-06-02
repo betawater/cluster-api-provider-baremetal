@@ -38,19 +38,19 @@ jobs:
 
       - name: Build and push CVO Docker image
         run: |
-          make docker-build-cvo CVO_IMG=ghcr.io/${{ github.repository }}/cvo-manager:${{ github.ref_name }}
+          make docker-build-cvo CVO_IMG=ghcr.io/${{ github.repository_owner }}/cvo-manager:${{ github.ref_name }}
 
       - name: Build and push CAPBM Docker image
         run: |
-          make docker-build-capbm CAPBM_IMG=ghcr.io/${{ github.repository }}/capbm-manager:${{ github.ref_name }}
+          make docker-build-capbm CAPBM_IMG=ghcr.io/${{ github.repository_owner }}/capbm-manager:${{ github.ref_name }}
 
       - name: Generate CVO release manifests
         run: |
-          make release-cvo CVO_IMG=ghcr.io/${{ github.repository }}/cvo-manager:${{ github.ref_name }}
+          make release-cvo CVO_IMG=ghcr.io/${{ github.repository_owner }}/cvo-manager:${{ github.ref_name }}
 
       - name: Generate CAPBM release manifests
         run: |
-          make release-capbm CAPBM_IMG=ghcr.io/${{ github.repository }}/capbm-manager:${{ github.ref_name }}
+          make release-capbm CAPBM_IMG=ghcr.io/${{ github.repository_owner }}/capbm-manager:${{ github.ref_name }}
 
       - name: Create Release
         uses: softprops/action-gh-release@v2

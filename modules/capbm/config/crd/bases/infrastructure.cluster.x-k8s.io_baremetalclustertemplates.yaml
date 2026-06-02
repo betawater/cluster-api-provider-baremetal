@@ -82,6 +82,333 @@ spec:
                             minimum: 1
                             type: integer
                         type: object
+                      gatewayAPI:
+                        description: GatewayAPI holds the Gateway API component configuration.
+                        properties:
+                          enabled:
+                            default: true
+                            description: Enabled enables Gateway API component installation.
+                            type: boolean
+                          envoyGateway:
+                            description: EnvoyGateway holds Envoy Gateway specific
+                              configuration.
+                            properties:
+                              nodeSelector:
+                                additionalProperties:
+                                  type: string
+                                description: NodeSelector for scheduling Envoy Gateway
+                                  pods.
+                                type: object
+                              replicaCount:
+                                default: 2
+                                description: ReplicaCount is the number of Envoy Gateway
+                                  replicas.
+                                type: integer
+                            type: object
+                          metalLB:
+                            description: MetalLB holds MetalLB specific configuration.
+                            properties:
+                              enabled:
+                                default: false
+                                description: Enabled enables MetalLB installation.
+                                type: boolean
+                              ipAddressPools:
+                                description: IPAddressPools defines the IP address
+                                  pools.
+                                items:
+                                  description: MetalLBIPAddressPool defines an IP
+                                    address pool for MetalLB.
+                                  properties:
+                                    addresses:
+                                      description: Addresses is the list of IP address
+                                        ranges.
+                                      items:
+                                        type: string
+                                      type: array
+                                    name:
+                                      description: Name is the pool name.
+                                      type: string
+                                  required:
+                                  - addresses
+                                  - name
+                                  type: object
+                                type: array
+                              mode:
+                                default: layer2
+                                description: Mode is the MetalLB mode (layer2 or bgp).
+                                type: string
+                            type: object
+                        type: object
+                      ingressLoadBalancer:
+                        description: IngressLoadBalancer holds the load balancer configuration
+                          for ingress traffic.
+                        properties:
+                          enabled:
+                            default: false
+                            description: Enabled enables ingress load balancer management.
+                            type: boolean
+                          f5:
+                            description: F5 holds F5 BIG-IP specific configuration.
+                            properties:
+                              credentialsRef:
+                                description: CredentialsRef references the F5 credentials
+                                  secret.
+                                properties:
+                                  name:
+                                    default: ""
+                                    description: |-
+                                      Name of the referent.
+                                      This field is effectively required, but due to backwards compatibility is
+                                      allowed to be empty. Instances of this type with an empty value here are
+                                      almost certainly wrong.
+                                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                    type: string
+                                type: object
+                                x-kubernetes-map-type: atomic
+                              host:
+                                description: Host is the F5 BIG-IP management host.
+                                type: string
+                              httpPoolName:
+                                description: HTTPPoolName is the F5 pool name for
+                                  HTTP traffic.
+                                type: string
+                              httpPort:
+                                default: 30080
+                                description: HTTPPort is the NodePort for HTTP traffic.
+                                type: integer
+                              httpsPoolName:
+                                description: HTTPSPoolName is the F5 pool name for
+                                  HTTPS traffic.
+                                type: string
+                              httpsPort:
+                                default: 30443
+                                description: HTTPSPort is the NodePort for HTTPS traffic.
+                                type: integer
+                              partition:
+                                default: Common
+                                description: Partition is the F5 partition.
+                                type: string
+                              port:
+                                default: 443
+                                description: Port is the F5 BIG-IP management port.
+                                type: integer
+                            type: object
+                          haproxy:
+                            description: HAProxy holds HAProxy specific configuration.
+                            properties:
+                              adminHost:
+                                description: AdminHost is the HAProxy Runtime API
+                                  host.
+                                type: string
+                              adminPort:
+                                default: 9999
+                                description: AdminPort is the HAProxy Runtime API
+                                  port.
+                                type: integer
+                              backendName:
+                                default: k8s-ingress
+                                description: BackendName is the backend name in HAProxy
+                                  config.
+                                type: string
+                              httpPort:
+                                default: 30080
+                                description: HTTPPort is the NodePort for HTTP traffic
+                                  on worker nodes.
+                                type: integer
+                              httpsPort:
+                                default: 30443
+                                description: HTTPSPort is the NodePort for HTTPS traffic
+                                  on worker nodes.
+                                type: integer
+                              sshHost:
+                                description: SSHHost is the HAProxy server SSH host.
+                                type: string
+                              sshPort:
+                                default: 22
+                                description: SSHPort is the HAProxy server SSH port.
+                                type: integer
+                            type: object
+                          metal-lb:
+                            description: MetalLB holds MetalLB specific configuration.
+                            properties:
+                              ipAddressPool:
+                                description: IPAddressPool is the MetalLB IP address
+                                  pool name.
+                                type: string
+                              loadBalancerIP:
+                                description: LoadBalancerIP is the VIP for ingress
+                                  traffic.
+                                type: string
+                            type: object
+                          provider:
+                            description: Provider is the load balancer type (haproxy,
+                              f5, metal-lb).
+                            type: string
+                        type: object
+                      loadBalancer:
+                        description: LoadBalancer holds the load balancer configuration
+                          for the control plane.
+                        properties:
+                          f5:
+                            description: F5 holds F5 BIG-IP specific configuration.
+                            properties:
+                              credentialsRef:
+                                description: CredentialsRef references the F5 credentials
+                                  secret.
+                                properties:
+                                  name:
+                                    default: ""
+                                    description: |-
+                                      Name of the referent.
+                                      This field is effectively required, but due to backwards compatibility is
+                                      allowed to be empty. Instances of this type with an empty value here are
+                                      almost certainly wrong.
+                                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                    type: string
+                                type: object
+                                x-kubernetes-map-type: atomic
+                              host:
+                                description: Host is the F5 BIG-IP management host.
+                                type: string
+                              partition:
+                                default: Common
+                                description: Partition is the F5 partition.
+                                type: string
+                              poolName:
+                                description: PoolName is the F5 pool name.
+                                type: string
+                              port:
+                                default: 443
+                                description: Port is the F5 BIG-IP management port.
+                                type: integer
+                              virtualServerName:
+                                description: VirtualServerName is the F5 virtual server
+                                  name.
+                                type: string
+                            type: object
+                          haproxy:
+                            description: HAProxy holds HAProxy specific configuration.
+                            properties:
+                              adminHost:
+                                description: AdminHost is the HAProxy Runtime API
+                                  host.
+                                type: string
+                              adminPort:
+                                default: 9999
+                                description: AdminPort is the HAProxy Runtime API
+                                  port.
+                                type: integer
+                              backendName:
+                                default: k8s-apiserver
+                                description: BackendName is the backend name in HAProxy
+                                  config.
+                                type: string
+                              configFile:
+                                default: /etc/haproxy/haproxy.cfg
+                                description: ConfigFile is the HAProxy configuration
+                                  file path.
+                                type: string
+                              reloadCommand:
+                                default: systemctl reload haproxy
+                                description: ReloadCommand is the command to reload
+                                  HAProxy.
+                                type: string
+                              sshCredentialsRef:
+                                description: SSHCredentialsRef references the SSH
+                                  credentials secret.
+                                properties:
+                                  name:
+                                    default: ""
+                                    description: |-
+                                      Name of the referent.
+                                      This field is effectively required, but due to backwards compatibility is
+                                      allowed to be empty. Instances of this type with an empty value here are
+                                      almost certainly wrong.
+                                      More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
+                                    type: string
+                                type: object
+                                x-kubernetes-map-type: atomic
+                              sshHost:
+                                description: SSHHost is the HAProxy server SSH host
+                                  (alternative to Runtime API).
+                                type: string
+                              sshPort:
+                                default: 22
+                                description: SSHPort is the HAProxy server SSH port.
+                                type: integer
+                            type: object
+                          healthCheck:
+                            description: HealthCheck defines health check configuration.
+                            properties:
+                              enabled:
+                                default: true
+                                description: Enabled enables health checking.
+                                type: boolean
+                              healthyThreshold:
+                                default: 2
+                                description: HealthyThreshold is the number of successful
+                                  checks to mark as healthy.
+                                type: integer
+                              interval:
+                                default: 5s
+                                description: Interval is the check interval.
+                                type: string
+                              path:
+                                default: /healthz
+                                description: Path is the health check endpoint.
+                                type: string
+                              timeout:
+                                default: 3s
+                                description: Timeout is the check timeout.
+                                type: string
+                              unhealthyThreshold:
+                                default: 3
+                                description: UnhealthyThreshold is the number of failed
+                                  checks to mark as unhealthy.
+                                type: integer
+                            type: object
+                          keepalived:
+                            description: Keepalived holds Keepalived specific configuration.
+                            properties:
+                              advertInterval:
+                                default: 1
+                                description: AdvertInterval is the advertisement interval
+                                  in seconds.
+                                type: integer
+                              interface:
+                                default: eth0
+                                description: Interface is the network interface.
+                                type: string
+                              priority:
+                                default: 100
+                                description: Priority is the VRRP priority.
+                                type: integer
+                              virtualIP:
+                                description: VirtualIP is the virtual IP address.
+                                type: string
+                              virtualRouterID:
+                                default: 51
+                                description: VirtualRouterID is the VRRP router ID.
+                                type: integer
+                            type: object
+                          metal-lb:
+                            description: MetalLB holds MetalLB specific configuration.
+                            properties:
+                              ipAddressPool:
+                                description: IPAddressPool is the MetalLB IP address
+                                  pool name.
+                                type: string
+                              loadBalancerIP:
+                                description: LoadBalancerIP is the specific IP to
+                                  assign.
+                                type: string
+                            type: object
+                          provider:
+                            default: haproxy
+                            description: Provider is the load balancer type (haproxy,
+                              keepalived, f5, nginx, metal-lb).
+                            type: string
+                        type: object
                       network:
                         description: Network holds the cluster-level network configuration.
                         properties:

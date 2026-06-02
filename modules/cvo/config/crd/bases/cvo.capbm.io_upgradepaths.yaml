@@ -1,0 +1,110 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: upgradepaths.cvo.capbm.io
+spec:
+  group: cvo.capbm.io
+  names:
+    kind: UpgradePath
+    listKind: UpgradePathList
+    plural: upgradepaths
+    singular: upgradepath
+  scope: Namespaced
+  versions:
+  - name: v1beta1
+    schema:
+      openAPIV3Schema:
+        description: UpgradePath is the Schema for the upgradepaths API.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: UpgradePathSpec defines the desired state of UpgradePath.
+            properties:
+              graph:
+                description: UpgradeGraphData defines the upgrade graph structure.
+                properties:
+                  edges:
+                    items:
+                      description: GraphEdge defines a single edge in the upgrade
+                        graph.
+                      properties:
+                        from:
+                          type: string
+                        recommended:
+                          type: boolean
+                        to:
+                          type: string
+                      required:
+                      - from
+                      - recommended
+                      - to
+                      type: object
+                    type: array
+                required:
+                - edges
+                type: object
+              image:
+                type: string
+              rules:
+                description: CompatibilityRules defines compatibility rules for upgrades.
+                properties:
+                  blockedUpgrades:
+                    items:
+                      description: BlockedUpgrade defines a blocked upgrade path.
+                      properties:
+                        from:
+                          type: string
+                        reason:
+                          type: string
+                        to:
+                          type: string
+                      required:
+                      - from
+                      - reason
+                      - to
+                      type: object
+                    type: array
+                  maxVersionSkip:
+                    type: integer
+                type: object
+            required:
+            - graph
+            - image
+            type: object
+          status:
+            description: UpgradePathStatus defines the observed state of UpgradePath.
+            properties:
+              imageDigest:
+                type: string
+              lastSyncTime:
+                format: date-time
+                type: string
+              syncSucceeded:
+                type: boolean
+            required:
+            - syncSucceeded
+            type: object
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
