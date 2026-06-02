@@ -19,7 +19,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version: '1.25'
 
       - name: Setup Kustomize
         uses: azure/setup-kustomize@v3
@@ -33,18 +33,27 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push Docker image
+      - name: Build and push CVO Docker image
         run: |
-          make docker-build docker-push IMG=ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+          make docker-build-cvo CVO_IMG=ghcr.io/${{ github.repository }}/cvo-manager:${{ github.ref_name }}
 
-      - name: Generate release manifests
+      - name: Build and push CAPBM Docker image
         run: |
-          make release IMG=ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+          make docker-build-capbm CAPBM_IMG=ghcr.io/${{ github.repository }}/capbm-manager:${{ github.ref_name }}
+
+      - name: Generate CVO release manifests
+        run: |
+          make release-cvo CVO_IMG=ghcr.io/${{ github.repository }}/cvo-manager:${{ github.ref_name }}
+
+      - name: Generate CAPBM release manifests
+        run: |
+          make release-capbm CAPBM_IMG=ghcr.io/${{ github.repository }}/capbm-manager:${{ github.ref_name }}
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             infrastructure-components.yaml
+            cvo-components.yaml
             metadata.yaml
           generate_release_notes: true

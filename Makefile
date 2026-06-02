@@ -104,53 +104,53 @@ docker-push-cvo: ## Push CVO docker image.
 
 .PHONY: install-capbm
 install-capbm: manifests kustomize ## Install CAPBM CRDs into the K8s cluster.
-	$(KUSTOMIZE) build config/capbm/crd | kubectl apply -f -
+	$(KUSTOMIZE) build modules/capbm/config/crd | kubectl apply -f -
 
 .PHONY: install-cvo
 install-cvo: manifests kustomize ## Install CVO CRDs into the K8s cluster.
-	$(KUSTOMIZE) build config/cvo/crd | kubectl apply -f -
+	$(KUSTOMIZE) build modules/cvo/config/crd | kubectl apply -f -
 
 .PHONY: uninstall-capbm
 uninstall-capbm: manifests kustomize ## Uninstall CAPBM CRDs from the K8s cluster.
-	$(KUSTOMIZE) build config/capbm/crd | kubectl delete -f -
+	$(KUSTOMIZE) build modules/capbm/config/crd | kubectl delete -f -
 
 .PHONY: uninstall-cvo
 uninstall-cvo: manifests kustomize ## Uninstall CVO CRDs from the K8s cluster.
-	$(KUSTOMIZE) build config/cvo/crd | kubectl delete -f -
+	$(KUSTOMIZE) build modules/cvo/config/crd | kubectl delete -f -
 
 .PHONY: deploy-capbm
 deploy-capbm: manifests kustomize ## Deploy CAPBM controller to the K8s cluster.
-	cd config/capbm/manager && $(KUSTOMIZE) edit set image controller=${CAPBM_IMG}
-	$(KUSTOMIZE) build config/capbm | kubectl apply -f -
+	cd modules/capbm/config/manager && $(KUSTOMIZE) edit set image controller=${CAPBM_IMG}
+	$(KUSTOMIZE) build modules/capbm/config | kubectl apply -f -
 
 .PHONY: deploy-cvo
 deploy-cvo: manifests kustomize ## Deploy CVO controller to the K8s cluster.
-	cd config/cvo/manager && $(KUSTOMIZE) edit set image controller=${CVO_IMG}
-	$(KUSTOMIZE) build config/cvo | kubectl apply -f -
+	cd modules/cvo/config/manager && $(KUSTOMIZE) edit set image controller=${CVO_IMG}
+	$(KUSTOMIZE) build modules/cvo/config | kubectl apply -f -
 
 .PHONY: undeploy-capbm
 undeploy-capbm: ## Undeploy CAPBM controller from the K8s cluster.
-	$(KUSTOMIZE) build config/capbm | kubectl delete -f -
+	$(KUSTOMIZE) build modules/capbm/config | kubectl delete -f -
 
 .PHONY: undeploy-cvo
 undeploy-cvo: ## Undeploy CVO controller from the K8s cluster.
-	$(KUSTOMIZE) build config/cvo | kubectl delete -f -
+	$(KUSTOMIZE) build modules/cvo/config | kubectl delete -f -
 
 .PHONY: deploy-clusterclass
 deploy-clusterclass: manifests kustomize ## Deploy ClusterClass templates.
-	$(KUSTOMIZE) build config/capbm/clusterclass | kubectl apply -f -
+	$(KUSTOMIZE) build modules/capbm/config/clusterclass | kubectl apply -f -
 
 ##@ Release
 
 .PHONY: release-capbm
 release-capbm: manifests kustomize ## Generate CAPBM release manifests.
-	cd config/capbm/manager && $(KUSTOMIZE) edit set image controller=${CAPBM_IMG}
-	$(KUSTOMIZE) build config/capbm > infrastructure-components.yaml
+	cd modules/capbm/config/manager && $(KUSTOMIZE) edit set image controller=${CAPBM_IMG}
+	$(KUSTOMIZE) build modules/capbm/config > infrastructure-components.yaml
 
 .PHONY: release-cvo
 release-cvo: manifests kustomize ## Generate CVO release manifests.
-	cd config/cvo/manager && $(KUSTOMIZE) edit set image controller=${CVO_IMG}
-	$(KUSTOMIZE) build config/cvo > cvo-components.yaml
+	cd modules/cvo/config/manager && $(KUSTOMIZE) edit set image controller=${CVO_IMG}
+	$(KUSTOMIZE) build modules/cvo/config > cvo-components.yaml
 
 .PHONY: release-manifests
 release-manifests: release-capbm release-cvo ## Generate release manifests directory.
