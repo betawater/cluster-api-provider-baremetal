@@ -17,6 +17,7 @@ limitations under the License.
 package installer
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -46,11 +47,11 @@ func updateProgress(sshConn *sshclient.SSHConnection, step, message string) {
 func writeProgress(sshConn *sshclient.SSHConnection, progress InstallProgress) {
 	data, _ := json.Marshal(progress)
 	script := fmt.Sprintf("echo '%s' > %s", string(data), progressFile)
-	_, _ = sshConn.ExecuteCommand(nil, script)
+	_, _ = sshConn.ExecuteCommand(context.TODO(), script)
 }
 
 func GetProgress(sshConn *sshclient.SSHConnection) (*InstallProgress, error) {
-	result, err := sshConn.ExecuteCommand(nil, fmt.Sprintf("cat %s 2>/dev/null || echo '{}'", progressFile))
+	result, err := sshConn.ExecuteCommand(context.TODO(), fmt.Sprintf("cat %s 2>/dev/null || echo '{}'", progressFile))
 	if err != nil {
 		return nil, err
 	}

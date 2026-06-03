@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"strings"
 
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -376,7 +378,7 @@ echo "=== $COMPONENT v$VERSION installed successfully ==="
 		component.Version,
 		i.namespace,
 		component.Path,
-		strings.Title(action),
+		cases.Title(language.English).String(action),
 		imageLoadScript,
 		action,
 		valuesArgs,
@@ -453,7 +455,7 @@ echo "=== $COMPONENT v$VERSION installed successfully ==="
 		component.Version,
 		i.namespace,
 		component.Path,
-		strings.Title(action),
+		cases.Title(language.English).String(action),
 		downloadCommands,
 		imageLoadScript,
 		manifestCommands,

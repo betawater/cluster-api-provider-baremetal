@@ -262,15 +262,18 @@ type BareMetalClusterStatus struct {
 
 	// Conditions defines current service state of the BareMetalCluster.
 	// +optional
+	//nolint:staticcheck // Conditions deprecated in CAPI v1beta2, will migrate when ready
 	Conditions clusterv1.Conditions `json:"conditions,omitempty"`
 }
 
 // GetConditions returns the set of conditions for this object.
+//nolint:staticcheck // Conditions deprecated in CAPI v1beta2, will migrate when ready
 func (c *BareMetalCluster) GetConditions() clusterv1.Conditions {
 	return c.Status.Conditions
 }
 
 // SetConditions sets the conditions on this object.
+//nolint:staticcheck // Conditions deprecated in CAPI v1beta2, will migrate when ready
 func (c *BareMetalCluster) SetConditions(conditions clusterv1.Conditions) {
 	c.Status.Conditions = conditions
 }

@@ -46,6 +46,7 @@ import (
 )
 
 func setMachineCondition(bmMachine *capbmv1.BareMetalMachine, conditionType clusterv1.ConditionType, status corev1.ConditionStatus, reason string, severity clusterv1.ConditionSeverity, message string) {
+	//nolint:staticcheck // Condition deprecated in CAPI v1beta2, will migrate when ready
 	condition := clusterv1.Condition{
 		Type:               conditionType,
 		Status:             status,

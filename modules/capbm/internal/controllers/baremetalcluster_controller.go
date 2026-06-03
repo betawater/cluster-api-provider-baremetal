@@ -556,6 +556,7 @@ func markConditionTrue(conditions *clusterv1.Conditions, conditionType clusterv1
 func setCondition(conditions *clusterv1.Conditions, conditionType clusterv1.ConditionType, status corev1.ConditionStatus, reason string, severity clusterv1.ConditionSeverity, message string) {
 	for i, c := range *conditions {
 		if c.Type == conditionType {
+			//nolint:staticcheck // Condition deprecated in CAPI v1beta2, will migrate when ready
 			(*conditions)[i] = clusterv1.Condition{
 				Type:               conditionType,
 				Status:             status,
@@ -567,6 +568,7 @@ func setCondition(conditions *clusterv1.Conditions, conditionType clusterv1.Cond
 			return
 		}
 	}
+	//nolint:staticcheck // Condition deprecated in CAPI v1beta2, will migrate when ready
 	*conditions = append(*conditions, clusterv1.Condition{
 		Type:               conditionType,
 		Status:             status,

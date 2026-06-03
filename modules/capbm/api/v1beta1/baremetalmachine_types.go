@@ -33,6 +33,7 @@ const (
 	MachineReadyCondition = clusterv1.ReadyCondition
 
 	// PreFlightChecksPassedCondition reports whether pre-flight checks have passed.
+	//nolint:staticcheck // ConditionType deprecated in CAPI v1beta2, will migrate when ready
 	PreFlightChecksPassedCondition clusterv1.ConditionType = "PreFlightChecksPassed"
 )
 

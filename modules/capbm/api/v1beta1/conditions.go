@@ -20,33 +20,43 @@ import clusterv1 "sigs.k8s.io/cluster-api/api/core/v1beta2"
 
 const (
 	// SSHConnectedCondition reports the current status of SSH connection.
+	//nolint:staticcheck // ConditionType deprecated in CAPI v1beta2, will migrate when ready
 	SSHConnectedCondition clusterv1.ConditionType = "SSHConnected"
 
 	// ComponentsInstalledCondition reports whether required components are installed.
+	//nolint:staticcheck // ConditionType deprecated in CAPI v1beta2, will migrate when ready
 	ComponentsInstalledCondition clusterv1.ConditionType = "ComponentsInstalled"
 
 	// ContainerRuntimeReadyCondition reports whether the container runtime is ready.
+	//nolint:staticcheck // ConditionType deprecated in CAPI v1beta2, will migrate when ready
 	ContainerRuntimeReadyCondition clusterv1.ConditionType = "ContainerRuntimeReady"
 
 	// FirewallConfiguredCondition reports whether firewall is configured.
+	//nolint:staticcheck // ConditionType deprecated in CAPI v1beta2, will migrate when ready
 	FirewallConfiguredCondition clusterv1.ConditionType = "FirewallConfigured"
 
 	// SELinuxConfiguredCondition reports whether SELinux is configured.
+	//nolint:staticcheck // ConditionType deprecated in CAPI v1beta2, will migrate when ready
 	SELinuxConfiguredCondition clusterv1.ConditionType = "SELinuxConfigured"
 
 	// CNIInstalledCondition reports whether CNI plugin is installed.
+	//nolint:staticcheck // ConditionType deprecated in CAPI v1beta2, will migrate when ready
 	CNIInstalledCondition clusterv1.ConditionType = "CNIInstalled"
 
 	// CSIInstalledCondition reports whether CSI driver is installed.
+	//nolint:staticcheck // ConditionType deprecated in CAPI v1beta2, will migrate when ready
 	CSIInstalledCondition clusterv1.ConditionType = "CSIInstalled"
 
 	// LoadBalancerReadyCondition reports whether the load balancer is ready.
+	//nolint:staticcheck // ConditionType deprecated in CAPI v1beta2, will migrate when ready
 	LoadBalancerReadyCondition clusterv1.ConditionType = "LoadBalancerReady"
 
 	// IngressLoadBalancerReadyCondition reports whether the ingress load balancer is ready.
+	//nolint:staticcheck // ConditionType deprecated in CAPI v1beta2, will migrate when ready
 	IngressLoadBalancerReadyCondition clusterv1.ConditionType = "IngressLoadBalancerReady"
 
 	// GatewayAPIReadyCondition reports whether the Gateway API components are ready.
+	//nolint:staticcheck // ConditionType deprecated in CAPI v1beta2, will migrate when ready
 	GatewayAPIReadyCondition clusterv1.ConditionType = "GatewayAPIReady"
 )
 

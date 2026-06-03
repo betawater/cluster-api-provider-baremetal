@@ -33,10 +33,10 @@ type KeepalivedProvider struct {
 // NewKeepalivedProvider creates a new Keepalived provider.
 func NewKeepalivedProvider(config *capbmv1.KeepalivedConfig) (Provider, error) {
 	if config == nil {
-		return nil, fmt.Errorf("Keepalived configuration is required")
+		return nil, fmt.Errorf("keepalived configuration is required")
 	}
 	if config.VirtualIP == "" {
-		return nil, fmt.Errorf("Keepalived virtualIP is required")
+		return nil, fmt.Errorf("keepalived virtualIP is required")
 	}
 	if config.Interface == "" {
 		config.Interface = "eth0"

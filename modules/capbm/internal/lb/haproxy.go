@@ -252,13 +252,13 @@ func (p *HAProxyProvider) getBackendsViaSSH(ctx context.Context) ([]Backend, err
 	if err != nil {
 		return nil, fmt.Errorf("failed to create SSH client: %w", err)
 	}
-	defer sshClient.Close()
+	defer func() { _ = sshClient.Close() }()
 
 	session, err := sshClient.NewSession()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create SSH session: %w", err)
 	}
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 
 	output, err := session.CombinedOutput(script)
 	if err != nil {
@@ -307,7 +307,9 @@ func (p *HAProxyProvider) parseBackendsFromResponse(response string) ([]Backend,
 		ip := addrParts[0]
 		port := 6443
 		if len(addrParts) > 1 {
-			fmt.Sscanf(addrParts[1], "%d", &port)
+			if _, err := fmt.Sscanf(addrParts[1], "%d", &port); err != nil {
+				port = 6443
+			}
 		}
 
 		backends = append(backends, Backend{

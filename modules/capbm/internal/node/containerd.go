@@ -48,18 +48,18 @@ func GenerateHostsToml(config RegistryAuthConfig) string {
 	var sb strings.Builder
 
 	// Server URL
-	sb.WriteString(fmt.Sprintf("server = \"https://%s\"\n", config.Registry))
+	fmt.Fprintf(&sb, "server = \"https://%s\"\n", config.Registry)
 	sb.WriteString("\n")
 
 	// Host configuration
-	sb.WriteString(fmt.Sprintf("[host.\"https://%s\"]\n", config.Registry))
+	fmt.Fprintf(&sb, "[host.\"https://%s\"]\n", config.Registry)
 	sb.WriteString("  capabilities = [\"pull\", \"resolve\"]\n")
 
 	// Add authentication if credentials provided
 	if config.Username != "" && config.Password != "" {
 		auth := base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%s:%s", config.Username, config.Password)))
 		sb.WriteString("\n")
-		sb.WriteString(fmt.Sprintf("[host.\"https://%s\".header]\n", config.Registry))
+		fmt.Fprintf(&sb, "[host.\"https://%s\".header]\n", config.Registry)
 		sb.WriteString(fmt.Sprintf("  Authorization = \"Basic %s\"\n", auth))
 	}
 
