@@ -35,6 +35,8 @@ This project contains two independent modules:
 
 ### Installation
 
+#### Option 1: Using clusterctl (Recommended)
+
 ```bash
 # Install CAPI core components
 clusterctl init --core cluster-api --bootstrap kubeadm --control-plane kubeadm
@@ -49,6 +51,100 @@ kubectl apply -k modules/cvo/config/default/
 kubectl apply -k modules/capbm/config/clusterclass/
 ```
 
+#### Option 2: Manual Installation (Without clusterctl)
+
+For air-gapped environments or when you need more control over the installation, you can install CAPI core components manually without using `clusterctl init`.
+
+**Using Official Release Manifests:**
+
+```bash
+# Define CAPI version
+CAPI_VERSION="v1.9.0"
+
+# Install CAPI core CRDs and controllers
+kubectl apply -f https://github.com/kubernetes-sigs/cluster-api/releases/download/${CAPI_VERSION}/cluster-api-components.yaml
+
+# Install Kubeadm Bootstrap Provider
+kubectl apply -f https://github.com/kubernetes-sigs/cluster-api/releases/download/${CAPI_VERSION}/bootstrap-components.yaml
+
+# Install Kubeadm Control Plane Provider
+kubectl apply -f https://github.com/kubernetes-sigs/cluster-api/releases/download/${CAPI_VERSION}/control-plane-components.yaml
+```
+
+**Using Kustomize with Remote Bases:**
+
+```bash
+# Create a kustomization.yaml
+cat > capi-kustomization.yaml << EOF
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - https://github.com/kubernetes-sigs/cluster-api/releases/download/v1.9.0/cluster-api-components.yaml
+  - https://github.com/kubernetes-sigs/cluster-api/releases/download/v1.9.0/bootstrap-components.yaml
+  - https://github.com/kubernetes-sigs/cluster-api/releases/download/v1.9.0/control-plane-components.yaml
+EOF
+
+# Apply
+kubectl apply -k capi-kustomization.yaml
+```
+
+**Air-Gapped Installation:**
+
+For environments without internet access:
+
+```bash
+# 1. On a machine with internet, download the manifests
+CAPI_VERSION="v1.9.0"
+curl -LO https://github.com/kubernetes-sigs/cluster-api/releases/download/${CAPI_VERSION}/cluster-api-components.yaml
+curl -LO https://github.com/kubernetes-sigs/cluster-api/releases/download/${CAPI_VERSION}/bootstrap-components.yaml
+curl -LO https://github.com/kubernetes-sigs/cluster-api/releases/download/${CAPI_VERSION}/control-plane-components.yaml
+
+# 2. Transfer files to air-gapped environment (e.g., via USB)
+
+# 3. Apply manifests
+kubectl apply -f cluster-api-components.yaml
+kubectl apply -f bootstrap-components.yaml
+kubectl apply -f control-plane-components.yaml
+```
+
+**Verify CAPI Installation:**
+
+```bash
+# Check that all CAPI controllers are running
+kubectl get pods -n capi-system
+kubectl get pods -n capi-kubeadm-bootstrap-system
+kubectl get pods -n capi-kubeadm-control-plane-system
+
+# Verify CRDs are installed
+kubectl get crds | grep cluster.x-k8s.io
+```
+
+**Continue with CAPBM and CVO Installation:**
+
+After installing CAPI core components, continue with:
+
+```bash
+# Install CAPBM provider
+kubectl apply -k modules/capbm/config/default/
+
+# Install CVO (version operator)
+kubectl apply -k modules/cvo/config/default/
+
+# Deploy ClusterClass templates
+kubectl apply -k modules/capbm/config/clusterclass/
+```
+
+**Version Compatibility:**
+
+| CAPI Version | CAPBM Version | Notes |
+|--------------|---------------|-------|
+| v1.9.x | v0.1.x | Recommended |
+| v1.8.x | v0.1.x | Compatible |
+| v1.7.x | v0.1.x | Compatible with limitations |
+
+> **Note**: Always check the [CAPI release notes](https://github.com/kubernetes-sigs/cluster-api/releases) for breaking changes before upgrading.
+
 ### Create a Cluster
 
 ```bash
@@ -59,7 +155,7 @@ kubectl create secret generic baremetal-ssh-credentials \
 
 # Generate cluster manifest
 clusterctl generate cluster my-cluster \
-  --from modules/capbm/templates/clusterclass/baremetal-clusterclass-v0.1.0.yaml \
+  --from modules/templates/clusterclass/baremetal-clusterclass-v0.1.0.yaml \
   --variable CONTROL_PLANE_ENDPOINT_HOST=lb.example.com \
   --variable SSH_CREDENTIALS_SECRET=baremetal-ssh-credentials \
   > cluster.yaml

@@ -1,6 +1,14 @@
 # CAPBM (Cluster API Provider Bare Metal) 详细设计
 
 ## 一、架构总览
+
+CAPBM 采用多模块架构，包含两个独立的管理器：
+
+| 模块 | API Group | 用途 |
+|------|-----------|------|
+| **CVO** (Cluster Version Operator) | `cvo.capbm.io` | 集群版本管理和升级协调 |
+| **CAPBM** | `infrastructure.cluster.x-k8s.io` | 裸金属基础设施管理 |
+
 ```
 用户输入 (机器列表)
     │
@@ -13,7 +21,7 @@
 │                    Management Cluster                       │
 │                                                             │
 │  ┌───────────────────────────────────────────────────────┐  │
-│  │  CAPBM Provider (自研)                                │  │
+│  │  CAPBM Provider (modules/capbm)                       │  │
 │  │  ┌─────────────────────────────────────────────────┐  │  │
 │  │  │ BareMetalCluster Controller                     │  │  │
 │  │  │ - 管理集群级别基础设施状态                        │  │  │
@@ -27,6 +35,21 @@
 │  └───────────────────────────────────────────────────────┘  │
 │                                                             │
 │  ┌───────────────────────────────────────────────────────┐  │
+│  │  CVO (Cluster Version Operator) (modules/cvo)         │  │
+│  │  ┌─────────────────────────────────────────────────┐  │  │
+│  │  │ ClusterVersion Controller                       │  │  │
+│  │  │ - 集群版本管理                                  │  │  │
+│  │  │ - 升级路径验证                                  │  │  │
+│  │  │ - Addon 生命周期管理                            │  │  │
+│  │  └─────────────────────────────────────────────────┘  │  │
+│  │  ┌─────────────────────────────────────────────────┐  │  │
+│  │  │ Addon Upgrader                                  │  │  │
+│  │  │ - CNI/CSI 安装与升级                            │  │  │
+│  │  │ - 版本对比与依赖排序                            │  │  │
+│  │  └─────────────────────────────────────────────────┘  │  │
+│  └───────────────────────────────────────────────────────┘  │
+│                                                             │
+│  ┌───────────────────────────────────────────────────────┐  │
 │  │  CAPI Core (内置)                                     │  │
 │  │  Machine Controller ──→ 关联 Machine 与 Node          │  │
 │  └───────────────────────────────────────────────────────┘  │
@@ -35,7 +58,7 @@
 │  │  Kubeadm Bootstrap Provider (内置)                    │  │
 │  │  - 生成 kubeadm init/join 配置                        │  │
 │  │  - 执行 cloud-init/Ignition 脚本                      │  │
-│  └───────────────────────────────────────────────────────┘ │
+│  └───────────────────────────────────────────────────────┘  │
 └────────────────────────────────────────────────────────────┘
          │
          ▼ (SSH + cloud-init)
@@ -51,9 +74,11 @@
 
 ## 二、CRD 设计
 
-### 2.1 BareMetalCluster
+### 2.1 CAPBM 模块 CRD (`infrastructure.cluster.x-k8s.io`)
+
+#### BareMetalCluster
 ```yaml
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
 kind: BareMetalCluster
 metadata:
   name: my-cluster
@@ -80,6 +105,7 @@ status:
 
 **Go 类型定义**:
 ```go
+// modules/capbm/api/v1beta1/baremetalcluster_types.go
 type BareMetalClusterSpec struct {
     ControlPlaneEndpoint clusterv1.APIEndpoint `json:"controlPlaneEndpoint,omitempty"`
     Network              NetworkConfig         `json:"network,omitempty"`
@@ -97,9 +123,9 @@ type BareMetalClusterStatus struct {
 }
 ```
 
-### 2.2 BareMetalMachine
+#### BareMetalMachine
 ```yaml
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
 kind: BareMetalMachine
 metadata:
   name: node-01
@@ -148,6 +174,7 @@ status:
 
 **Go 类型定义**:
 ```go
+// modules/capbm/api/v1beta1/baremetalmachine_types.go
 type BareMetalMachineSpec struct {
     HostName        string                    `json:"hostName"`
     IPAddress       string                    `json:"ipAddress"`
@@ -171,25 +198,181 @@ type BareMetalMachineStatus struct {
 }
 ```
 
-### 2.3 BareMetalMachineTemplate
+### 2.2 CVO 模块 CRD (`cvo.capbm.io`)
+
+#### ClusterVersion
 ```yaml
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
-kind: BareMetalMachineTemplate
+apiVersion: cvo.capbm.io/v1beta1
+kind: ClusterVersion
 metadata:
-  name: my-cluster-cp-template
+  name: my-cluster
   namespace: default
 spec:
-  template:
-    spec:
-      sshPort: 22
-      credentialsRef:
-        name: default-credentials
-      role: "control-plane"
+  clusterRef:
+    name: my-cluster
+    namespace: default
+  desiredUpdate:
+    version: v1.31.1
+    image: registry.example.com/capbm/release:v1.31.1
+status:
+  actualVersion: v1.31.0
+  desired:
+    version: v1.31.1
+    image: registry.example.com/capbm/release:v1.31.1
+  conditions:
+    - type: Available
+      status: "True"
+      reason: AsExpected
+    - type: Progressing
+      status: "False"
+      reason: AsExpected
+  addonStatus:
+    - name: calico
+      version: v3.28.0
+      phase: Installed
+    - name: ceph-csi
+      version: v3.11.0
+      phase: Upgrading
 ```
+
+**Go 类型定义**:
+```go
+// modules/cvo/api/v1beta1/clusterversion_types.go
+type ClusterVersionSpec struct {
+    ClusterRef    corev1.ObjectReference `json:"clusterRef"`
+    Channel       string                 `json:"channel,omitempty"`
+    DesiredUpdate *Update                `json:"desiredUpdate,omitempty"`
+}
+
+type Update struct {
+    Version string `json:"version,omitempty"`
+    Image   string `json:"image,omitempty"`
+    Force   bool   `json:"force,omitempty"`
+}
+
+type ClusterVersionStatus struct {
+    ObservedGeneration int64                    `json:"observedGeneration"`
+    Desired            Release                  `json:"desired"`
+    ActualVersion      string                   `json:"actualVersion"`
+    History            []UpdateHistory          `json:"history,omitempty"`
+    Conditions         []metav1.Condition       `json:"conditions,omitempty"`
+    AvailableUpdates   []Release                `json:"availableUpdates,omitempty"`
+    ComponentStatus    []ComponentStatus        `json:"componentStatus,omitempty"`
+    AddonStatus        []AddonVersionStatus     `json:"addonStatus,omitempty"`
+}
+```
+
+#### ReleaseImage
+```yaml
+apiVersion: cvo.capbm.io/v1beta1
+kind: ReleaseImage
+metadata:
+  name: v1.31.1
+spec:
+  version: v1.31.1
+  image: registry.example.com/capbm/release:v1.31.1
+  
+  # 组件定义 (高内聚)
+  components:
+    kubernetes:
+      version: v1.31.1
+      type: binary
+      installStrategy:
+        timeout: 600s
+        retryCount: 3
+        method: package
+        serviceName: kubelet
+      upgradeStrategy:
+        type: Rolling
+        maxConcurrent: 1
+        timeout: 900s
+        retryCount: 3
+        drain: true
+      upgrade:
+        backup:
+          enabled: true
+          config:
+            - path: /etc/kubernetes
+              type: directory
+          etcdSnapshot: true
+        rollback:
+          script: scripts/rollback-kubernetes.sh
+          timeout: 600s
+        healthCheck:
+          command: kubectl get nodes
+          timeout: 60s
+          retries: 3
+    
+    containerd:
+      version: 1.7.24
+      type: binary
+      upgrade:
+        backup:
+          enabled: true
+          config:
+            - path: /etc/containerd/config.toml
+              type: file
+        rollback:
+          script: scripts/rollback-containerd.sh
+          timeout: 300s
+        healthCheck:
+          command: systemctl is-active containerd
+          timeout: 30s
+          retries: 3
+  
+  # Addon 定义
+  addons:
+    - name: calico
+      type: helm
+      version: v3.28.0
+      contentPath: charts/calico-v3.28.0.tgz
+      namespace: kube-system
+      dependencies: []
+      installStrategy:
+        timeout: 300s
+        retryCount: 3
+        createNamespace: true
+        wait: true
+      upgrade:
+        backup:
+          enabled: true
+          config:
+            - path: /etc/cni/net.d
+              type: directory
+        rollback:
+          script: scripts/rollback-calico.sh
+          timeout: 300s
+        healthCheck:
+          command: kubectl get pods -n kube-system -l k8s-app=calico-node
+          timeout: 60s
+          retries: 3
+  
+  # 升级图
+  upgradeGraph:
+    - name: phase-1-runtime
+      order: 1
+      blocking: true
+      components: [containerd]
+    - name: phase-2-kubernetes
+      order: 2
+      blocking: true
+      components: [kubernetes]
+    - name: phase-3-addons
+      order: 3
+      blocking: false
+      components: [calico, ceph-csi]
+```
+
+#### 其他 CVO CRD
+- `UpgradePath` - 升级路径和兼容性规则
+- `ReleaseCatalog` - 可用发布版本目录
+- `ClusterAddon` - 集群插件生命周期管理
 
 ## 三、控制器设计
 
-### 3.1 BareMetalCluster Controller
+### 3.1 CAPBM 模块控制器
+
+#### BareMetalCluster Controller
 **职责**:
 - 验证集群配置
 - 设置 `status.ready = true`
@@ -210,8 +393,9 @@ Reconcile
 
 **核心代码结构**:
 ```go
+// modules/capbm/internal/controllers/baremetalcluster_controller.go
 func (r *BareMetalClusterReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-    cluster := &infrav1.BareMetalCluster{}
+    cluster := &capbmv1.BareMetalCluster{}
     if err := r.Get(ctx, req.NamespacedName, cluster); err != nil {
         return ctrl.Result{}, client.IgnoreNotFound(err)
     }
@@ -225,22 +409,22 @@ func (r *BareMetalClusterReconciler) Reconcile(ctx context.Context, req ctrl.Req
     return r.reconcileNormal(ctx, cluster)
 }
 
-func (r *BareMetalClusterReconciler) reconcileNormal(ctx context.Context, cluster *infrav1.BareMetalCluster) (ctrl.Result, error) {
+func (r *BareMetalClusterReconciler) reconcileNormal(ctx context.Context, cluster *capbmv1.BareMetalCluster) (ctrl.Result, error) {
     // 验证配置
     if cluster.Spec.ControlPlaneEndpoint.Host == "" {
-        conditions.MarkFalse(cluster, infrav1.ReadyCondition, infrav1.EndpointNotSetReason, clusterv1.ConditionSeverityError, "controlPlaneEndpoint is required")
+        markConditionFalse(&cluster.Status.Conditions, capbmv1.ReadyCondition, capbmv1.EndpointNotSetReason, clusterv1.ConditionSeverityError, "controlPlaneEndpoint is required")
         return ctrl.Result{}, nil
     }
 
     // 设置就绪状态
     cluster.Status.Ready = true
-    conditions.MarkTrue(cluster, infrav1.ReadyCondition)
+    markConditionTrue(&cluster.Status.Conditions, capbmv1.ReadyCondition)
 
     return ctrl.Result{}, r.Status().Update(ctx, cluster)
 }
 ```
 
-### 3.2 BareMetalMachine Controller
+#### BareMetalMachine Controller
 **职责**:
 - SSH 连接到目标机器
 - 执行预检 (OS 版本、网络、内核参数)
@@ -276,77 +460,99 @@ Reconcile
     └── 设置 status.ready = true
 ```
 
+### 3.2 CVO 模块控制器
+
+#### ClusterVersion Controller
+**职责**:
+- 监控 `DesiredUpdate` 变更
+- 验证升级路径
+- 执行 K8S 升级 (通过 UpgradeGraph)
+- 执行 Addon 升级
+- 更新升级状态
+
+**调和流程**:
+```
+Reconcile
+    │
+    ├── 获取 ClusterVersion
+    │
+    ├── 同步 UpgradePath 和 ReleaseCatalog
+    │
+    ├── 计算可用更新
+    │
+    ├── 判断是否需要升级
+    │   ├── K8S 升级: cv.Status.ActualVersion != cv.Spec.DesiredUpdate.Version
+    │   └── Addon 升级: 遍历 ReleaseImage.Addons 比较版本
+    │
+    ├── 获取目标 ReleaseImage
+    │
+    ├── Phase 1: K8S 升级 (仅当 K8S 版本变更时)
+    │   └── GraphExecutor.ExecuteUpgradeGraph()
+    │
+    ├── Phase 2: Addon 升级 (总是执行)
+    │   └── executeAddonUpgrades()
+    │
+    └── 更新状态
+        ├── cv.Status.ActualVersion = cv.Spec.DesiredUpdate.Version
+        └── cv.Status.AddonStatus = ...
+```
+
 **核心代码结构**:
 ```go
-func (r *BareMetalMachineReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-    bmMachine := &infrav1.BareMetalMachine{}
-    if err := r.Get(ctx, req.NamespacedName, bmMachine); err != nil {
+// modules/cvo/internal/controllers/clusterversion_controller.go
+func (r *ClusterVersionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+    cv := &cfov1.ClusterVersion{}
+    if err := r.Get(ctx, req.NamespacedName, cv); err != nil {
         return ctrl.Result{}, client.IgnoreNotFound(err)
     }
 
-    // 获取关联的 Machine
-    machine, err := util.GetOwnerMachine(ctx, r.Client, bmMachine.ObjectMeta)
-    if err != nil {
-        return ctrl.Result{}, err
+    // 同步 UpgradePath 和 ReleaseCatalog
+    if err := r.syncUpgradePath(ctx, cv); err != nil {
+        return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
     }
-    if machine == nil {
-        log.Info("Waiting for Machine Controller to set OwnerRef")
-        return ctrl.Result{}, nil
+    if err := r.syncReleaseCatalog(ctx, cv); err != nil {
+        return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
     }
 
-    // 处理删除
-    if !bmMachine.DeletionTimestamp.IsZero() {
-        return r.reconcileDelete(ctx, bmMachine)
+    // 判断是否需要升级
+    needsK8SUpgrade := cv.Status.ActualVersion != cv.Spec.DesiredUpdate.Version
+    releaseImage, _ := r.fetchReleaseImage(ctx, cv)
+    needsAddonUpgrade := r.needsAddonUpgrade(ctx, cv, releaseImage)
+
+    if !needsK8SUpgrade && !needsAddonUpgrade {
+        return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
     }
 
-    // 正常调和
-    return r.reconcileNormal(ctx, bmMachine, machine)
+    // 执行升级
+    if err := r.executeUpgrade(ctx, cv, releaseImage, needsK8SUpgrade); err != nil {
+        return ctrl.Result{RequeueAfter: 60 * time.Second}, nil
+    }
+
+    // 更新状态
+    cv.Status.ActualVersion = cv.Spec.DesiredUpdate.Version
+    r.updateAddonStatus(cv, releaseImage)
+
+    return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
 }
 
-func (r *BareMetalMachineReconciler) reconcileNormal(ctx context.Context, bmMachine *infrav1.BareMetalMachine, machine *clusterv1.Machine) (ctrl.Result, error) {
-    log := ctrl.LoggerFrom(ctx)
-
-    // 1. 获取凭据
-    creds, err := r.getCredentials(ctx, bmMachine.Spec.CredentialsRef, bmMachine.Namespace)
-    if err != nil {
-        conditions.MarkFalse(bmMachine, infrav1.ReadyCondition, infrav1.CredentialsNotFoundReason, clusterv1.ConditionSeverityError, err.Error())
-        return ctrl.Result{RequeueAfter: 10 * time.Second}, r.Status().Update(ctx, bmMachine)
-    }
-
-    // 2. 建立 SSH 连接
-    sshClient, err := r.sshManager.Connect(bmMachine.Spec.IPAddress, bmMachine.Spec.SSHPort, creds)
-    if err != nil {
-        conditions.MarkFalse(bmMachine, infrav1.ReadyCondition, infrav1.SSHConnectionFailedReason, clusterv1.ConditionSeverityWarning, err.Error())
-        return ctrl.Result{RequeueAfter: 30 * time.Second}, r.Status().Update(ctx, bmMachine)
-    }
-    defer sshClient.Close()
-
-    // 3. 执行预检
-    if err := r.runPreFlightChecks(ctx, sshClient, bmMachine); err != nil {
-        conditions.MarkFalse(bmMachine, infrav1.PreFlightChecksPassedCondition, infrav1.PreFlightChecksFailedReason, clusterv1.ConditionSeverityError, err.Error())
-        return ctrl.Result{RequeueAfter: 60 * time.Second}, r.Status().Update(ctx, bmMachine)
-    }
-    conditions.MarkTrue(bmMachine, infrav1.PreFlightChecksPassedCondition)
-
-    // 4. 设置 ProviderID
-    providerID := fmt.Sprintf("baremetal://%s", bmMachine.Spec.HostName)
-    if bmMachine.Spec.ProviderID == nil || *bmMachine.Spec.ProviderID != providerID {
-        bmMachine.Spec.ProviderID = ptr.To(providerID)
-        if err := r.Update(ctx, bmMachine); err != nil {
-            return ctrl.Result{}, err
+func (r *ClusterVersionReconciler) executeUpgrade(ctx context.Context, cv *cfov1.ClusterVersion, releaseImage *cfov1.ReleaseImage, needsK8SUpgrade bool) error {
+    // Phase 1: K8S 升级 (仅当 K8S 版本变更时)
+    if needsK8SUpgrade {
+        executor := upgrader.NewGraphExecutor(r.Client, r.Puller, nil)
+        if err := executor.ExecuteUpgradeGraph(ctx, cv, releaseImage); err != nil {
+            return fmt.Errorf("k8s upgrade failed: %w", err)
         }
     }
 
-    // 5. 更新状态
-    bmMachine.Status.Ready = true
-    bmMachine.Status.ProviderID = providerID
-    bmMachine.Status.Addresses = []clusterv1.MachineAddress{
-        {Type: clusterv1.MachineInternalIP, Address: bmMachine.Spec.IPAddress},
-        {Type: clusterv1.MachineHostName, Address: bmMachine.Spec.HostName},
+    // Phase 2: Addon 升级 (总是执行)
+    if err := r.executeAddonUpgrades(ctx, cv, releaseImage); err != nil {
+        return fmt.Errorf("addon upgrades failed: %w", err)
     }
-    conditions.MarkTrue(bmMachine, infrav1.ReadyCondition)
 
-    return ctrl.Result{}, r.Status().Update(ctx, bmMachine)
+    // 更新 Addon 状态
+    r.updateAddonStatus(cv, releaseImage)
+
+    return nil
 }
 ```
 
@@ -354,9 +560,11 @@ func (r *BareMetalMachineReconciler) reconcileNormal(ctx context.Context, bmMach
 
 ### 4.1 SSH Manager 设计
 ```go
+// modules/capbm/internal/ssh/manager.go
 type SSHManager struct {
     connections map[string]*SSHConnection
     mu          sync.RWMutex
+    idleTimeout time.Duration
 }
 
 type SSHConnection struct {
@@ -371,9 +579,9 @@ func (m *SSHManager) Connect(host string, port int, creds Credentials) (*SSHConn
     
     m.mu.RLock()
     if conn, exists := m.connections[key]; exists {
-        if time.Since(conn.LastUsed) < 5*time.Minute {
+        if time.Since(conn.LastUsed) < m.idleTimeout {
             // 检查连接是否存活
-            if _, _, err := conn.Client.Conn.SendRequest("keepalive", true, nil); err == nil {
+            if _, _, err := conn.Client.SendRequest("keepalive@google.com", true, nil); err == nil {
                 conn.LastUsed = time.Now()
                 m.mu.RUnlock()
                 return conn, nil
@@ -472,9 +680,97 @@ fi
 echo "=== 预检完成 ==="
 ```
 
-## 五、部署与使用流程
+## 五、升级流程设计
 
-### 5.1 用户输入转化
+### 5.1 升级触发机制
+
+```yaml
+# 方式一：更新 DesiredUpdate.Version 触发 K8S + Addon 升级
+apiVersion: cvo.capbm.io/v1beta1
+kind: ClusterVersion
+spec:
+  desiredUpdate:
+    version: v1.31.1   # 从 v1.31.0 升级到 v1.31.1
+
+# 方式二：更新 DesiredUpdate.Image 仅触发 Addon 升级 (K8S 版本不变)
+spec:
+  desiredUpdate:
+    version: v1.31.0     # K8S 版本不变
+    image: registry.example.com/capbm/release:v1.31.0-patch1  # 新 ReleaseImage
+```
+
+### 5.2 升级执行流程
+
+```
+executeUpgrade(ctx, cv, releaseImage):
+    │
+    ├── Phase 1: K8S 升级 (仅当 K8S 版本变更时)
+    │   ├── 1.1 备份 etcd
+    │   ├── 1.2 升级 Control Plane 节点 (滚动)
+    │   │   ├── containerd
+    │   │   ├── CNI/CSI (节点级二进制)
+    │   │   └── kubeadm upgrade node (通过 KCP)
+    │   └── 1.3 升级 Worker 节点 (滚动)
+    │
+    └── Phase 2: Addon 升级 (总是执行)
+        ├── 2.1 按依赖顺序排序 Addon
+        ├── 2.2 逐个升级 Addon
+        │   ├── 备份当前配置
+        │   ├── 执行升级 (Helm/Manifest)
+        │   ├── 健康检查
+        │   └── 更新 ClusterAddon.Status
+        └── 2.3 更新 ClusterVersion.Status.AddonStatus
+```
+
+### 5.3 Addon 升级触发判断
+
+```go
+func (r *ClusterVersionReconciler) needsAddonUpgrade(ctx context.Context, cv *cfov1.ClusterVersion, releaseImage *cfov1.ReleaseImage) bool {
+    for _, addonDef := range releaseImage.Spec.Addons {
+        if addonDef.Version == "" {
+            continue
+        }
+
+        clusterAddon := &cfov1.ClusterAddon{}
+        err := r.Get(ctx, types.NamespacedName{Name: addonDef.Name, Namespace: cv.Namespace}, clusterAddon)
+
+        if apierrors.IsNotFound(err) {
+            return true  // 新 Addon，需要安装
+        }
+
+        if err != nil {
+            continue
+        }
+
+        // 版本不同，需要升级
+        if clusterAddon.Status.Version != addonDef.Version {
+            return true
+        }
+    }
+    return false
+}
+```
+
+## 六、部署与使用流程
+
+### 6.1 安装
+
+```bash
+# 安装 CAPI core components
+clusterctl init --core cluster-api --bootstrap kubeadm --control-plane kubeadm
+
+# 安装 CAPBM provider
+kubectl apply -k modules/capbm/config/default/
+
+# 安装 CVO (version operator)
+kubectl apply -k modules/cvo/config/default/
+
+# 部署 ClusterClass templates
+kubectl apply -k modules/capbm/config/clusterclass/
+```
+
+### 6.2 用户输入转化
+
 用户提供机器列表：
 ```
 node-01, 192.168.1.101, root, password123, control-plane
@@ -501,7 +797,7 @@ spec:
     host: "lb.example.com"
     port: 6443
   infrastructureRef:
-    apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
     kind: BareMetalCluster
     name: my-cluster
   controlPlaneRef:
@@ -511,7 +807,7 @@ spec:
 
 ---
 # 2. BareMetalCluster
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
 kind: BareMetalCluster
 metadata:
   name: my-cluster
@@ -521,7 +817,21 @@ spec:
     port: 6443
 
 ---
-# 3. 凭据 Secrets
+# 3. ClusterVersion (CVO)
+apiVersion: cvo.capbm.io/v1beta1
+kind: ClusterVersion
+metadata:
+  name: my-cluster
+spec:
+  clusterRef:
+    name: my-cluster
+    namespace: default
+  desiredUpdate:
+    version: v1.31.0
+    image: registry.example.com/capbm/release:v1.31.0
+
+---
+# 4. 凭据 Secrets
 apiVersion: v1
 kind: Secret
 metadata:
@@ -533,7 +843,7 @@ stringData:
 # ... 为每台机器创建 Secret
 
 ---
-# 4. KubeadmControlPlane
+# 5. KubeadmControlPlane
 apiVersion: controlplane.cluster.x-k8s.io/v1beta2
 kind: KubeadmControlPlane
 metadata:
@@ -543,7 +853,7 @@ spec:
   version: v1.31.0
   machineTemplate:
     infrastructureRef:
-      apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+      apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
       kind: BareMetalMachineTemplate
       name: my-cluster-cp-template
   kubeadmConfigSpec:
@@ -562,8 +872,8 @@ spec:
             value: "250"
 
 ---
-# 5. BareMetalMachineTemplate (Control Plane)
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+# 6. BareMetalMachineTemplate (Control Plane)
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
 kind: BareMetalMachineTemplate
 metadata:
   name: my-cluster-cp-template
@@ -576,8 +886,8 @@ spec:
       role: "control-plane"
 
 ---
-# 6. BareMetalMachine (每台控制面节点)
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+# 7. BareMetalMachine (每台控制面节点)
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
 kind: BareMetalMachine
 metadata:
   name: node-01
@@ -591,36 +901,10 @@ spec:
     name: node-01-credentials
   role: "control-plane"
 ---
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
-kind: BareMetalMachine
-metadata:
-  name: node-02
-  labels:
-    cluster.x-k8s.io/cluster-name: my-cluster
-spec:
-  hostName: "node-02"
-  ipAddress: "192.168.1.102"
-  sshPort: 22
-  credentialsRef:
-    name: node-02-credentials
-  role: "control-plane"
----
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
-kind: BareMetalMachine
-metadata:
-  name: node-03
-  labels:
-    cluster.x-k8s.io/cluster-name: my-cluster
-spec:
-  hostName: "node-03"
-  ipAddress: "192.168.1.103"
-  sshPort: 22
-  credentialsRef:
-    name: node-03-credentials
-  role: "control-plane"
+# ... node-02, node-03
 
 ---
-# 7. MachineDeployment (Worker)
+# 8. MachineDeployment (Worker)
 apiVersion: cluster.x-k8s.io/v1beta2
 kind: MachineDeployment
 metadata:
@@ -640,13 +924,13 @@ spec:
           kind: KubeadmConfigTemplate
           name: my-cluster-md-template
       infrastructureRef:
-        apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
         kind: BareMetalMachineTemplate
         name: my-cluster-md-template
 
 ---
-# 8. BareMetalMachineTemplate (Worker)
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+# 9. BareMetalMachineTemplate (Worker)
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
 kind: BareMetalMachineTemplate
 metadata:
   name: my-cluster-md-template
@@ -659,8 +943,8 @@ spec:
       role: "worker"
 
 ---
-# 9. BareMetalMachine (每台 Worker 节点)
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+# 10. BareMetalMachine (每台 Worker 节点)
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
 kind: BareMetalMachine
 metadata:
   name: node-04
@@ -674,60 +958,112 @@ spec:
     name: node-04-credentials
   role: "worker"
 ---
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
-kind: BareMetalMachine
-metadata:
-  name: node-05
-  labels:
-    cluster.x-k8s.io/cluster-name: my-cluster
-spec:
-  hostName: "node-05"
-  ipAddress: "192.168.1.105"
-  sshPort: 22
-  credentialsRef:
-    name: node-05-credentials
-  role: "worker"
+# ... node-05
 ```
 
-## 六、关键设计决策
+## 七、关键设计决策
+
 | 决策点 | 选项 | 推荐 | 理由 |
 |--------|------|------|------|
+| **架构模式** | 单模块 vs 多模块 | 多模块 | CVO 和 CAPBM 职责分离，独立演进 |
 | **ProviderID 格式** | `baremetal://<hostname>` vs `baremetal://<ip>` | hostname | 更稳定，IP 可能变化 |
 | **SSH 连接管理** | 每次创建 vs 连接池 | 连接池 | 减少连接开销，提高性能 |
 | **预检时机** | Provider 内部 vs preKubeadmCommands | 两者结合 | Provider 检查基础设施，preKubeadmCommands 检查 K8s 依赖 |
 | **凭据存储** | 明文 vs Secret | Secret | 安全性，支持 RBAC 控制访问 |
 | **电源管理** | 可选 vs 必需 | 可选 | 不是所有环境都有 IPMI/Redfish |
+| **升级触发** | 独立字段 vs DesiredUpdate | DesiredUpdate | 统一入口，简化使用 |
+| **升级顺序** | Addon 先 vs K8S 先 | K8S 先 | Addon 通常兼容多个 K8S 版本 |
+| **版本来源** | ReleaseImage vs 直接指定 | ReleaseImage | 保持单一数据源 |
 
-## 七、项目结构
+## 八、项目结构
+
 ```
 cluster-api-provider-baremetal/
-├── api/
-│   └── v1beta2/
-│       ├── baremetalcluster_types.go
-│       ├── baremetalmachine_types.go
-│       ├── baremetalmachinetemplate_types.go
-│       ├── groupversion_info.go
-│       └── zz_generated.deepcopy.go
-├── cmd/
-│   └── main.go
-├── internal/
-│   ├── controllers/
-│   │   ├── baremetalcluster_controller.go
-│   │   ├── baremetalmachine_controller.go
-│   │   └── suite_test.go
-│   └── ssh/
-│       ├── manager.go
-│       ├── client.go
-│       └── preflight.go
-├── config/
-│   ├── crd/
-│   ├── rbac/
-│   └── manager/
-├── go.mod
-└── go.sum
+├── modules/
+│   ├── cvo/                    # Cluster Version Operator
+│   │   ├── go.mod
+│   │   ├── api/v1beta1/        # CVO API types
+│   │   │   ├── clusterversion_types.go
+│   │   │   ├── releaseimage_types.go
+│   │   │   ├── upgradepath_types.go
+│   │   │   ├── releasecatalog_types.go
+│   │   │   ├── clusteraddon_types.go
+│   │   │   ├── component_types.go
+│   │   │   ├── addon_types.go
+│   │   │   ├── upgrade_types.go
+│   │   │   └── groupversion_info.go
+│   │   ├── cmd/manager/        # CVO entry point
+│   │   ├── internal/           # CVO controllers & logic
+│   │   │   ├── controllers/
+│   │   │   │   ├── clusterversion_controller.go
+│   │   │   │   └── suite_test.go
+│   │   │   ├── upgrader/
+│   │   │   │   ├── graph_executor.go
+│   │   │   │   ├── control_plane_upgrader.go
+│   │   │   │   ├── backup_rollback.go
+│   │   │   │   ├── health_checker.go
+│   │   │   │   ├── diff_components.go
+│   │   │   │   ├── encryption/
+│   │   │   │   ├── metrics/
+│   │   │   │   └── retry/
+│   │   │   ├── addon/
+│   │   │   │   ├── upgrader.go
+│   │   │   │   ├── helm_installer.go
+│   │   │   │   └── manifest_installer.go
+│   │   │   └── registry/
+│   │   ├── pkg/ssh/            # Public SSH package
+│   │   └── config/             # CVO deployment configs
+│   │       ├── crd/bases/      # Generated CRD YAMLs
+│   │       ├── rbac/
+│   │       └── manager/
+│   │
+│   └── capbm/                  # CAPBM Infrastructure Provider
+│       ├── go.mod
+│       ├── api/v1beta1/        # CAPBM API types
+│       │   ├── baremetalcluster_types.go
+│       │   ├── baremetalmachine_types.go
+│       │   ├── baremetalhostinventory_types.go
+│       │   ├── baremetalclustertemplate_types.go
+│       │   ├── baremetalmachinetemplate_types.go
+│       │   ├── conditions.go
+│       │   └── groupversion_info.go
+│       ├── cmd/manager/        # CAPBM entry point
+│       ├── internal/           # Controllers, SSH, LB, etc.
+│       │   ├── controllers/
+│       │   │   ├── baremetalcluster_controller.go
+│       │   │   ├── baremetalmachine_controller.go
+│       │   │   ├── baremetalhostinventory_controller.go
+│       │   │   └── suite_test.go
+│       │   ├── ssh/
+│       │   ├── installer/
+│       │   ├── lb/
+│       │   ├── cni/
+│       │   ├── csi/
+│       │   ├── network/
+│       │   ├── health/
+│       │   ├── gateway/
+│       │   ├── component/
+│       │   ├── helm/
+│       │   ├── images/
+│       │   └── node/
+│       └── config/             # CAPBM deployment configs
+│           ├── crd/bases/      # Generated CRD YAMLs
+│           ├── rbac/
+│           ├── manager/
+│           └── clusterclass/   # ClusterClass templates
+│
+├── docs/                       # Design documentation
+├── hack/                       # Helper scripts
+├── templates/                  # Templates
+├── test/                       # E2E tests
+├── go.work                     # Go workspace definition
+├── Makefile
+├── Dockerfile.cvo              # CVO Docker build
+└── Dockerfile.capbm            # CAPBM Docker build
 ```
 
-## 八、开发路线图
+## 九、开发路线图
+
 | 阶段 | 内容 | 工作量 |
 |------|------|--------|
 | **Phase 1** | CRD 定义 + 基础 Controller 框架 | 1 周 |
@@ -735,5 +1071,29 @@ cluster-api-provider-baremetal/
 | **Phase 3** | 预检逻辑 + ProviderID 生成 | 1 周 |
 | **Phase 4** | 状态上报 + Conditions 管理 | 1 周 |
 | **Phase 5** | 删除逻辑 + 清理 | 1 周 |
-| **Phase 6** | 集成测试 + 文档 | 2 周 |
-| **总计** | | **7 周** |
+| **Phase 6** | CVO 模块开发 (ClusterVersion Controller) | 2 周 |
+| **Phase 7** | 升级流程实现 (UpgradeGraph + Addon Upgrader) | 2 周 |
+| **Phase 8** | 集成测试 + 文档 | 2 周 |
+| **总计** | | **11 周** |
+
+## 十、API Groups 参考
+
+### CVO 模块 (`cvo.capbm.io`)
+
+| CRD | 描述 |
+|-----|------|
+| `ClusterVersion` | 集群版本状态和升级目标 |
+| `ReleaseImage` | 发布版本镜像和组件定义 |
+| `UpgradePath` | 升级路径和兼容性规则 |
+| `ReleaseCatalog` | 可用发布版本目录 |
+| `ClusterAddon` | 集群插件生命周期管理 |
+
+### CAPBM 模块 (`infrastructure.cluster.x-k8s.io`)
+
+| CRD | 描述 |
+|-----|------|
+| `BareMetalCluster` | 裸金属集群基础设施 |
+| `BareMetalMachine` | 裸金属机器实例 |
+| `BareMetalHostInventory` | 主机池管理 |
+| `BareMetalClusterTemplate` | 集群模板 |
+| `BareMetalMachineTemplate` | 机器模板 |
