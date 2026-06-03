@@ -97,7 +97,7 @@ func (p *HAProxyProvider) registerViaRuntimeAPI(ctx context.Context, backend Bac
 	if err != nil {
 		return fmt.Errorf("failed to connect to HAProxy Runtime API: %w", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	_, err = conn.Write([]byte(cmd + "\n"))
 	if err != nil {

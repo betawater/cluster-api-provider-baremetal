@@ -76,6 +76,6 @@ func (p *KeepalivedProvider) HealthCheck(ctx context.Context, backend Backend) (
 	if err != nil {
 		return false, nil
 	}
-	conn.Close()
+	_ = conn.Close()
 	return true, nil
 }

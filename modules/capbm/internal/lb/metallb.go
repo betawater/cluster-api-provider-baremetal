@@ -60,6 +60,6 @@ func (p *MetalLBProvider) HealthCheck(ctx context.Context, backend Backend) (boo
 	if err != nil {
 		return false, nil
 	}
-	conn.Close()
+	_ = conn.Close()
 	return true, nil
 }

@@ -73,7 +73,7 @@ func GenerateHostsToml(config RegistryAuthConfig) string {
 	// Add insecure skip verify if enabled
 	if config.InsecureSkipVerify {
 		sb.WriteString("\n")
-		sb.WriteString(fmt.Sprintf("[host.\"https://%s\"]\n", config.Registry))
+		fmt.Fprintf(&sb, "[host.\"https://%s\"]\n", config.Registry)
 		sb.WriteString("  skip_verify = true\n")
 	}
 
@@ -85,12 +85,12 @@ func GenerateContainerdConfigPatch(registries []string) string {
 	var sb strings.Builder
 
 	sb.WriteString("\n[plugins.\"io.containerd.grpc.v1.cri\".registry]\n")
-	sb.WriteString(fmt.Sprintf("  config_path = \"%s\"\n", HostsDirPath))
+	fmt.Fprintf(&sb, "  config_path = \"%s\"\n", HostsDirPath)
 	sb.WriteString("\n")
 	sb.WriteString("  [plugins.\"io.containerd.grpc.v1.cri\".registry.mirrors]\n")
 
 	for _, registry := range registries {
-		sb.WriteString(fmt.Sprintf("    [plugins.\"io.containerd.grpc.v1.cri\".registry.mirrors.\"%s\"]\n", registry))
+		fmt.Fprintf(&sb, "    [plugins.\"io.containerd.grpc.v1.cri\".registry.mirrors.\"%s\"]\n", registry)
 		sb.WriteString(fmt.Sprintf("      endpoint = [\"https://%s\"]\n", registry))
 	}
 

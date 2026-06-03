@@ -545,14 +545,17 @@ func (r *BareMetalClusterReconciler) getOwnerCluster(ctx context.Context, bmClus
 	return nil, nil
 }
 
+//nolint:staticcheck // Conditions deprecated in CAPI v1beta2, will migrate when ready
 func markConditionFalse(conditions *clusterv1.Conditions, conditionType clusterv1.ConditionType, reason string, severity clusterv1.ConditionSeverity, message string) {
 	setCondition(conditions, conditionType, corev1.ConditionFalse, reason, severity, message)
 }
 
+//nolint:staticcheck // Conditions deprecated in CAPI v1beta2, will migrate when ready
 func markConditionTrue(conditions *clusterv1.Conditions, conditionType clusterv1.ConditionType, message string) {
 	setCondition(conditions, conditionType, corev1.ConditionTrue, "", clusterv1.ConditionSeverityInfo, message)
 }
 
+//nolint:staticcheck // Conditions deprecated in CAPI v1beta2, will migrate when ready
 func setCondition(conditions *clusterv1.Conditions, conditionType clusterv1.ConditionType, status corev1.ConditionStatus, reason string, severity clusterv1.ConditionSeverity, message string) {
 	for i, c := range *conditions {
 		if c.Type == conditionType {
