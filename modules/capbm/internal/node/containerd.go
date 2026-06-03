@@ -60,14 +60,14 @@ func GenerateHostsToml(config RegistryAuthConfig) string {
 		auth := base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("%s:%s", config.Username, config.Password)))
 		sb.WriteString("\n")
 		fmt.Fprintf(&sb, "[host.\"https://%s\".header]\n", config.Registry)
-		sb.WriteString(fmt.Sprintf("  Authorization = \"Basic %s\"\n", auth))
+		fmt.Fprintf(&sb, "  Authorization = \"Basic %s\"\n", auth)
 	}
 
 	// Add CA certificate if provided
 	if config.CACert != "" {
 		sb.WriteString("\n")
-		sb.WriteString(fmt.Sprintf("[host.\"https://%s\"]\n", config.Registry))
-		sb.WriteString(fmt.Sprintf("  ca = \"%s/%s/ca.crt\"\n", CertsDirPath, config.Registry))
+		fmt.Fprintf(&sb, "[host.\"https://%s\"]\n", config.Registry)
+		fmt.Fprintf(&sb, "  ca = \"%s/%s/ca.crt\"\n", CertsDirPath, config.Registry)
 	}
 
 	// Add insecure skip verify if enabled

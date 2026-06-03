@@ -45,6 +45,7 @@ import (
 	"github.com/BetaWater/cluster-api-provider-baremetal/modules/cvo/pkg/ssh"
 )
 
+//nolint:staticcheck // ConditionType deprecated in CAPI v1beta2, will migrate when ready
 func setMachineCondition(bmMachine *capbmv1.BareMetalMachine, conditionType clusterv1.ConditionType, status corev1.ConditionStatus, reason string, severity clusterv1.ConditionSeverity, message string) {
 	//nolint:staticcheck // Condition deprecated in CAPI v1beta2, will migrate when ready
 	condition := clusterv1.Condition{
@@ -68,10 +69,12 @@ func setMachineCondition(bmMachine *capbmv1.BareMetalMachine, conditionType clus
 	bmMachine.SetConditions(conditions)
 }
 
+//nolint:staticcheck // ConditionType deprecated in CAPI v1beta2, will migrate when ready
 func markMachineConditionFalse(bmMachine *capbmv1.BareMetalMachine, conditionType clusterv1.ConditionType, reason string, severity clusterv1.ConditionSeverity, message string) {
 	setMachineCondition(bmMachine, conditionType, corev1.ConditionFalse, reason, severity, message)
 }
 
+//nolint:staticcheck // ConditionType deprecated in CAPI v1beta2, will migrate when ready
 func markMachineConditionTrue(bmMachine *capbmv1.BareMetalMachine, conditionType clusterv1.ConditionType) {
 	setMachineCondition(bmMachine, conditionType, corev1.ConditionTrue, "", clusterv1.ConditionSeverityInfo, "")
 }

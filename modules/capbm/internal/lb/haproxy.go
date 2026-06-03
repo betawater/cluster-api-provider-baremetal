@@ -83,7 +83,7 @@ func (p *HAProxyProvider) HealthCheck(ctx context.Context, backend Backend) (boo
 	if err != nil {
 		return false, nil
 	}
-	conn.Close()
+	_ = conn.Close()
 	return true, nil
 }
 
@@ -127,7 +127,7 @@ func (p *HAProxyProvider) unregisterViaRuntimeAPI(ctx context.Context, backend B
 	if err != nil {
 		return fmt.Errorf("failed to connect to HAProxy Runtime API: %w", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	_, err = conn.Write([]byte(cmd + "\n"))
 	if err != nil {
@@ -146,7 +146,7 @@ func (p *HAProxyProvider) getBackendsViaRuntimeAPI(ctx context.Context) ([]Backe
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to HAProxy Runtime API: %w", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	_, err = conn.Write([]byte(cmd + "\n"))
 	if err != nil {
@@ -191,13 +191,13 @@ $RELOAD_CMD
 	if err != nil {
 		return fmt.Errorf("failed to create SSH client: %w", err)
 	}
-	defer sshClient.Close()
+	defer func() { _ = sshClient.Close() }()
 
 	session, err := sshClient.NewSession()
 	if err != nil {
 		return fmt.Errorf("failed to create SSH session: %w", err)
 	}
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 
 	output, err := session.CombinedOutput(script)
 	if err != nil {
@@ -227,13 +227,13 @@ $RELOAD_CMD
 	if err != nil {
 		return fmt.Errorf("failed to create SSH client: %w", err)
 	}
-	defer sshClient.Close()
+	defer func() { _ = sshClient.Close() }()
 
 	session, err := sshClient.NewSession()
 	if err != nil {
 		return fmt.Errorf("failed to create SSH session: %w", err)
 	}
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 
 	output, err := session.CombinedOutput(script)
 	if err != nil {
