@@ -91,7 +91,7 @@ func GenerateContainerdConfigPatch(registries []string) string {
 
 	for _, registry := range registries {
 		fmt.Fprintf(&sb, "    [plugins.\"io.containerd.grpc.v1.cri\".registry.mirrors.\"%s\"]\n", registry)
-		sb.WriteString(fmt.Sprintf("      endpoint = [\"https://%s\"]\n", registry))
+		fmt.Fprintf(&sb, "      endpoint = [\"https://%s\"]\n", registry)
 	}
 
 	return sb.String()
