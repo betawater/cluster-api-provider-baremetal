@@ -82,11 +82,49 @@ sudo swapoff -a
 sudo sed -i '/ swap / s/^/#/' /etc/fstab
 ```
 
+### 1.5 安装 clusterctl
+
+`clusterctl` 是 Cluster API 的命令行工具，用于初始化管理集群和 Provider。
+
+#### 方式一：使用官方安装脚本（推荐）
+
+```bash
+curl -L https://github.com/kubernetes-sigs/cluster-api/releases/download/v1.13.0/clusterctl-linux-amd64 -o clusterctl
+chmod +x clusterctl
+sudo mv clusterctl /usr/local/bin/
+```
+
+#### 方式二：使用 Homebrew（macOS）
+
+```bash
+brew install clusterctl
+```
+
+#### 方式三：手动下载
+
+```bash
+# 从 GitHub Releases 下载
+wget https://github.com/kubernetes-sigs/cluster-api/releases/download/v1.13.0/clusterctl-linux-amd64
+chmod +x clusterctl-linux-amd64
+sudo mv clusterctl-linux-amd64 /usr/local/bin/clusterctl
+```
+
+#### 验证安装
+
+```bash
+clusterctl version
+```
+
+预期输出：
+```
+clusterctl version: &version.Info{Major:"1", Minor:"13", GitVersion:"v1.13.0", ...}
+```
+
 ---
 
 ## 二、安装 CAPBM Provider
 
-### 2.1 安装 Cluster API 核心组件
+### 2.1 使用 clusterctl 安装（推荐）
 
 在管理集群上执行：
 
@@ -116,9 +154,73 @@ kubectl get crd | grep -E "baremetal|cluster.x-k8s.io"
 ```
 NAME                                                  READY   STATUS
 capbm-controller-manager-xxxxx-xxxxx                  1/1     Running
+cvo-controller-manager-xxxxx-xxxxx                    1/1     Running
 capi-controller-manager-xxxxx-xxxxx                   1/1     Running
 capi-kubeadm-bootstrap-controller-xxxxx-xxxxx         1/1     Running
 capi-kubeadm-control-plane-controller-xxxxx-xxxxx     1/1     Running
+```
+
+### 2.3 不使用 clusterctl 安装（高级/离线环境）
+
+对于离线环境或需要完全控制的场景，可以手动安装所有组件。
+
+#### 2.3.1 安装 CAPI 核心组件
+
+```bash
+# 下载 CAPI 核心 CRDs 和 Controller
+kubectl apply -f https://github.com/kubernetes-sigs/cluster-api/releases/download/v1.13.0/cluster-api-components.yaml
+
+# 下载 Kubeadm Bootstrap Provider
+kubectl apply -f https://github.com/kubernetes-sigs/cluster-api/releases/download/v1.13.0/bootstrap-kubeadm-components.yaml
+
+# 下载 Kubeadm Control Plane Provider
+kubectl apply -f https://github.com/kubernetes-sigs/cluster-api/releases/download/v1.13.0/control-plane-kubeadm-components.yaml
+```
+
+#### 2.3.2 安装 CAPBM Provider
+
+```bash
+kubectl apply -k modules/capbm/config/default/
+```
+
+#### 2.3.3 安装 CVO (Cluster Version Operator)
+
+```bash
+kubectl apply -k modules/cvo/config/default/
+```
+
+#### 2.3.4 离线环境安装
+
+对于完全离线的环境：
+
+```bash
+# 1. 在有网络的环境下载所有 manifests
+mkdir -p capi-offline
+cd capi-offline
+
+# 下载 CAPI 核心组件
+curl -L -o cluster-api-components.yaml \
+  https://github.com/kubernetes-sigs/cluster-api/releases/download/v1.13.0/cluster-api-components.yaml
+
+# 下载 Kubeadm Bootstrap Provider
+curl -L -o bootstrap-kubeadm-components.yaml \
+  https://github.com/kubernetes-sigs/cluster-api/releases/download/v1.13.0/bootstrap-kubeadm-components.yaml
+
+# 下载 Kubeadm Control Plane Provider
+curl -L -o control-plane-kubeadm-components.yaml \
+  https://github.com/kubernetes-sigs/cluster-api/releases/download/v1.13.0/control-plane-kubeadm-components.yaml
+
+# 2. 传输到离线环境（使用 U 盘、scp 等）
+scp -r capi-offline user@offline-machine:/tmp/
+
+# 3. 在离线环境按顺序应用
+ssh user@offline-machine
+cd /tmp/capi-offline
+kubectl apply -f cluster-api-components.yaml
+kubectl apply -f bootstrap-kubeadm-components.yaml
+kubectl apply -f control-plane-kubeadm-components.yaml
+kubectl apply -k /path/to/capbm/config/default/
+kubectl apply -k /path/to/cvo/config/default/
 ```
 
 ---

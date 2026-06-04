@@ -28,8 +28,16 @@
             "kubectl": "kubectl_1.31.1-00"
           }
         },
+        "debian": {
+          "architectures": ["amd64", "arm64"],
+          "packages": {
+            "kubeadm": "kubeadm_1.31.1-00",
+            "kubelet": "kubelet_1.31.1-00",
+            "kubectl": "kubectl_1.31.1-00"
+          }
+        },
         "centos": {
-          "architectures": ["amd64"],
+          "architectures": ["amd64", "arm64"],
           "packages": {
             "kubeadm": "kubeadm-1.31.1-0",
             "kubelet": "kubelet-1.31.1-0",
