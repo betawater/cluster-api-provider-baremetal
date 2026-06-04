@@ -392,6 +392,7 @@ download_charts() {
     log_info "  Adding Helm repositories..."
     helm repo add projectcalico https://docs.tigera.io/calico/charts --force-update
     helm repo add ceph-csi https://ceph.github.io/csi-charts --force-update
+    helm repo add capi https://kubernetes-sigs.github.io/cluster-api/ --force-update
     helm repo update
     
     # Calico
@@ -416,8 +417,16 @@ download_charts() {
         log_success "  Downloaded Ceph CSI chart"
     fi
     
-    # Note: CAPI Core chart needs to be built from CAPI source
-    log_warning "  Note: CAPI Core chart needs to be built from CAPI source"
+    # CAPI Core
+    local capi_file="$OUTPUT_DIR/addons/capi-core/${CAPI_CORE_VERSION}/charts/cluster-api.tgz"
+    if [ -f "$capi_file" ] && [ "$FORCE_DOWNLOAD" = "false" ]; then
+        log_info "  CAPI Core chart already exists, skipping..."
+    else
+        log_info "  Downloading CAPI Core chart..."
+        helm pull capi/cluster-api --version ${CAPI_CORE_VERSION#v} \
+            -d "$OUTPUT_DIR/addons/capi-core/${CAPI_CORE_VERSION}/charts"
+        log_success "  Downloaded CAPI Core chart"
+    fi
     
     log_success "Helm charts downloaded"
 }

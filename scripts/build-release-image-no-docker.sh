@@ -31,6 +31,7 @@ CALICO_VERSION="${CALICO_VERSION:-v3.28.1}"
 CEPH_CSI_VERSION="${CEPH_CSI_VERSION:-v3.11.0}"
 METALLB_VERSION="${METALLB_VERSION:-v0.14.8}"
 GATEWAY_API_VERSION="${GATEWAY_API_VERSION:-v1.1.0}"
+CAPI_CORE_VERSION="${CAPI_CORE_VERSION:-v1.7.0}"
 
 # Architecture and OS Configuration
 ARCHS=("amd64" "arm64")
@@ -445,6 +446,30 @@ download_charts() {
             curl -fSL -o "$ceph_csi_file" \
               "https://github.com/ceph/ceph-csi/releases/download/${CEPH_CSI_VERSION}/ceph-csi-rbd-${CEPH_CSI_VERSION}.tgz" || \
             log_error "  Failed to download Ceph CSI chart"
+        fi
+    fi
+    
+    # CAPI Core - Download from Helm repo index
+    local capi_file="$OUTPUT_DIR/addons/capi-core/${CAPI_CORE_VERSION}/charts/cluster-api.tgz"
+    if [ -f "$capi_file" ] && [ "$FORCE_DOWNLOAD" = "false" ]; then
+        log_info "  CAPI Core chart already exists, skipping..."
+    else
+        log_info "  Downloading CAPI Core chart..."
+        local capi_version="${CAPI_CORE_VERSION#v}"
+        local capi_chart_url=$(curl -sL "https://kubernetes-sigs.github.io/cluster-api/index.yaml" | \
+            grep -A5 "cluster-api-${capi_version}" | \
+            grep "url:" | head -1 | \
+            sed 's/.*url: //')
+        
+        if [ -n "$capi_chart_url" ]; then
+            curl -fSL -o "$capi_file" "$capi_chart_url"
+            log_success "  Downloaded CAPI Core chart"
+        else
+            log_warning "  Failed to get CAPI Core chart URL, trying alternative..."
+            # Alternative: try direct GitHub URL
+            curl -fSL -o "$capi_file" \
+              "https://github.com/kubernetes-sigs/cluster-api/releases/download/v${capi_version}/cluster-api-${capi_version}.tgz" || \
+            log_error "  Failed to download CAPI Core chart"
         fi
     fi
     
