@@ -19,6 +19,10 @@ package addon
 import (
 	"context"
 	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -278,6 +282,7 @@ func parseTimeoutSeconds(timeout string) int {
 // ContentFetcher fetches addon content from ReleaseImage.
 type ContentFetcher struct {
 	releaseServer string
+	localDir      string
 }
 
 // NewContentFetcher creates a new content fetcher.
@@ -287,7 +292,15 @@ func NewContentFetcher(releaseServer string) *ContentFetcher {
 	}
 }
 
-// FetchFromReleaseImage fetches addon content from the ReleaseImage HTTP server.
+// NewContentFetcherWithLocalDir creates a new content fetcher with local directory support.
+func NewContentFetcherWithLocalDir(releaseServer, localDir string) *ContentFetcher {
+	return &ContentFetcher{
+		releaseServer: releaseServer,
+		localDir:      localDir,
+	}
+}
+
+// FetchFromReleaseImage fetches addon content from the ReleaseImage HTTP server or local directory.
 func (f *ContentFetcher) FetchFromReleaseImage(ctx context.Context, releaseImage *cfov1.ReleaseImage, addonName string) ([]byte, error) {
 	// Find addon definition
 	var addonDef *cfov1.AddonDefinition
@@ -301,12 +314,85 @@ func (f *ContentFetcher) FetchFromReleaseImage(ctx context.Context, releaseImage
 		return nil, fmt.Errorf("addon %s not found in release image %s", addonName, releaseImage.Name)
 	}
 
-	// Build URL
-	url := fmt.Sprintf("%s/%s", f.releaseServer, addonDef.ContentPath)
+	// Try local directory first if configured
+	if f.localDir != "" {
+		localPath := filepath.Join(f.localDir, addonDef.ContentPath)
+		data, err := os.ReadFile(localPath)
+		if err == nil {
+			return data, nil
+		}
+		// If local read fails, fall through to HTTP
+	}
 
-	// In production, use http.Client to fetch the content
-	// This is a placeholder - actual implementation would use http.Get
-	_ = url
+	// Fetch from HTTP server
+	if f.releaseServer != "" {
+		url := fmt.Sprintf("%s/%s", f.releaseServer, addonDef.ContentPath)
 
-	return nil, fmt.Errorf("content fetcher not fully implemented")
+		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
+
+		client := &http.Client{Timeout: 30 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch content: %w", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+		}
+
+		return io.ReadAll(resp.Body)
+	}
+
+	return nil, fmt.Errorf("no content source configured (releaseServer or localDir)")
+}
+
+// FetchChart fetches a Helm chart from the ReleaseImage.
+func (f *ContentFetcher) FetchChart(ctx context.Context, releaseImage *cfov1.ReleaseImage, addonName string) ([]byte, error) {
+	return f.FetchFromReleaseImage(ctx, releaseImage, addonName)
+}
+
+// FetchManifest fetches a manifest from the ReleaseImage.
+func (f *ContentFetcher) FetchManifest(ctx context.Context, releaseImage *cfov1.ReleaseImage, addonName string) ([]byte, error) {
+	return f.FetchFromReleaseImage(ctx, releaseImage, addonName)
+}
+
+// FetchScript fetches a script from the ReleaseImage.
+func (f *ContentFetcher) FetchScript(ctx context.Context, releaseImage *cfov1.ReleaseImage, scriptName string) ([]byte, error) {
+	// Try local directory first if configured
+	if f.localDir != "" {
+		localPath := filepath.Join(f.localDir, "scripts", scriptName)
+		data, err := os.ReadFile(localPath)
+		if err == nil {
+			return data, nil
+		}
+	}
+
+	// Fetch from HTTP server
+	if f.releaseServer != "" {
+		url := fmt.Sprintf("%s/scripts/%s", f.releaseServer, scriptName)
+
+		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create request: %w", err)
+		}
+
+		client := &http.Client{Timeout: 30 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch script: %w", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+		}
+
+		return io.ReadAll(resp.Body)
+	}
+
+	return nil, fmt.Errorf("no content source configured (releaseServer or localDir)")
 }

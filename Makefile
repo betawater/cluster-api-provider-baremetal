@@ -15,6 +15,7 @@
 # Image URLs to use all building/pushing image targets
 CAPBM_IMG ?= ghcr.io/betawater/capbm-manager:v0.1.0
 CVO_IMG ?= ghcr.io/betawater/cvo-manager:v0.1.0
+RELEASE_IMG ?= ghcr.io/betawater/capbm/release:v1.31.1
 
 # ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
 ENVTEST_K8S_VERSION = 1.31.0
@@ -160,6 +161,19 @@ release-manifests: release-capbm release-cvo ## Generate release manifests direc
 	cp infrastructure-components.yaml releases/$(VERSION)/infrastructure-components.yaml
 	cp cvo-components.yaml releases/$(VERSION)/cvo-components.yaml
 	cp metadata.yaml releases/$(VERSION)/metadata.yaml
+
+##@ Release Image
+
+.PHONY: release-image-build
+release-image-build: ## Build release image OCI image
+	docker build -t ${RELEASE_IMG} -f Dockerfile.release .
+
+.PHONY: release-image-push
+release-image-push: ## Push release image OCI image
+	docker push ${RELEASE_IMG}
+
+.PHONY: release-image
+release-image: release-image-build release-image-push ## Build and push release image
 
 ##@ Build Dependencies
 

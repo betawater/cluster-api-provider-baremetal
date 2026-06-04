@@ -1,0 +1,555 @@
+{
+  "version": "v1.31.1",
+  "image": "registry.example.com/capbm/release:v1.31.1",
+  "httpServer": {
+    "enabled": true,
+    "port": 8080,
+    "basePath": "/release/v1.31.1"
+  },
+  "imageRegistry": {
+    "enabled": true,
+    "registry": "registry.example.com",
+    "repository": "capbm",
+    "imagePrefix": "release"
+  },
+  "channels": ["stable", "fast"],
+  "previousVersions": ["v1.31.0", "v1.30.0"],
+  "components": {
+    "kubernetes": {
+      "version": "v1.31.1",
+      "type": "binary",
+      "path": "/opt/capbm/binaries/kubernetes",
+      "platforms": {
+        "ubuntu": {
+          "architectures": ["amd64", "arm64"],
+          "packages": {
+            "kubeadm": "kubeadm_1.31.1-00",
+            "kubelet": "kubelet_1.31.1-00",
+            "kubectl": "kubectl_1.31.1-00"
+          }
+        },
+        "centos": {
+          "architectures": ["amd64"],
+          "packages": {
+            "kubeadm": "kubeadm-1.31.1-0",
+            "kubelet": "kubelet-1.31.1-0",
+            "kubectl": "kubectl-1.31.1-0"
+          }
+        }
+      },
+      "imageList": [
+        "registry.k8s.io/kube-apiserver:v1.31.1",
+        "registry.k8s.io/kube-controller-manager:v1.31.1",
+        "registry.k8s.io/kube-scheduler:v1.31.1",
+        "registry.k8s.io/kube-proxy:v1.31.1",
+        "registry.k8s.io/pause:3.9",
+        "registry.k8s.io/etcd:3.5.15-0",
+        "registry.k8s.io/coredns/coredns:v1.11.1"
+      ],
+      "installStrategy": {
+        "timeout": "600s",
+        "retryCount": 3,
+        "method": "package",
+        "serviceName": "kubelet"
+      },
+      "upgradeStrategy": {
+        "type": "Rolling",
+        "maxConcurrent": 1,
+        "timeout": "900s",
+        "retryCount": 3,
+        "drain": true
+      },
+      "preHooks": [
+        {
+          "name": "drain-node",
+          "command": "kubectl drain {{.NodeName}} --ignore-daemonsets --delete-emptydir-data",
+          "timeout": "300s",
+          "onFailure": "Abort"
+        }
+      ],
+      "postHooks": [
+        {
+          "name": "uncordon-node",
+          "command": "kubectl uncordon {{.NodeName}}",
+          "timeout": "30s",
+          "onFailure": "Abort"
+        }
+      ],
+      "upgrade": {
+        "backup": {
+          "enabled": true,
+          "config": [
+            {"path": "/etc/kubernetes", "type": "directory"}
+          ],
+          "etcdSnapshot": true
+        },
+        "rollback": {
+          "script": "scripts/rollback-kubernetes.sh",
+          "timeout": "600s"
+        },
+        "healthCheck": {
+          "command": "kubectl get nodes",
+          "timeout": "60s",
+          "retries": 3
+        }
+      }
+    },
+    "containerd": {
+      "version": "1.7.24",
+      "type": "binary",
+      "path": "/opt/capbm/binaries/containerd",
+      "architectures": ["amd64", "arm64"],
+      "files": {
+        "archive": "containerd-1.7.24-linux-amd64.tar.gz"
+      },
+      "installStrategy": {
+        "timeout": "300s",
+        "retryCount": 3,
+        "method": "archive",
+        "serviceName": "containerd"
+      },
+      "upgradeStrategy": {
+        "type": "Rolling",
+        "maxConcurrent": 1,
+        "timeout": "600s",
+        "retryCount": 3,
+        "drain": false
+      },
+      "upgrade": {
+        "backup": {
+          "enabled": true,
+          "config": [
+            {"path": "/etc/containerd/config.toml", "type": "file"}
+          ]
+        },
+        "rollback": {
+          "script": "scripts/rollback-containerd.sh",
+          "timeout": "300s"
+        },
+        "healthCheck": {
+          "command": "systemctl is-active containerd",
+          "timeout": "30s",
+          "retries": 3
+        }
+      }
+    },
+    "helm": {
+      "version": "3.15.0",
+      "type": "binary",
+      "path": "/opt/capbm/binaries/helm",
+      "architectures": ["amd64", "arm64"],
+      "files": {
+        "archive": "helm-v3.15.0-linux-amd64.tar.gz"
+      }
+    },
+    "cniPlugins": {
+      "version": "1.5.0",
+      "type": "binary",
+      "path": "/opt/capbm/binaries/cni-plugins",
+      "architectures": ["amd64", "arm64"],
+      "files": {
+        "archive": "cni-plugins-linux-amd64-v1.5.0.tgz"
+      }
+    }
+  },
+  "addons": [
+    {
+      "name": "calico",
+      "type": "helm",
+      "version": "v3.28.1",
+      "contentPath": "charts/calico-v3.28.1.tgz",
+      "namespace": "kube-system",
+      "dependencies": [],
+      "variables": [
+        {
+          "name": "podCIDR",
+          "type": "string",
+          "description": "Pod network CIDR",
+          "required": true
+        },
+        {
+          "name": "ipam",
+          "type": "string",
+          "description": "IPAM mode",
+          "required": false,
+          "default": "calico-ipam",
+          "enum": ["calico-ipam", "host-local"]
+        }
+      ],
+      "defaultValues": {
+        "ipam": "calico-ipam",
+        "typhaReplicas": 1
+      },
+      "installStrategy": {
+        "timeout": "300s",
+        "retryCount": 3,
+        "createNamespace": true,
+        "wait": true
+      },
+      "upgradeStrategy": {
+        "type": "Rolling",
+        "maxUnavailable": 0,
+        "timeout": "300s",
+        "retryCount": 3
+      },
+      "preHooks": [
+        {
+          "name": "backup-calico-config",
+          "command": "kubectl get configmap calico-config -n kube-system -o yaml > /tmp/calico-config-backup.yaml",
+          "timeout": "30s",
+          "onFailure": "Abort"
+        }
+      ],
+      "postHooks": [
+        {
+          "name": "verify-calico-pods",
+          "command": "kubectl wait --for=condition=Ready pods -n kube-system -l k8s-app=calico-node --timeout=120s",
+          "timeout": "120s",
+          "onFailure": "Abort"
+        }
+      ],
+      "upgrade": {
+        "backup": {
+          "enabled": true,
+          "config": [
+            {"path": "/etc/cni/net.d", "type": "directory"}
+          ]
+        },
+        "rollback": {
+          "script": "scripts/rollback-calico.sh",
+          "timeout": "300s"
+        },
+        "healthCheck": {
+          "command": "kubectl get pods -n kube-system -l k8s-app=calico-node",
+          "timeout": "60s",
+          "retries": 3
+        }
+      }
+    },
+    {
+      "name": "ceph-csi",
+      "type": "helm",
+      "version": "v3.11.0",
+      "contentPath": "charts/ceph-csi-rbd-v3.11.0.tgz",
+      "namespace": "ceph-csi",
+      "dependencies": ["calico"],
+      "variables": [
+        {
+          "name": "clusterID",
+          "type": "string",
+          "description": "Ceph cluster ID",
+          "required": true
+        },
+        {
+          "name": "monitors",
+          "type": "string",
+          "description": "Ceph monitor addresses",
+          "required": true
+        }
+      ],
+      "installStrategy": {
+        "timeout": "300s",
+        "retryCount": 3,
+        "createNamespace": true,
+        "wait": true
+      },
+      "upgrade": {
+        "backup": {
+          "enabled": true,
+          "config": [
+            {"path": "/etc/csi", "type": "directory"}
+          ]
+        },
+        "rollback": {
+          "script": "scripts/rollback-ceph-csi.sh",
+          "timeout": "300s"
+        },
+        "healthCheck": {
+          "command": "kubectl get pods -n ceph-csi -l app=ceph-csi-rbdplugin",
+          "timeout": "60s",
+          "retries": 3
+        }
+      }
+    },
+    {
+      "name": "capi-core-controller",
+      "type": "helm",
+      "version": "v1.7.0",
+      "contentPath": "charts/capi-core-controller-v1.7.0.tgz",
+      "namespace": "capi-system",
+      "dependencies": [],
+      "installStrategy": {
+        "timeout": "300s",
+        "retryCount": 3,
+        "createNamespace": true,
+        "wait": true
+      },
+      "upgrade": {
+        "backup": {
+          "enabled": true,
+          "config": [
+            {"path": "/etc/capi-core-controller", "type": "directory"}
+          ]
+        },
+        "rollback": {
+          "script": "scripts/rollback-capi-core.sh",
+          "timeout": "300s"
+        },
+        "healthCheck": {
+          "command": "kubectl get deployment capi-controller-manager -n capi-system",
+          "timeout": "60s",
+          "retries": 3
+        }
+      }
+    },
+    {
+      "name": "metallb",
+      "type": "manifest",
+      "version": "v0.14.8",
+      "contentPath": "manifests/metallb-v0.14.8.yaml",
+      "namespace": "metallb-system",
+      "dependencies": ["calico"],
+      "installStrategy": {
+        "timeout": "300s",
+        "retryCount": 3,
+        "createNamespace": true,
+        "wait": true
+      },
+      "upgrade": {
+        "backup": {
+          "enabled": true,
+          "config": [
+            {"path": "/etc/metallb", "type": "directory"}
+          ]
+        },
+        "rollback": {
+          "script": "scripts/rollback-metallb.sh",
+          "timeout": "300s"
+        },
+        "healthCheck": {
+          "command": "kubectl get pods -n metallb-system -l app=metallb",
+          "timeout": "60s",
+          "retries": 3
+        }
+      }
+    },
+    {
+      "name": "gateway-api",
+      "type": "manifest",
+      "version": "v1.1.0",
+      "contentPath": "manifests/gateway-api-v1.1.0.yaml",
+      "namespace": "gateway-system",
+      "dependencies": [],
+      "installStrategy": {
+        "timeout": "120s",
+        "retryCount": 3,
+        "createNamespace": true,
+        "wait": true
+      },
+      "upgrade": {
+        "backup": {
+          "enabled": false
+        },
+        "rollback": {
+          "script": "scripts/rollback-gateway-api.sh",
+          "timeout": "120s"
+        },
+        "healthCheck": {
+          "command": "kubectl get crd gateways.gateway.networking.k8s.io",
+          "timeout": "30s",
+          "retries": 3
+        }
+      }
+    },
+    {
+      "name": "envoy-gateway",
+      "type": "helm",
+      "version": "v1.0.0",
+      "contentPath": "charts/envoy-gateway-v1.0.0.tgz",
+      "namespace": "envoy-gateway-system",
+      "dependencies": ["gateway-api"],
+      "variables": [
+        {
+          "name": "provider",
+          "type": "string",
+          "description": "Infrastructure provider",
+          "required": false,
+          "default": "Kubernetes",
+          "enum": ["Kubernetes", "OpenShift"]
+        }
+      ],
+      "defaultValues": {
+        "provider": "Kubernetes"
+      },
+      "installStrategy": {
+        "timeout": "300s",
+        "retryCount": 3,
+        "createNamespace": true,
+        "wait": true
+      },
+      "upgrade": {
+        "backup": {
+          "enabled": true,
+          "config": [
+            {"path": "/etc/envoy-gateway", "type": "directory"}
+          ]
+        },
+        "rollback": {
+          "script": "scripts/rollback-envoy-gateway.sh",
+          "timeout": "300s"
+        },
+        "healthCheck": {
+          "command": "kubectl get deployment envoy-gateway -n envoy-gateway-system",
+          "timeout": "60s",
+          "retries": 3
+        }
+      }
+    }
+  ],
+  "upgradeGraph": [
+    {
+      "name": "phase-1-runtime",
+      "order": 1,
+      "blocking": true,
+      "rollingUpdate": {
+        "maxUnavailable": 1
+      },
+      "components": [
+        {
+          "name": "containerd",
+          "blocking": true,
+          "dependsOn": [],
+          "scripts": ["scripts/upgrade-containerd.sh"],
+          "healthCheck": {
+            "type": "ServiceRunning",
+            "name": "containerd",
+            "timeout": "30s"
+          }
+        }
+      ]
+    },
+    {
+      "name": "phase-2-kubernetes",
+      "order": 2,
+      "blocking": true,
+      "rollingUpdate": {
+        "maxUnavailable": 1
+      },
+      "components": [
+        {
+          "name": "kubernetes",
+          "blocking": true,
+          "dependsOn": ["containerd"],
+          "scripts": ["scripts/upgrade-kubernetes.sh"],
+          "healthCheck": {
+            "type": "DeploymentReady",
+            "namespace": "kube-system",
+            "name": "kube-apiserver",
+            "timeout": "60s"
+          }
+        }
+      ]
+    },
+    {
+      "name": "phase-3-cni",
+      "order": 3,
+      "blocking": true,
+      "components": [
+        {
+          "name": "calico",
+          "blocking": true,
+          "dependsOn": ["kubernetes"],
+          "healthCheck": {
+            "type": "DaemonSetReady",
+            "namespace": "kube-system",
+            "name": "calico-node",
+            "timeout": "120s"
+          }
+        }
+      ]
+    },
+    {
+      "name": "phase-4-csi",
+      "order": 4,
+      "blocking": false,
+      "components": [
+        {
+          "name": "ceph-csi",
+          "blocking": false,
+          "dependsOn": ["calico"],
+          "healthCheck": {
+            "type": "DeploymentReady",
+            "namespace": "ceph-csi",
+            "name": "ceph-csi-rbdplugin-provisioner",
+            "timeout": "120s"
+          }
+        }
+      ]
+    },
+    {
+      "name": "phase-5-gateway",
+      "order": 5,
+      "blocking": false,
+      "components": [
+        {
+          "name": "gateway-api",
+          "blocking": true,
+          "dependsOn": ["kubernetes"],
+          "healthCheck": {
+            "type": "CRDEstablished",
+            "name": "gateways.gateway.networking.k8s.io",
+            "timeout": "60s"
+          }
+        },
+        {
+          "name": "envoy-gateway",
+          "blocking": false,
+          "dependsOn": ["gateway-api"],
+          "healthCheck": {
+            "type": "DeploymentReady",
+            "namespace": "envoy-gateway-system",
+            "name": "envoy-gateway",
+            "timeout": "120s"
+          }
+        }
+      ]
+    },
+    {
+      "name": "phase-6-loadbalancer",
+      "order": 6,
+      "blocking": false,
+      "components": [
+        {
+          "name": "metallb",
+          "blocking": false,
+          "dependsOn": ["calico"],
+          "healthCheck": {
+            "type": "DeploymentReady",
+            "namespace": "metallb-system",
+            "name": "metallb-controller",
+            "timeout": "60s"
+          }
+        }
+      ]
+    },
+    {
+      "name": "phase-7-capi-core",
+      "order": 7,
+      "blocking": true,
+      "components": [
+        {
+          "name": "capi-core-controller",
+          "blocking": true,
+          "dependsOn": ["kubernetes"],
+          "healthCheck": {
+            "type": "DeploymentReady",
+            "namespace": "capi-system",
+            "name": "capi-controller-manager",
+            "timeout": "60s"
+          }
+        }
+      ]
+    }
+  ],
+  "contentHash": "sha256:abc123def456789..."
+}

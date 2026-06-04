@@ -1,0 +1,28 @@
+# Build the release image OCI image
+FROM scratch
+
+# Copy release.json
+COPY release-image/release.json /release.json
+
+# Copy binaries
+COPY release-image/binaries/ /binaries/
+
+# Copy images
+COPY release-image/images/ /images/
+
+# Copy charts
+COPY release-image/charts/ /charts/
+
+# Copy manifests
+COPY release-image/manifests/ /manifests/
+
+# Copy scripts
+COPY release-image/scripts/ /scripts/
+
+# Copy checksums
+COPY release-image/checksums/ /checksums/
+
+# Set labels
+LABEL org.opencontainers.image.title="CAPBM Release Image"
+LABEL org.opencontainers.image.description="CAPBM Release Image containing binaries, charts, manifests, and scripts"
+LABEL org.opencontainers.image.version="v1.31.1"

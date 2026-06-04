@@ -32,6 +32,11 @@ import (
 	cfov1 "github.com/BetaWater/cluster-api-provider-baremetal/modules/cvo/api/v1beta1"
 )
 
+// Installer is the interface for installing addons.
+type Installer interface {
+	Install(ctx context.Context, addon *cfov1.ClusterAddon, releaseImage *cfov1.ReleaseImage, addonDef *cfov1.AddonDefinition) error
+}
+
 // HelmInstaller installs addons from Helm charts.
 type HelmInstaller struct {
 	client        client.Client

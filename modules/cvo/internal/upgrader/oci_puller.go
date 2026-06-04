@@ -29,10 +29,21 @@ import (
 const (
 	DefaultCatalogImage     = "registry.example.com/capbm/release-catalog:latest"
 	DefaultUpgradePathImage = "registry.example.com/capbm/upgrade-path:latest"
+	MediaTypeReleaseJSON    = "application/vnd.capbm.release.json.v1+json"
+	MediaTypeBinaryLayer    = "application/vnd.capbm.binary.layer.v1.tar+gzip"
+	MediaTypeChartLayer     = "application/vnd.capbm.chart.layer.v1.tar+gzip"
+	MediaTypeManifestLayer  = "application/vnd.capbm.manifest.layer.v1.yaml"
+	MediaTypeScriptLayer    = "application/vnd.capbm.script.layer.v1.sh"
 )
 
 type OCIPuller struct {
 	workDir string
+	auth    *AuthConfig
+}
+
+type AuthConfig struct {
+	Username string
+	Password string
 }
 
 func NewOCIPuller(workDir string) *OCIPuller {
@@ -40,6 +51,14 @@ func NewOCIPuller(workDir string) *OCIPuller {
 		workDir = "/tmp/capbm-upgrade"
 	}
 	return &OCIPuller{workDir: workDir}
+}
+
+func (p *OCIPuller) WithAuth(username, password string) *OCIPuller {
+	p.auth = &AuthConfig{
+		Username: username,
+		Password: password,
+	}
+	return p
 }
 
 func (p *OCIPuller) PullAndParseCatalog(ctx context.Context, image string) (*cfov1.ReleaseCatalogStatus, error) {
@@ -126,6 +145,10 @@ func (p *OCIPuller) pullImage(ctx context.Context, image, prefix string) (string
 		return "", fmt.Errorf("failed to create work directory: %w", err)
 	}
 
+	// For now, just return the directory (stub behavior)
+	// Full OCI pull implementation would use oras.Copy here
+	// This requires the actual OCI image to be available in a registry
+	
 	return dir, nil
 }
 

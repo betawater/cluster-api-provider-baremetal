@@ -29,6 +29,7 @@ import (
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -368,8 +369,19 @@ func matchVersion(pattern, version string) bool {
 }
 
 func decodeYAML(data []byte) (client.Object, error) {
-	// In production, this would use a YAML decoder to create a runtime.Object.
-	// For now, we return a generic object.
-	// The actual implementation would use k8s.io/apimachinery/pkg/runtime/serializer
-	return nil, fmt.Errorf("decodeYAML not yet implemented")
+	// Use the universal decoder to handle any Kubernetes object
+	decode := scheme.Codecs.UniversalDeserializer().Decode
+
+	obj, _, err := decode(data, nil, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode YAML: %w", err)
+	}
+
+	// Convert to client.Object
+	clientObj, ok := obj.(client.Object)
+	if !ok {
+		return nil, fmt.Errorf("decoded object does not implement client.Object")
+	}
+
+	return clientObj, nil
 }

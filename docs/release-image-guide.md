@@ -2,1123 +2,499 @@
 
 ## 1. 概述
 
-ReleaseImage 是 CAPBM 的组件版本管理核心，通过 OCI 镜像分发所有组件，支持在线和离线安装模式。
+ReleaseImage 是 CAPBM 的组件版本管理核心 CRD，定义完整的 Kubernetes 发行版本，包括组件版本、Addon 定义和升级图。
 
 **核心特性**:
-- **自包含**: 一个镜像包含所有组件，无需外网访问
+- **自描述**: 一个 CRD 定义所有组件版本和升级配置
 - **版本一致**: 所有组件版本由 ReleaseImage 统一管理
-- **多架构支持**: 支持 linux-amd64 和 linux-arm64
-- **多 OS 支持**: 支持 Ubuntu (deb) 和 RHEL (rpm)
-- **组件类型自描述**: 通过 index.json 标识 binary/manifest/helm 类型
+- **多架构支持**: 支持 amd64 和 arm64
+- **多 OS 支持**: 支持 Ubuntu、CentOS、Rocky 等
+- **高内聚配置**: 每个组件自带安装、升级、备份、回滚配置
+- **离线支持**: 支持 air-gapped 环境的离线安装
 
-## 2. 镜像内容
+## 2. ReleaseImage CRD
 
-ReleaseImage 是一个自包含的 OCI 镜像，内置 nginx HTTP 服务器，提供所有组件下载服务：
+### 2.1 API 信息
 
-```
-/release/
-├── images/                           # 容器镜像 (按组件分类)
-│   ├── kubernetes/
-│   │   └── v1.31.0/
-│   │       ├── kube-apiserver.tar
-│   │       ├── kube-controller-manager.tar
-│   │       ├── kube-scheduler.tar
-│   │       ├── kube-proxy.tar
-│   │       ├── coredns.tar
-│   │       ├── etcd.tar
-│   │       └── pause.tar
-│   │
-│   ├── calico/
-│   │   └── v3.27.0/
-│   │       ├── calico-node.tar
-│   │       ├── calico-kube-controllers.tar
-│   │       └── calico-cni.tar
-│   │
-│   ├── cilium/
-│   │   └── v1.15.0/
-│   │       ├── cilium.tar
-│   │       ├── cilium-operator.tar
-│   │       └── hubble-relay.tar
-│   │
-│   ├── flannel/
-│   │   └── v0.24.0/
-│   │       └── flannel.tar
-│   │
-│   ├── ceph-csi/
-│   │   └── v3.9.0/
-│   │       ├── cephcsi.tar
-│   │       ├── csi-attacher.tar
-│   │       ├── csi-provisioner.tar
-│   │       ├── csi-snapshotter.tar
-│   │       ├── csi-resizer.tar
-│   │       └── csi-node-driver-registrar.tar
-│   │
-│   ├── local-path-provisioner/
-│   │   └── v0.0.26/
-│   │       ├── local-path-provisioner.tar
-│   │       └── helper.tar
-│   │
-│   ├── nfs-csi/
-│   │   └── v4.5.0/
-│   │       ├── nfs.tar
-│   │       └── csi-node-driver-registrar.tar
-│   │
-│   ├── envoy-gateway/
-│   │   └── v1.1.0/
-│   │       ├── envoy-gateway.tar
-│   │       └── envoy-proxy.tar
-│   │
-│   └── metallb/
-│       └── v0.14.0/
-│           ├── metallb-controller.tar
-│           └── metallb-speaker.tar
-│
-├── runtime/                          # 容器运行时二进制
-│   └── containerd/
-│       └── v1.7.0/
-│           ├── linux-amd64/
-│           └── linux-arm64/
-│
-├── kubernetes/                       # Kubernetes 核心二进制
-│   └── v1.31.0/
-│       ├── ubuntu/
-│       │   ├── linux-amd64/
-│       │   └── linux-arm64/
-│       └── rhel/
-│           ├── linux-amd64/
-│           └── linux-arm64/
-│
-├── cni/                              # CNI 网络插件
-│   ├── plugins/
-│   │   └── v1.3.0/
-│   │       ├── linux-amd64/
-│   │       └── linux-arm64/
-│   ├── calico/
-│   │   └── v3.27.0/
-│   ├── cilium/
-│   │   └── v1.15.0/
-│   └── flannel/
-│       └── v0.24.0/
-│
-├── csi/                              # CSI 存储驱动
-│   ├── ceph-csi/
-│   ├── local-path-provisioner/
-│   └── nfs-csi/
-│
-├── gateway/                          # 网关组件
-│   ├── gateway-api/
-│   └── envoy-gateway/
-│
-├── metallb/                          # 负载均衡器
-│
-├── scripts/                          # 辅助脚本
-│   └── load-images.sh
-│
-├── index.json                        # 组件索引
-└── checksums.sha256                  # 校验和
-```
+| 属性 | 值 |
+|------|-----|
+| **API Group** | `cvo.capbm.io` |
+| **Version** | `v1beta1` |
+| **Kind** | `ReleaseImage` |
+| **Scope** | Namespaced |
 
-## 3. 部署方式
-
-### 3.1 部署到管理集群 (推荐)
+### 2.2 创建 ReleaseImage
 
 ```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: capbm-release-server
-  namespace: capbm-system
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: capbm-release-server
-  template:
-    metadata:
-      labels:
-        app: capbm-release-server
-    spec:
-      containers:
-      - name: release-server
-        image: capbm-release:v1.31.0
-        ports:
-        - containerPort: 8080
-        resources:
-          requests:
-            cpu: 100m
-            memory: 128Mi
-          limits:
-            cpu: 500m
-            memory: 512Mi
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: capbm-release-server
-  namespace: capbm-system
-spec:
-  type: ClusterIP
-  selector:
-    app: capbm-release-server
-  ports:
-  - port: 8080
-    targetPort: 8080
-```
-
-### 3.2 独立服务器部署
-
-```bash
-# 在独立服务器上运行
-docker run -d --name release-server \
-  -p 8080:8080 \
-  capbm-release:v1.31.0
-
-# 验证服务
-curl http://<server-ip>:8080/release/index.json
-```
-
-### 3.3 NodePort 方式 (供工作集群访问)
-
-```yaml
-apiVersion: v1
-kind: Service
-metadata:
-  name: capbm-release-server
-  namespace: capbm-system
-spec:
-  type: NodePort
-  selector:
-    app: capbm-release-server
-  ports:
-  - port: 8080
-    targetPort: 8080
-    nodePort: 30080
-```
-
-## 4. 配置集群使用 ReleaseImage
-
-### 4.1 组件安装配置
-
-```yaml
-apiVersion: cluster.x-k8s.io/v1beta2
-kind: Cluster
-metadata:
-  name: my-baremetal-cluster
-spec:
-  topology:
-    classRef:
-      name: baremetal-clusterclass-v0.1.0
-    version: v1.31.0
-    controlPlane:
-      replicas: 3
-    workers:
-      machineDeployments:
-      - class: default-worker
-        name: md-0
-        replicas: 2
-    variables:
-    # 组件安装 - 使用 ReleaseImage HTTP 服务器
-    - name: componentInstall
-      value:
-        enabled: true
-        airGap:
-          enabled: true
-          binarySource: "HTTPServer"
-          httpServerConfig:
-            baseUrl: "http://capbm-release-server.capbm-system.svc.cluster.local:8080/release"
-    
-    # CNI 插件 - 使用 ReleaseImage
-    - name: cni
-      value:
-        enabled: true
-        type: "calico"
-        version: "3.27.0"
-        airGap:
-          enabled: true
-          manifestSource: "HTTPServer"
-          httpServerConfig:
-            baseUrl: "http://capbm-release-server.capbm-system.svc.cluster.local:8080/release"
-    
-    # CSI 驱动 - 使用 ReleaseImage
-    - name: csi
-      value:
-        enabled: false
-        driver: "ceph-csi"
-        version: "3.9.0"
-        airGap:
-          enabled: true
-          manifestSource: "HTTPServer"
-          httpServerConfig:
-            baseUrl: "http://capbm-release-server.capbm-system.svc.cluster.local:8080/release"
-```
-
-### 4.2 ReleaseImage CRD 引用
-
-```yaml
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+apiVersion: cvo.capbm.io/v1beta1
 kind: ReleaseImage
 metadata:
-  name: v1.31.0
+  name: v1.31.1
+  labels:
+    capbm.io/release-channel: stable
 spec:
-  version: "v1.31.0"
-  image: "capbm-release:v1.31.0"
+  version: v1.31.1
+  image: registry.example.com/capbm/release:v1.31.1
+  
+  # HTTP 服务器配置 (用于离线环境分发)
   httpServer:
-    port: 8080
-    basePath: "/release"
-  components:
-    kubernetes:
-      version: "v1.31.0"
-      type: "binary"
-      path: "kubernetes/v1.31.0"
-      platforms:
-        ubuntu:
-          architectures: ["linux-amd64", "linux-arm64"]
-        rhel:
-          architectures: ["linux-amd64", "linux-arm64"]
-    containerd:
-      version: "v1.7.0"
-      type: "binary"
-      path: "runtime/containerd/v1.7.0"
-      architectures: ["linux-amd64", "linux-arm64"]
-    calico:
-      version: "v3.27.0"
-      type: "manifest"
-      path: "cni/calico/v3.27.0"
-      files:
-        manifest: "calico.yaml"
-        chart: "calico.tgz"
-      images: "images/calico-v3.27.0.tar"
-    cilium:
-      version: "v1.15.0"
-      type: "helm"
-      path: "cni/cilium/v1.15.0"
-      files:
-        chart: "cilium.tgz"
-      images: "images/cilium-v1.15.0.tar"
-      helmValues:
-        ipam.mode: "kubernetes"
-        kubeProxyReplacement: "partial"
-```
-
-## 5. 安装流程
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│ 1. 部署 ReleaseImage HTTP 服务器                            │
-│    ├── docker pull capbm-release:v1.31.0                   │
-│    ├── kubectl apply -f release-server.yaml                │
-│    └── 验证: curl http://<ip>:8080/release/index.json      │
-└─────────────────┬───────────────────────────────────────────┘
-                  │
-                  ▼
-┌─────────────────────────────────────────────────────────────┐
-│ 2. 创建集群并配置 HTTP 服务器地址                            │
-│    ├── 设置 componentInstall.airGap.httpServerConfig        │
-│    └── baseUrl = "http://<release-server>:8080/release"    │
-└─────────────────┬───────────────────────────────────────────┘
-                  │
-                  ▼
-┌─────────────────────────────────────────────────────────────┐
-│ 3. CAPBM 自动安装组件                                       │
-│    ├── 检测节点 OS 类型和架构                               │
-│    ├── 从 ReleaseImage 获取组件路径                         │
-│    ├── fetch_resource("kubernetes/v1.31.0/ubuntu/...")      │
-│    ├── fetch_resource("runtime/containerd/v1.7.0/...")      │
-│    ├── fetch_resource("cni/calico/v3.27.0/calico.yaml")     │
-│    └── 安装并验证                                           │
-└─────────────────┬───────────────────────────────────────────┘
-                  │
-                  ▼
-┌─────────────────────────────────────────────────────────────┐
-│ 4. 自动加载容器镜像 (离线模式)                               │
-│    ├── 加载 Kubernetes 核心镜像                             │
-│    │   ├── kube-apiserver.tar                               │
-│    │   ├── kube-controller-manager.tar                      │
-│    │   └── ...                                              │
-│    ├── 加载 CNI 镜像 (根据安装的 CNI 类型)                   │
-│    │   ├── calico-node.tar                                  │
-│    │   ├── calico-kube-controllers.tar                      │
-│    │   └── calico-cni.tar                                   │
-│    └── 加载其他组件镜像                                     │
-└─────────────────────────────────────────────────────────────┘
-```
-
-## 6. 镜像加载脚本
-
-ReleaseImage 提供辅助脚本用于手动加载镜像：
-
-```bash
-#!/bin/bash
-# scripts/load-images.sh
-# 用法: ./load-images.sh <component> [version]
-# 示例: ./load-images.sh calico v3.27.0
-
-set -euo pipefail
-
-RELEASE_SERVER="${RELEASE_SERVER:-http://localhost:8080/release}"
-COMPONENT="${1:-all}"
-VERSION="${2:-}"
-
-load_images() {
-    local component="$1"
-    local version="$2"
-    local image_path="${RELEASE_SERVER}/images/${component}/${version}"
-    
-    echo "=== 加载 ${component} v${version} 镜像 ==="
-    
-    # 获取镜像列表 (从 index.json)
-    local images
-    images=$(curl -fsSL "${RELEASE_SERVER}/index.json" | jq -r ".images.\"${component}\".images[]")
-    
-    for image_tar in $images; do
-        local tar_url="${image_path}/${image_tar}"
-        local dest="/tmp/${image_tar}"
-        
-        echo "下载: ${image_tar}"
-        curl -fsSL "$tar_url" -o "$dest"
-        
-        echo "导入: ${image_tar}"
-        ctr -n k8s.io images import "$dest"
-        rm -f "$dest"
-    done
-    
-    echo "=== ${component} v${version} 镜像加载完成 ==="
-}
-
-case "$COMPONENT" in
-    all)
-        # 加载所有镜像
-        for comp in kubernetes calico cilium envoy-gateway metallb; do
-            if [ -n "$VERSION" ]; then
-                load_images "$comp" "$VERSION"
-            else
-                # 从 index.json 获取版本
-                ver=$(curl -fsSL "${RELEASE_SERVER}/index.json" | jq -r ".components.\"${comp}\".version")
-                if [ "$ver" != "null" ] && [ -n "$ver" ]; then
-                    load_images "$comp" "$ver"
-                fi
-            fi
-        done
-        ;;
-    *)
-        if [ -z "$VERSION" ]; then
-            VERSION=$(curl -fsSL "${RELEASE_SERVER}/index.json" | jq -r ".components.\"${COMPONENT}\".version")
-        fi
-        load_images "$COMPONENT" "$VERSION"
-        ;;
-esac
-```
-
-使用示例：
-
-```bash
-# 加载所有镜像
-./load-images.sh all
-
-# 仅加载 Calico 镜像
-./load-images.sh calico v3.27.0
-
-# 仅加载 Kubernetes 镜像
-./load-images.sh kubernetes v1.31.0
-```
-
-## 6. 组件路径自动适配
-
-CAPBM 根据节点 OS 和架构自动选择正确的组件路径：
-
-```bash
-# 节点检测
-OS_TYPE="ubuntu"     # 或 "rhel"
-ARCH="linux-amd64"   # 或 "linux-arm64"
-
-# 自动构建路径
-K8S_PATH="kubernetes/v1.31.0/${OS_TYPE}/${ARCH}/kubelet.deb"
-CONTAINERD_PATH="runtime/containerd/v1.7.0/${ARCH}/containerd.tar.gz"
-CNI_PLUGINS_PATH="cni/plugins/v1.3.0/${ARCH}/cni-plugins.tgz"
-CALICO_PATH="cni/calico/v3.27.0/calico.yaml"
-```
-
-## 7. 验证 ReleaseImage 内容
-
-```bash
-# 查看组件索引
-curl http://<release-server>:8080/release/index.json | jq
-
-# 查看目录结构
-curl http://<release-server>:8080/release/
-
-# 下载特定组件
-curl -O http://<release-server>:8080/release/cni/calico/v3.27.0/calico.yaml
-
-# 验证校验和
-curl http://<release-server>:8080/release/checksums.sha256 | sha256sum -c
-```
-
-## 8. 多版本管理
-
-```bash
-# 拉取多个版本的 ReleaseImage
-docker pull capbm-release:v1.31.0
-docker pull capbm-release:v1.32.0
-
-# 部署不同版本的 ReleaseImage 服务器
-kubectl apply -f release-server-v1.31.0.yaml
-kubectl apply -f release-server-v1.32.0.yaml
-```
-
-不同集群可以引用不同版本的 ReleaseImage：
-
-```yaml
-# 集群 A 使用 v1.31.0
-variables:
-- name: componentInstall
-  value:
-    airGap:
-      httpServerConfig:
-        baseUrl: "http://release-server-v1.31.0:8080/release"
-
-# 集群 B 使用 v1.32.0
-variables:
-- name: componentInstall
-  value:
-    airGap:
-      httpServerConfig:
-        baseUrl: "http://release-server-v1.32.0:8080/release"
-```
-
-## 9. 离线环境使用
-
-### 9.1 在有网环境构建镜像
-
-```bash
-# 运行构建脚本
-./build-release-image.sh v1.31.0
-
-# 导出镜像为 tar 文件
-docker save capbm-release:v1.31.0 -o capbm-release-v1.31.0.tar
-```
-
-### 9.2 传输到离线环境
-
-```bash
-# 通过 SCP 传输
-scp capbm-release-v1.31.0.tar offline-server:/tmp/
-
-# 或通过 USB/光盘等物理介质传输
-```
-
-### 9.3 在离线环境加载并运行
-
-```bash
-# 加载镜像
-docker load -i /tmp/capbm-release-v1.31.0.tar
-
-# 运行 ReleaseImage 服务器
-docker run -d --name release-server \
-  -p 8080:8080 \
-  capbm-release:v1.31.0
-
-# 验证服务
-curl http://localhost:8080/release/index.json
-```
-
-### 9.4 配置集群使用
-
-```yaml
-variables:
-- name: componentInstall
-  value:
     enabled: true
-    airGap:
-      enabled: true
-      binarySource: "HTTPServer"
-      httpServerConfig:
-        baseUrl: "http://offline-server:8080/release"
-- name: cni
-  value:
-    enabled: true
-    type: "calico"
-    version: "3.27.0"
-    airGap:
-      enabled: true
-      manifestSource: "HTTPServer"
-      httpServerConfig:
-        baseUrl: "http://offline-server:8080/release"
-```
-
-## 10. 构建 ReleaseImage
-
-### 10.1 构建脚本
-
-```bash
-#!/bin/bash
-# build-release-image.sh
-
-set -euo pipefail
-
-RELEASE_VERSION="v1.31.0"
-OUTPUT_DIR="./release-image-content/release"
-ARCHS=("amd64" "arm64")
-
-# 创建目录结构
-mkdir -p "$OUTPUT_DIR"/{runtime/containerd/v1.7.0,kubernetes/$RELEASE_VERSION/{ubuntu,rhel}/{amd64,arm64},cni/plugins/v1.3.0/{linux-amd64,linux-arm64},cni/{calico/v3.27.0,cilium/v1.15.0,flannel/v0.24.0},csi/{ceph-csi/v3.9.0,local-path-provisioner/v0.0.26,nfs-csi/v4.5.0},gateway/{gateway-api/v1.2.0,envoy-gateway/v1.1.0},metallb/v0.14.0,images/{kubernetes/$RELEASE_VERSION,calico/v3.27.0,cilium/v1.15.0,flannel/v0.24.0,ceph-csi/v3.9.0,local-path-provisioner/v0.0.26,nfs-csi/v4.5.0,envoy-gateway/v1.1.0,metallb/v0.14.0},scripts}
-
-# 下载 Kubernetes 组件 (多架构多 OS)
-for arch in "${ARCHS[@]}"; do
-    download_k8s_debs "$RELEASE_VERSION" "$arch" "$OUTPUT_DIR/kubernetes/$RELEASE_VERSION/ubuntu/$arch"
-    download_k8s_rpms "$RELEASE_VERSION" "$arch" "$OUTPUT_DIR/kubernetes/$RELEASE_VERSION/rhel/$arch"
-done
-
-# 下载 containerd (多架构)
-for arch in "${ARCHS[@]}"; do
-    curl -fsSL "https://github.com/containerd/containerd/releases/download/v1.7.0/containerd-1.7.0-linux-${arch}.tar.gz" \
-      -o "$OUTPUT_DIR/runtime/containerd/v1.7.0/linux-${arch}/containerd-1.7.0-linux-${arch}.tar.gz"
-done
-
-# 下载 CNI plugins (多架构)
-for arch in "${ARCHS[@]}"; do
-    curl -fsSL "https://github.com/containernetworking/plugins/releases/download/v1.3.0/cni-plugins-linux-${arch}-v1.3.0.tgz" \
-      -o "$OUTPUT_DIR/cni/plugins/v1.3.0/linux-${arch}/cni-plugins-linux-${arch}-v1.3.0.tgz"
-done
-
-# 下载 Manifest/Helm 组件
-curl -fsSL "https://raw.githubusercontent.com/projectcalico/calico/v3.27.0/manifests/calico.yaml" \
-  -o "$OUTPUT_DIR/cni/calico/v3.27.0/calico.yaml"
-
-curl -fsSL "https://raw.githubusercontent.com/cilium/cilium/v1.15.0/install/kubernetes/cilium/quick-install.yaml" \
-  -o "$OUTPUT_DIR/cni/cilium/v1.15.0/cilium.yaml"
-
-# 下载并保存容器镜像
-save_container_images() {
-    local output_dir="$1"
-    
-    # Kubernetes 核心镜像
-    for image in kube-apiserver kube-controller-manager kube-scheduler kube-proxy coredns etcd pause; do
-        docker pull "registry.k8s.io/${image}:v1.31.0"
-        docker save "registry.k8s.io/${image}:v1.31.0" -o "$output_dir/images/kubernetes/v1.31.0/${image}.tar"
-    done
-    
-    # Calico 镜像
-    for image in calico/node calico/kube-controllers calico/cni; do
-        docker pull "docker.io/${image}:v3.27.0"
-        docker save "docker.io/${image}:v3.27.0" -o "$output_dir/images/calico/v3.27.0/$(basename $image).tar"
-    done
-    
-    # Cilium 镜像
-    for image in cilium/cilium cilium/operator cilium/hubble-relay; do
-        docker pull "quay.io/${image}:v1.15.0"
-        docker save "quay.io/${image}:v1.15.0" -o "$output_dir/images/cilium/v1.15.0/$(basename $image).tar"
-    done
-    
-    # Envoy Gateway 镜像
-    for image in envoyproxy/gateway envoyproxy/envoy; do
-        docker pull "docker.io/${image}:v1.1.0"
-        docker save "docker.io/${image}:v1.1.0" -o "$output_dir/images/envoy-gateway/v1.1.0/$(basename $image).tar"
-    done
-    
-    # MetalLB 镜像
-    for image in metallb/controller metallb/speaker; do
-        docker pull "quay.io/${image}:v0.14.0"
-        docker save "quay.io/${image}:v0.14.0" -o "$output_dir/images/metallb/v0.14.0/$(basename $image).tar"
-    done
-}
-
-save_container_images "$OUTPUT_DIR"
-
-# 生成 index.json
-generate_index_json "$OUTPUT_DIR"
-
-# 生成 checksums
-cd "$OUTPUT_DIR" && find . -type f -exec sha256sum {} + > checksums.sha256
-
-# 构建 OCI 镜像
-docker build -t capbm-release:$RELEASE_VERSION .
-docker push capbm-release:$RELEASE_VERSION
-```
-
-### 10.2 Dockerfile
-
-```dockerfile
-FROM nginx:alpine AS release-server
-
-COPY release/ /usr/share/nginx/html/release/
-
-# 启用目录浏览
-RUN echo 'server { \
-    listen 8080; \
-    server_name localhost; \
-    location / { \
-        autoindex on; \
-        autoindex_exact_size off; \
-        autoindex_localtime on; \
-    } \
-}' > /etc/nginx/conf.d/default.conf
-
-EXPOSE 8080
-CMD ["nginx", "-g", "daemon off;"]
-```
-
-## 11. index.json 索引文件
-
-```json
-{
-  "version": "v1.31.0",
-  "components": {
-    "kubernetes": {
-      "version": "v1.31.0",
-      "type": "binary",
-      "path": "kubernetes/v1.31.0",
-      "osSpecific": true,
-      "platforms": {
-        "ubuntu": {
-          "architectures": ["linux-amd64", "linux-arm64"],
-          "packages": ["kubeadm", "kubelet", "kubectl"]
-        },
-        "rhel": {
-          "architectures": ["linux-amd64", "linux-arm64"],
-          "packages": ["kubeadm", "kubelet", "kubectl"]
-        }
-      }
-    },
-    "containerd": {
-      "version": "v1.7.0",
-      "type": "binary",
-      "path": "runtime/containerd/v1.7.0",
-      "osSpecific": false,
-      "architectures": ["linux-amd64", "linux-arm64"]
-    },
-    "cni-plugins": {
-      "version": "v1.3.0",
-      "type": "binary",
-      "path": "cni/plugins/v1.3.0",
-      "osSpecific": false,
-      "architectures": ["linux-amd64", "linux-arm64"]
-    },
-    "calico": {
-      "version": "v3.27.0",
-      "type": "manifest",
-      "path": "cni/calico/v3.27.0",
-      "osSpecific": false,
-      "installModes": ["manifest", "helm"],
-      "files": {
-        "manifest": "calico.yaml",
-        "chart": "calico.tgz"
-      },
-      "images": "images/calico/v3.27.0",
-      "imageList": [
-        "calico-node.tar",
-        "calico-kube-controllers.tar",
-        "calico-cni.tar"
-      ]
-    },
-    "cilium": {
-      "version": "v1.15.0",
-      "type": "helm",
-      "path": "cni/cilium/v1.15.0",
-      "osSpecific": false,
-      "files": {
-        "chart": "cilium.tgz"
-      },
-      "images": "images/cilium/v1.15.0",
-      "imageList": [
-        "cilium.tar",
-        "cilium-operator.tar",
-        "hubble-relay.tar"
-      ],
-      "helmValues": {
-        "ipam.mode": "kubernetes",
-        "kubeProxyReplacement": "partial"
-      }
-    }
-  },
-  "images": {
-    "kubernetes": {
-      "version": "v1.31.0",
-      "path": "images/kubernetes/v1.31.0",
-      "images": [
-        "kube-apiserver.tar",
-        "kube-controller-manager.tar",
-        "kube-scheduler.tar",
-        "kube-proxy.tar",
-        "coredns.tar",
-        "etcd.tar",
-        "pause.tar"
-      ]
-    },
-    "calico": {
-      "version": "v3.27.0",
-      "path": "images/calico/v3.27.0",
-      "images": [
-        "calico-node.tar",
-        "calico-kube-controllers.tar",
-        "calico-cni.tar"
-      ]
-    },
-    "cilium": {
-      "version": "v1.15.0",
-      "path": "images/cilium/v1.15.0",
-      "images": [
-        "cilium.tar",
-        "cilium-operator.tar",
-        "hubble-relay.tar"
-      ]
-    },
-    "envoy-gateway": {
-      "version": "v1.1.0",
-      "path": "images/envoy-gateway/v1.1.0",
-      "images": [
-        "envoy-gateway.tar",
-        "envoy-proxy.tar"
-      ]
-    },
-    "metallb": {
-      "version": "v0.14.0",
-      "path": "images/metallb/v0.14.0",
-      "images": [
-        "metallb-controller.tar",
-        "metallb-speaker.tar"
-      ]
-    }
-  }
-}
-```
-
-## 12. 常见问题
-
-### Q1: 如何更新 ReleaseImage 中的组件版本？
-
-重新运行构建脚本并推送新镜像：
-
-```bash
-./build-release-image.sh v1.32.0
-docker push capbm-release:v1.32.0
-```
-
-### Q2: 如何验证组件完整性？
-
-```bash
-# 下载 checksums 文件
-curl http://<release-server>:8080/release/checksums.sha256 -o checksums.sha256
-
-# 验证所有文件
-cd /path/to/release && sha256sum -c checksums.sha256
-```
-
-### Q3: ReleaseImage 镜像有多大？
-
-典型大小约 3-6 GB，包含：
-- Kubernetes 二进制: ~200 MB
-- containerd: ~100 MB
-- CNI plugins: ~50 MB
-- Kubernetes 镜像: ~500 MB (7 个镜像)
-- Calico 镜像: ~200 MB (3 个镜像)
-- Cilium 镜像: ~300 MB (3 个镜像)
-- Envoy Gateway 镜像: ~150 MB (2 个镜像)
-- MetalLB 镜像: ~50 MB (2 个镜像)
-- Manifests/Helm charts: ~10 MB
-
-### Q4: 可以同时部署多个版本的 ReleaseImage 吗？
-
-可以。每个版本使用不同的 Service 名称：
-
-```bash
-kubectl apply -f release-server-v1.31.0.yaml
-kubectl apply -f release-server-v1.32.0.yaml
-```
-
-不同集群通过 `baseUrl` 引用不同版本：
-
-```yaml
-# 集群 A
-baseUrl: "http://release-server-v1.31.0:8080/release"
-
-# 集群 B
-baseUrl: "http://release-server-v1.32.0:8080/release"
-```
-
-### Q5: 如何在没有 Docker 的环境中使用？
-
-可以使用 Podman 或其他 OCI 兼容运行时：
-
-```bash
-podman pull capbm-release:v1.31.0
-podman save capbm-release:v1.31.0 -o capbm-release-v1.31.0.tar
-podman load -i capbm-release-v1.31.0.tar
-podman run -d --name release-server -p 8080:8080 capbm-release:v1.31.0
-```
-
-## 13. Helm 组件安装
-
-### 13.1 概述
-
-CAPBM 使用 Kubernetes Job 运行 Helm 来安装组件（Calico、Cilium、Ceph-CSI 等），不依赖特定节点。
-
-**优势**:
-- **节点故障无影响**: Job 自动调度到其他节点
-- **自动重试**: `backoffLimit: 3` 自动恢复
-- **状态可追踪**: ConfigMap + Job Labels 双重追踪
-- **离线支持**: Chart 和镜像都从 ReleaseImage 获取
-
-### 13.2 安装流程
-
-```bash
-# 1. 部署 RBAC
-kubectl apply -f config/rbac/helm_rbac.yaml
-
-# 2. 创建状态 ConfigMap
-kubectl create configmap capbm-component-status -n kube-system
-
-# 3. 创建 Helm Job (由 Controller 自动创建)
-# Job 自动调度到可用节点
-# 从 ReleaseImage 下载 chart 包
-# 加载容器镜像 (离线模式)
-# 执行 helm install
-# 更新 ConfigMap 状态
-```
-
-### 13.3 查看安装状态
-
-```bash
-# 查看所有组件状态
-kubectl get configmap capbm-component-status -n kube-system -o yaml
-
-# 查看特定组件
-kubectl get configmap capbm-component-status -n kube-system \
-  -o jsonpath='{.data.calico}'
-
-# 查看 Helm Job 状态
-kubectl get jobs -n kube-system -l capbm.capbm.io/type=helm-install
-
-# 查看 Job 日志
-kubectl logs -n kube-system job/install-calico
-```
-
-### 13.4 升级组件
-
-```bash
-# 升级 Calico (创建新的 Job)
-kubectl apply -f upgrade-calico-job.yaml
-
-# 查看升级状态
-kubectl get jobs -n kube-system -l capbm.capbm.io/component=calico
-```
-
-### 13.5 故障恢复
-
-| 故障场景 | 处理方式 |
-|---------|---------|
-| Pod 所在节点宕机 | Job 自动在其他节点重新创建 Pod |
-| Pod OOMKilled | Job 自动重试 (backoffLimit: 3) |
-| 网络超时 | Job 自动重试 |
-| 所有节点不可用 | Job 保持 Pending，等待节点恢复 |
-
-## 14. Manifest 组件安装
-
-### 14.1 概述
-
-CAPBM 使用 Kubernetes Job 运行 kubectl 来安装 Manifest 组件（Gateway API、Envoy Gateway、MetalLB 等），与 Helm 组件保持一致的故障处理和状态追踪机制。
-
-**优势**:
-- **节点故障无影响**: Job 自动调度到其他节点
-- **自动重试**: `backoffLimit: 3` 自动恢复
-- **状态可追踪**: ConfigMap + Job Labels 双重追踪
-- **离线支持**: Manifest 和镜像都从 ReleaseImage 获取
-
-### 14.2 安装流程
-
-```bash
-# 1. 部署 Manifest RBAC
-kubectl apply -f config/rbac/manifest_rbac.yaml
-
-# 2. 创建状态 ConfigMap (与 Helm 共用)
-kubectl create configmap capbm-component-status -n kube-system
-
-# 3. 创建 Manifest Job (由 Controller 自动创建)
-# Job 自动调度到可用节点
-# 从 ReleaseImage 下载 manifest
-# 加载容器镜像 (离线模式)
-# 执行 kubectl apply
-# 更新 ConfigMap 状态
-```
-
-### 14.3 查看安装状态
-
-```bash
-# 查看所有组件状态 (Helm + Manifest)
-kubectl get configmap capbm-component-status -n kube-system -o yaml
-
-# 查看 Manifest Job 状态
-kubectl get jobs -n kube-system -l capbm.capbm.io/type=manifest-install
-
-# 查看 Job 日志
-kubectl logs -n kube-system job/install-gateway-api
-```
-
-### 14.4 升级组件
-
-```bash
-# 升级 Gateway API (创建新的 Job)
-kubectl apply -f upgrade-gateway-api-job.yaml
-
-# 查看升级状态
-kubectl get jobs -n kube-system -l capbm.capbm.io/component=gateway-api
-```
-
-### 14.5 故障恢复
-
-| 故障场景 | 处理方式 |
-|---------|---------|
-| Pod 所在节点宕机 | Job 自动在其他节点重新创建 Pod |
-| Pod OOMKilled | Job 自动重试 (backoffLimit: 3) |
-| 网络超时 | Job 自动重试 |
-| 所有节点不可用 | Job 保持 Pending，等待节点恢复 |
-
-## 15. 镜像仓库导入
-
-### 15.1 概述
-
-ReleaseImage 支持将容器镜像导入到目标镜像仓库（如 Harbor、Docker Registry 等），实现镜像集中管理和节点按需拉取。
-
-**优势**:
-- **集中管理**: 所有镜像统一存储在镜像仓库
-- **按需拉取**: 节点只拉取需要的镜像
-- **离线支持**: ReleaseImage 作为镜像源，导入到内网仓库
-- **版本一致**: 镜像版本与 ReleaseImage 版本绑定
-
-### 15.2 配置镜像仓库
-
-在 ReleaseImage 中配置镜像仓库：
-
-```yaml
-apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
-kind: ReleaseImage
-metadata:
-  name: v1.31.0
-spec:
-  version: "v1.31.0"
-  image: "capbm-release:v1.31.0"
-  httpServer:
     port: 8080
-    basePath: "/release"
+    basePath: /release/v1.31.1
+  
+  # 镜像仓库配置 (用于导入到目标环境)
   imageRegistry:
     enabled: true
-    registry: "registry.example.com"
-    repository: "capbm"
-    imagePrefix: "release"
-    credentialsSecret: "registry-credentials"
-    insecureSkipVerify: false
-```
-
-### 15.3 创建镜像仓库凭证
-
-```bash
-# 创建镜像仓库凭证 Secret (Opaque 类型，包含 username 和 password)
-kubectl create secret generic registry-credentials \
-  --from-literal=username=admin \
-  --from-literal=password=password \
-  -n capbm-system
-
-# 如果需要 CA 证书，创建 ConfigMap
-kubectl create configmap registry-ca \
-  --from-file=ca.crt=/path/to/ca.crt \
-  -n capbm-system
-```
-
-### 15.4 导入流程
-
-```bash
-# 1. 创建 ReleaseImage 资源
-kubectl apply -f releaseimage-v1.31.0.yaml
-
-# 2. 自动触发镜像导入 Job (使用 containerd/ctr)
-kubectl get jobs -n capbm-system -l capbm.capbm.io/type=image-import
-
-# 3. 查看导入进度
-kubectl logs -n capbm-system job/import-images-v1.31.0
-
-# 4. 查看 ReleaseImage 状态
-kubectl get releaseimage v1.31.0 -o jsonpath='{.status.imagesImported}'
-kubectl get releaseimage v1.31.0 -o jsonpath='{.status.importStatus}'
-```
-
-### 15.5 镜像命名规范
-
-```
-{registry}/{repository}/{imagePrefix}/{component}/{subcomponent}:{version}
-
-示例:
-registry.example.com/capbm/release/kubernetes/kube-apiserver:v1.31.0
-registry.example.com/capbm/release/calico/node:v3.27.0
-registry.example.com/capbm/release/cilium/cilium:v1.15.0
-```
-
-### 15.6 节点配置 containerd Registry 认证
-
-#### 15.6.1 使用 hosts.toml 配置认证
-
-containerd 使用 `hosts.d` 目录配置 registry 认证：
-
-```bash
-# 创建 hosts.d 目录
-mkdir -p /etc/containerd/hosts.d/registry.example.com
-
-# 生成 hosts.toml
-cat > /etc/containerd/hosts.d/registry.example.com/hosts.toml << EOF
-server = "https://registry.example.com"
-
-[host."https://registry.example.com"]
-  capabilities = ["pull", "resolve"]
-
-[host."https://registry.example.com".header]
-  Authorization = "Basic YWRtaW46cGFzc3dvcmQ="
-EOF
-
-# 如果需要 CA 证书
-mkdir -p /etc/containerd/certs.d/registry.example.com
-cp /path/to/ca.crt /etc/containerd/certs.d/registry.example.com/ca.crt
-
-# 重启 containerd
-systemctl restart containerd
-```
-
-#### 15.6.2 完整 containerd 配置示例
-
-```toml
-# /etc/containerd/config.toml
-
-version = 2
-
-[plugins."io.containerd.grpc.v1.cri"]
-  sandbox_image = "registry.example.com/capbm/release/kubernetes/pause:v1.31.0"
+    registry: registry.example.com
+    repository: capbm
   
-  [plugins."io.containerd.grpc.v1.cri".registry]
-    config_path = "/etc/containerd/hosts.d"
-    
-    [plugins."io.containerd.grpc.v1.cri".registry.mirrors]
-      [plugins."io.containerd.grpc.v1.cri".registry.mirrors."registry.example.com"]
-        endpoint = ["https://registry.example.com"]
+  # 发布通道
+  channels: [stable, fast]
+  
+  # 可升级的前置版本
+  previousVersions: [v1.31.0, v1.30.0]
+  
+  # 二进制组件定义
+  components:
+    kubernetes: {...}
+    containerd: {...}
+    helm: {...}
+    cniPlugins: {...}
+  
+  # Addon 定义
+  addons:
+    - name: calico
+      type: helm
+      version: v3.28.1
+      contentPath: charts/calico-v3.28.1.tgz
+      namespace: kube-system
+      ...
+  
+  # 升级图
+  upgradeGraph:
+    - name: phase-1-runtime
+      order: 1
+      blocking: true
+      components: [containerd]
+    ...
+  
+  # 内容校验和
+  contentHash: sha256:abc123...
 ```
 
-### 15.7 查看导入状态
+### 2.3 应用 ReleaseImage
 
 ```bash
-# 查看所有导入的镜像
-kubectl get releaseimage v1.31.0 -o jsonpath='{.status.importedImages}'
+# 应用 ReleaseImage
+kubectl apply -f release-image/release.json
 
-# 查看导入 Job 状态
-kubectl get jobs -n capbm-system -l capbm.capbm.io/type=image-import
+# 查看 ReleaseImage
+kubectl get releaseimage
 
-# 查看 Job 详细状态
-kubectl describe job -n capbm-system import-images-v1.31.0
+# 查看 ReleaseImage 详情
+kubectl get releaseimage v1.31.1 -o yaml
+
+# 查看 ReleaseImage 状态
+kubectl get releaseimage v1.31.1 -o jsonpath='{.status}'
 ```
 
-### 15.8 故障恢复
+## 3. ReleaseImage 内容目录
 
-| 故障场景 | 处理方式 |
-|---------|---------|
-| 镜像仓库不可达 | Job 自动重试 (backoffLimit: 3) |
-| 认证失败 | 检查 Secret 配置 (username/password) |
-| 网络超时 | Job 自动重试 |
-| containerd socket 不可用 | 检查 /run/containerd/containerd.sock |
-| 磁盘空间不足 | 清理节点磁盘空间 |
-| TLS 证书错误 | 配置 CA 证书或设置 insecureSkipVerify |
+### 3.1 目录结构
+
+```
+release-image/
+├── release.json                  # ReleaseImage spec JSON
+├── binaries/
+│   ├── kubernetes/
+│   │   ├── ubuntu/amd64/
+│   │   │   ├── kubeadm_1.31.1-00_amd64.deb
+│   │   │   ├── kubelet_1.31.1-00_amd64.deb
+│   │   │   └── kubectl_1.31.1-00_amd64.deb
+│   │   └── centos/amd64/
+│   │       ├── kubeadm-1.31.1-0.x86_64.rpm
+│   │       ├── kubelet-1.31.1-0.x86_64.rpm
+│   │       └── kubectl-1.31.1-0.x86_64.rpm
+│   ├── containerd/
+│   │   └── containerd-1.7.24-linux-amd64.tar.gz
+│   ├── helm/
+│   │   └── helm-v3.15.0-linux-amd64.tar.gz
+│   └── cni-plugins/
+│       └── cni-plugins-linux-amd64-v1.5.0.tgz
+├── images/
+│   ├── kube-apiserver_v1.31.1.tar
+│   ├── kube-controller-manager_v1.31.1.tar
+│   ├── kube-scheduler_v1.31.1.tar
+│   ├── kube-proxy_v1.31.1.tar
+│   ├── pause_3.9.tar
+│   ├── etcd_3.5.15-0.tar
+│   └── coredns_v1.11.1.tar
+├── charts/
+│   ├── calico-v3.28.1.tgz
+│   ├── ceph-csi-rbd-v3.11.0.tgz
+│   └── capi-core-controller-v1.7.0.tgz
+├── manifests/
+│   ├── metallb-v0.14.8.yaml
+│   └── gateway-api-v1.1.0.yaml
+├── scripts/
+│   ├── upgrade-containerd.sh
+│   ├── upgrade-kubernetes.sh
+│   ├── rollback-containerd.sh
+│   ├── rollback-kubernetes.sh
+│   ├── rollback-calico.sh
+│   ├── rollback-ceph-csi.sh
+│   ├── rollback-capi-core.sh
+│   ├── rollback-metallb.sh
+│   ├── rollback-gateway-api.sh
+│   └── rollback-envoy-gateway.sh
+└── checksums/
+    ├── sha256sums.txt
+    └── sha256sums.txt.sig
+```
+
+### 3.2 release.json 示例
+
+完整的 `release.json` 包含:
+- 基础信息 (version, image, channels, previousVersions)
+- HTTP 服务器配置
+- 镜像仓库配置
+- 二进制组件定义 (kubernetes, containerd, helm, cniPlugins)
+- Addon 定义 (calico, ceph-csi, capi-core-controller, metallb, gateway-api, envoy-gateway)
+- 升级图 (7 个阶段)
+- 内容校验和
+
+完整示例请参考 `release-image/release.json`。
+
+## 4. 构建 ReleaseImage OCI 镜像
+
+### 4.1 准备内容
+
+1. 填充 `release-image/binaries/` 目录
+2. 填充 `release-image/images/` 目录
+3. 填充 `release-image/charts/` 目录
+4. 填充 `release-image/manifests/` 目录
+5. 更新 `release-image/release.json`
+
+### 4.2 构建镜像
+
+```bash
+# 构建 ReleaseImage
+make release-image-build RELEASE_IMG=registry.example.com/capbm/release:v1.31.1
+
+# 推送 ReleaseImage
+make release-image-push RELEASE_IMG=registry.example.com/capbm/release:v1.31.1
+
+# 或者一步完成
+make release-image RELEASE_IMG=registry.example.com/capbm/release:v1.31.1
+```
+
+### 4.3 Dockerfile.release
+
+```dockerfile
+FROM scratch
+
+COPY release-image/release.json /release.json
+COPY release-image/binaries/ /binaries/
+COPY release-image/images/ /images/
+COPY release-image/charts/ /charts/
+COPY release-image/manifests/ /manifests/
+COPY release-image/scripts/ /scripts/
+COPY release-image/checksums/ /checksums/
+
+LABEL org.opencontainers.image.title="CAPBM Release Image"
+LABEL org.opencontainers.image.description="CAPBM Release Image containing binaries, charts, manifests, and scripts"
+LABEL org.opencontainers.image.version="v1.31.1"
+```
+
+## 5. 使用 ReleaseImage 进行升级
+
+### 5.1 创建 ClusterVersion 触发升级
+
+```yaml
+apiVersion: cvo.capbm.io/v1beta1
+kind: ClusterVersion
+metadata:
+  name: my-cluster
+spec:
+  clusterRef:
+    name: my-cluster
+    namespace: default
+  desiredUpdate:
+    version: v1.31.1
+    image: registry.example.com/capbm/release:v1.31.1
+```
+
+```bash
+kubectl apply -f clusterversion.yaml
+```
+
+### 5.2 升级流程
+
+```
+1. CVO Controller 检测 ClusterVersion 变更
+2. 验证升级路径 (UpgradePath)
+3. 获取目标 ReleaseImage
+4. Phase 1: K8S 升级 (containerd → kubernetes)
+5. Phase 2: Addon 升级 (calico → ceph-csi → ...)
+6. 更新 ClusterVersion 状态
+```
+
+### 5.3 仅 Addon 升级 (K8S 版本不变)
+
+```yaml
+apiVersion: cvo.capbm.io/v1beta1
+kind: ClusterVersion
+metadata:
+  name: my-cluster
+spec:
+  clusterRef:
+    name: my-cluster
+    namespace: default
+  desiredUpdate:
+    version: v1.31.0     # K8S 版本不变
+    image: registry.example.com/capbm/release:v1.31.0-patch1  # 新 ReleaseImage
+```
+
+## 6. 监控 ReleaseImage 状态
+
+### 6.1 查看 ReleaseImage 状态
+
+```bash
+# 查看 ReleaseImage
+kubectl get releaseimage v1.31.1
+
+# 查看详细信息
+kubectl get releaseimage v1.31.1 -o yaml
+
+# 查看状态字段
+kubectl get releaseimage v1.31.1 -o jsonpath='{.status}'
+```
+
+### 6.2 状态字段说明
+
+```yaml
+status:
+  verified: true                    # 是否已验证
+  manifestCount: 15                 # Manifest 文件数量
+  imagesImported: true              # 镜像是否已导入
+  importJobName: release-image-import-v1.31.1
+  importStatus: Completed
+  importMessage: All images imported successfully
+  importedImages:
+    - component: kubernetes
+      image: kube-apiserver
+      targetRef: registry.example.com/capbm/kube-apiserver:v1.31.1
+      status: imported
+```
+
+## 7. 离线环境使用
+
+### 7.1 配置 HTTP 服务器
+
+```yaml
+spec:
+  httpServer:
+    enabled: true
+    port: 8080
+    basePath: /release/v1.31.1
+    baseUrl: http://192.168.1.100:8080
+    insecureSkipVerify: true
+```
+
+### 7.2 配置镜像仓库
+
+```yaml
+spec:
+  imageRegistry:
+    enabled: true
+    registry: 192.168.1.100:5000
+    repository: capbm
+    insecureSkipVerify: true
+```
+
+## 8. 组件定义详解
+
+### 8.1 二进制组件
+
+```yaml
+components:
+  kubernetes:
+    version: v1.31.1
+    type: binary
+    path: /opt/capbm/binaries/kubernetes
+    platforms:
+      ubuntu:
+        architectures: [amd64, arm64]
+        packages:
+          kubeadm: kubeadm_1.31.1-00
+          kubelet: kubelet_1.31.1-00
+          kubectl: kubectl_1.31.1-00
+    installStrategy:
+      timeout: 600s
+      retryCount: 3
+      method: package
+      serviceName: kubelet
+    upgradeStrategy:
+      type: Rolling
+      maxConcurrent: 1
+      timeout: 900s
+      retryCount: 3
+      drain: true
+    upgrade:
+      backup:
+        enabled: true
+        config:
+          - path: /etc/kubernetes
+            type: directory
+        etcdSnapshot: true
+      rollback:
+        script: scripts/rollback-kubernetes.sh
+        timeout: 600s
+      healthCheck:
+        command: kubectl get nodes
+        timeout: 60s
+        retries: 3
+```
+
+### 8.2 Addon 定义
+
+```yaml
+addons:
+  - name: calico
+    type: helm
+    version: v3.28.1
+    contentPath: charts/calico-v3.28.1.tgz
+    namespace: kube-system
+    dependencies: []
+    variables:
+      - name: podCIDR
+        type: string
+        description: Pod network CIDR
+        required: true
+    defaultValues:
+      ipam: calico-ipam
+    installStrategy:
+      timeout: 300s
+      retryCount: 3
+      createNamespace: true
+      wait: true
+    upgradeStrategy:
+      type: Rolling
+      maxUnavailable: 0
+      timeout: 300s
+      retryCount: 3
+    upgrade:
+      backup:
+        enabled: true
+        config:
+          - path: /etc/cni/net.d
+            type: directory
+      rollback:
+        script: scripts/rollback-calico.sh
+        timeout: 300s
+      healthCheck:
+        command: kubectl get pods -n kube-system -l k8s-app=calico-node
+        timeout: 60s
+        retries: 3
+```
+
+## 9. 升级图详解
+
+### 9.1 升级阶段
+
+```yaml
+upgradeGraph:
+  - name: phase-1-runtime
+    order: 1
+    blocking: true
+    rollingUpdate:
+      maxUnavailable: 1
+    components:
+      - name: containerd
+        blocking: true
+        dependsOn: []
+        scripts:
+          - scripts/upgrade-containerd.sh
+        healthCheck:
+          type: ServiceRunning
+          name: containerd
+          timeout: 30s
+
+  - name: phase-2-kubernetes
+    order: 2
+    blocking: true
+    components:
+      - name: kubernetes
+        blocking: true
+        dependsOn: [containerd]
+        scripts:
+          - scripts/upgrade-kubernetes.sh
+        healthCheck:
+          type: DeploymentReady
+          namespace: kube-system
+          name: kube-apiserver
+          timeout: 60s
+
+  - name: phase-3-addons
+    order: 3
+    blocking: false
+    components:
+      - name: calico
+        blocking: true
+        dependsOn: [kubernetes]
+        healthCheck:
+          type: DaemonSetReady
+          namespace: kube-system
+          name: calico-node
+          timeout: 120s
+```
+
+### 9.2 升级顺序
+
+```
+Phase 1: containerd (运行时)
+    ↓
+Phase 2: kubernetes (K8S 核心)
+    ↓
+Phase 3: calico (CNI)
+    ↓
+Phase 4: ceph-csi (CSI)
+    ↓
+Phase 5: gateway-api → envoy-gateway (Gateway)
+    ↓
+Phase 6: metallb (负载均衡)
+    ↓
+Phase 7: capi-core-controller (CAPI Core)
+```
+
+## 10. 故障排查
+
+### 10.1 ReleaseImage 验证失败
+
+```bash
+# 查看 ReleaseImage 事件
+kubectl describe releaseimage v1.31.1
+
+# 查看 CVO 日志
+kubectl logs -n cvo-system -l control-plane=controller-manager
+```
+
+### 10.2 升级失败
+
+```bash
+# 查看 ClusterVersion 状态
+kubectl get clusterversion my-cluster -o yaml
+
+# 查看 ClusterAddon 状态
+kubectl get clusteraddon -n default
+
+# 查看升级日志
+kubectl logs -n cvo-system -l control-plane=controller-manager --tail=100
+```
+
+## 11. 相关资源
+
+- [ReleaseImage 实现设计文档](./releaseimage-implementation-design.md)
+- [ClusterVersion 升级设计](./cluster-upgrade-cvo.md)
+- [Addon 升级触发设计](./addon-upgrade-trigger-design.md)
+- [CAPBM 用户指南](./user-guide.md)
