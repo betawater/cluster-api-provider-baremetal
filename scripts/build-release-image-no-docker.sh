@@ -135,7 +135,22 @@ check_requirements() {
 create_directory_structure() {
     log_info "Creating directory structure..."
     
-    mkdir -p "$OUTPUT_DIR"/{binaries/{kubernetes/{ubuntu,debian,centos}/{amd64,arm64},containerd,helm,cni-plugins},images,charts,manifests,scripts,checksums}
+    # Create binary directories for all OS/arch combinations
+    for os in "${OS_FAMILIES[@]}"; do
+        for arch in "${ARCHS[@]}"; do
+            mkdir -p "$OUTPUT_DIR/binaries/kubernetes/${K8S_VERSION}/${os}/${arch}"
+            mkdir -p "$OUTPUT_DIR/binaries/containerd/${CONTAINERD_VERSION}/${os}/${arch}"
+            mkdir -p "$OUTPUT_DIR/binaries/cni-plugins/${CNI_PLUGINS_VERSION}/${os}/${arch}"
+        done
+    done
+    
+    # Create other directories
+    mkdir -p "$OUTPUT_DIR/charts/calico/${CALICO_VERSION}"
+    mkdir -p "$OUTPUT_DIR/charts/ceph-csi/${CEPH_CSI_VERSION}"
+    mkdir -p "$OUTPUT_DIR/manifests/gateway-api/${GATEWAY_API_VERSION}"
+    mkdir -p "$OUTPUT_DIR/manifests/metallb/${METALLB_VERSION}"
+    mkdir -p "$OUTPUT_DIR/scripts"
+    mkdir -p "$OUTPUT_DIR/checksums"
     
     # Copy existing scripts if available
     if [ -d "release-image/scripts" ]; then
@@ -149,63 +164,14 @@ create_directory_structure() {
 # Kubernetes Binaries
 # =============================================================================
 
-download_kubernetes_deb() {
-    local os=$1
-    local arch=$2
-    local version=${RELEASE_VERSION#v}
-    local output_dir="$OUTPUT_DIR/binaries/kubernetes/$os/$arch"
-    
-    log_info "  Downloading Kubernetes $version for $os/$arch (deb)..."
-    
-    local k8s_minor_version="${version%.*}"
-    local packages=("kubeadm" "kubelet" "kubectl")
-    
-    for pkg in "${packages[@]}"; do
-        local url="https://pkgs.k8s.io/core:/stable:/v${k8s_minor_version}/deb/${os}/pool/${pkg}_${version}-1.1_${arch}.deb"
-        local output_file="$output_dir/${pkg}_${version}-1.1_${arch}.deb"
-        
-        log_info "    Downloading $pkg..."
-        if curl -fSL -o "$output_file" "$url"; then
-            log_success "    Downloaded $pkg"
-        else
-            log_warning "    Failed to download $pkg from official repo"
-            rm -f "$output_file"
-        fi
-    done
-}
-
-download_kubernetes_rpm() {
-    local arch=$2
-    local version=${RELEASE_VERSION#v}
-    local output_dir="$OUTPUT_DIR/binaries/kubernetes/centos/$arch"
-    
-    log_info "  Downloading Kubernetes $version for centos/$arch (rpm)..."
-    
-    local k8s_minor_version="${version%.*}"
-    local packages=("kubeadm" "kubelet" "kubectl")
-    
-    for pkg in "${packages[@]}"; do
-        local url="https://pkgs.k8s.io/core:/stable:/v${k8s_minor_version}/rpm/${pkg}-${version}-150500.1.1.${arch}.rpm"
-        local output_file="$output_dir/${pkg}-${version}-150500.1.1.${arch}.rpm"
-        
-        log_info "    Downloading $pkg..."
-        if curl -fSL -o "$output_file" "$url"; then
-            log_success "    Downloaded $pkg"
-        else
-            log_warning "    Failed to download $pkg from official repo"
-            rm -f "$output_file"
-        fi
-    done
-}
-
 download_kubernetes() {
     log_info "Downloading Kubernetes binaries..."
     
     for arch in "${ARCHS[@]}"; do
         # Check if binaries already exist for all OS families
         local all_exist=true
-        for os in "ubuntu" "debian" "centos"; do
-            local output_dir="$OUTPUT_DIR/binaries/kubernetes/$os/$arch"
+        for os in "${OS_FAMILIES[@]}"; do
+            local output_dir="$OUTPUT_DIR/binaries/kubernetes/${K8S_VERSION}/${os}/${arch}"
             if [ ! -f "$output_dir/kubeadm" ] || [ ! -f "$output_dir/kubelet" ] || [ ! -f "$output_dir/kubectl" ]; then
                 all_exist=false
                 break
@@ -234,8 +200,8 @@ download_kubernetes() {
             tar -xzf "$output_file" -C "$temp_dir"
             
             # Copy binaries to output directories for all OS families
-            for os in "ubuntu" "debian" "centos"; do
-                local output_dir="$OUTPUT_DIR/binaries/kubernetes/$os/$arch"
+            for os in "${OS_FAMILIES[@]}"; do
+                local output_dir="$OUTPUT_DIR/binaries/kubernetes/${K8S_VERSION}/${os}/${arch}"
                 mkdir -p "$output_dir"
                 cp "$temp_dir/kubernetes/server/bin/kubeadm" "$output_dir/"
                 cp "$temp_dir/kubernetes/server/bin/kubelet" "$output_dir/"
@@ -262,7 +228,8 @@ download_containerd() {
     log_info "Downloading containerd..."
     
     for arch in "${ARCHS[@]}"; do
-        local output_file="$OUTPUT_DIR/binaries/containerd/containerd-${CONTAINERD_VERSION}-linux-${arch}.tar.gz"
+        local output_dir="$OUTPUT_DIR/binaries/containerd/${CONTAINERD_VERSION}/linux/${arch}"
+        local output_file="$output_dir/containerd.tar.gz"
         
         if [ -f "$output_file" ] && [ "$FORCE_DOWNLOAD" = "false" ]; then
             log_info "  Containerd for $arch already exists, skipping..."
@@ -291,7 +258,8 @@ download_cni_plugins() {
     log_info "Downloading CNI plugins..."
     
     for arch in "${ARCHS[@]}"; do
-        local output_file="$OUTPUT_DIR/binaries/cni-plugins/cni-plugins-linux-${arch}-${CNI_PLUGINS_VERSION}.tgz"
+        local output_dir="$OUTPUT_DIR/binaries/cni-plugins/${CNI_PLUGINS_VERSION}/linux/${arch}"
+        local output_file="$output_dir/cni-plugins.tgz"
         
         if [ -f "$output_file" ] && [ "$FORCE_DOWNLOAD" = "false" ]; then
             log_info "  CNI plugins for $arch already exist, skipping..."
@@ -330,6 +298,32 @@ pull_image_with_crane() {
     crane pull "$image" "$output_file"
 }
 
+get_image_path() {
+    local image=$1
+    # Parse image: registry/repo/image:tag or registry/image:tag
+    local registry repository image_name tag
+    
+    if [[ "$image" == *"/"*":"* ]]; then
+        registry=$(echo "$image" | cut -d'/' -f1)
+        local rest=$(echo "$image" | cut -d'/' -f2-)
+        image_name=$(echo "$rest" | cut -d':' -f1)
+        tag=$(echo "$rest" | cut -d':' -f2)
+        # Check if there's a repository (e.g., calico/node)
+        if [[ "$image_name" == *"/"* ]]; then
+            repository=$(echo "$image_name" | cut -d'/' -f1)
+            image_name=$(echo "$image_name" | cut -d'/' -f2)
+            echo "${OUTPUT_DIR}/images/${registry}/${repository}/${image_name}/${tag}.tar"
+        else
+            echo "${OUTPUT_DIR}/images/${registry}/${image_name}/${tag}.tar"
+        fi
+    else
+        # Default for simple images like pause:3.9
+        image_name=$(echo "$image" | cut -d':' -f1)
+        tag=$(echo "$image" | cut -d':' -f2)
+        echo "${OUTPUT_DIR}/images/${image_name}/${tag}.tar"
+    fi
+}
+
 pull_images() {
     log_info "Pulling container images using $IMAGE_TOOL..."
     
@@ -355,8 +349,9 @@ pull_images() {
     )
 
     for image in "${images[@]}"; do
-        local safe_name=$(echo "$image" | tr '/:' '_')
-        local output_file="$OUTPUT_DIR/images/${safe_name}.tar"
+        local output_file=$(get_image_path "$image")
+        local output_dir=$(dirname "$output_file")
+        mkdir -p "$output_dir"
         
         if [ -f "$output_file" ] && [ "$FORCE_DOWNLOAD" = "false" ]; then
             log_info "  $image already exists, skipping..."
@@ -393,7 +388,7 @@ download_charts() {
     log_info "Downloading Helm charts..."
     
     # Calico - Download from Helm repo index
-    local calico_file="$OUTPUT_DIR/charts/tigera-operator-${CALICO_VERSION}.tgz"
+    local calico_file="$OUTPUT_DIR/charts/calico/${CALICO_VERSION}/tigera-operator.tgz"
     if [ -f "$calico_file" ] && [ "$FORCE_DOWNLOAD" = "false" ]; then
         log_info "  Calico chart already exists, skipping..."
     else
@@ -416,7 +411,7 @@ download_charts() {
     fi
     
     # Ceph CSI - Download from Helm repo index
-    local ceph_csi_file="$OUTPUT_DIR/charts/ceph-csi-rbd-${CEPH_CSI_VERSION}.tgz"
+    local ceph_csi_file="$OUTPUT_DIR/charts/ceph-csi/${CEPH_CSI_VERSION}/ceph-csi-rbd.tgz"
     if [ -f "$ceph_csi_file" ] && [ "$FORCE_DOWNLOAD" = "false" ]; then
         log_info "  Ceph CSI chart already exists, skipping..."
     else
@@ -449,7 +444,9 @@ generate_manifests() {
     log_info "Generating Kubernetes manifests..."
     
     # MetalLB
-    local metallb_file="$OUTPUT_DIR/manifests/metallb-${METALLB_VERSION}.yaml"
+    local metallb_dir="$OUTPUT_DIR/manifests/metallb/${METALLB_VERSION}"
+    mkdir -p "$metallb_dir"
+    local metallb_file="$metallb_dir/metallb-native.yaml"
     if [ -f "$metallb_file" ] && [ "$FORCE_DOWNLOAD" = "false" ]; then
         log_info "  MetalLB manifest already exists, skipping..."
     else
@@ -460,7 +457,9 @@ generate_manifests() {
     fi
     
     # Gateway API
-    local gateway_file="$OUTPUT_DIR/manifests/gateway-api-${GATEWAY_API_VERSION}.yaml"
+    local gateway_dir="$OUTPUT_DIR/manifests/gateway-api/${GATEWAY_API_VERSION}"
+    mkdir -p "$gateway_dir"
+    local gateway_file="$gateway_dir/standard-install.yaml"
     if [ -f "$gateway_file" ] && [ "$FORCE_DOWNLOAD" = "false" ]; then
         log_info "  Gateway API manifest already exists, skipping..."
     else

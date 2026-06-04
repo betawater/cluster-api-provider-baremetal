@@ -18,7 +18,7 @@
     "kubernetes": {
       "version": "v1.31.1",
       "type": "binary",
-      "path": "/opt/capbm/binaries/kubernetes",
+      "path": "/opt/capbm/binaries/kubernetes/v1.31.1",
       "platforms": {
         "ubuntu": {
           "architectures": ["amd64", "arm64"],
@@ -105,7 +105,7 @@
     "containerd": {
       "version": "1.7.24",
       "type": "binary",
-      "path": "/opt/capbm/binaries/containerd",
+      "path": "/opt/capbm/binaries/containerd/1.7.24",
       "architectures": ["amd64", "arm64"],
       "files": {
         "archive": "containerd-1.7.24-linux-amd64.tar.gz"
@@ -144,7 +144,7 @@
     "helm": {
       "version": "3.15.0",
       "type": "binary",
-      "path": "/opt/capbm/binaries/helm",
+      "path": "/opt/capbm/binaries/helm/v3.15.0",
       "architectures": ["amd64", "arm64"],
       "files": {
         "archive": "helm-v3.15.0-linux-amd64.tar.gz"
@@ -153,7 +153,7 @@
     "cniPlugins": {
       "version": "1.5.0",
       "type": "binary",
-      "path": "/opt/capbm/binaries/cni-plugins",
+      "path": "/opt/capbm/binaries/cni-plugins/v1.5.0",
       "architectures": ["amd64", "arm64"],
       "files": {
         "archive": "cni-plugins-linux-amd64-v1.5.0.tgz"
