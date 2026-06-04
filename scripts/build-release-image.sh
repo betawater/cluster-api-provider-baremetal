@@ -26,6 +26,7 @@ set -euo pipefail
 
 # Version Configuration
 RELEASE_VERSION="${RELEASE_VERSION:-v1.31.1}"
+K8S_VERSION="${K8S_VERSION:-v1.31.1}"
 CONTAINERD_VERSION="${CONTAINERD_VERSION:-1.7.24}"
 HELM_VERSION="${HELM_VERSION:-v3.15.0}"
 CNI_PLUGINS_VERSION="${CNI_PLUGINS_VERSION:-v1.5.0}"
@@ -130,7 +131,7 @@ download_kubernetes() {
         log_info "  Downloading Kubernetes server for $arch..."
         
         # Download Kubernetes server package from dl.k8s.io
-        local url="https://dl.k8s.io/${RELEASE_VERSION}/kubernetes-server-linux-${arch}.tar.gz"
+        local url="https://dl.k8s.io/${K8S_VERSION}/kubernetes-server-linux-${arch}.tar.gz"
         local output_file="/tmp/kubernetes-server-linux-${arch}.tar.gz"
         
         log_info "    Downloading from $url..."
@@ -372,7 +373,8 @@ main() {
     echo "============================================================"
     echo "CAPBM Release Image Builder"
     echo "============================================================"
-    echo "Release Version: $RELEASE_VERSION"
+    echo "CAPBM Version: $RELEASE_VERSION"
+    echo "Kubernetes: $K8S_VERSION"
     echo "Containerd: $CONTAINERD_VERSION"
     echo "Helm: $HELM_VERSION"
     echo "CNI Plugins: $CNI_PLUGINS_VERSION"
