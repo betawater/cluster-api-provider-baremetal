@@ -61,8 +61,6 @@
 4. 删除集群时机器自动释放回池中
 ```
 
----
-
 ## 2. 安装 clusterctl
 
 `clusterctl` 是 Cluster API 的命令行工具，用于初始化管理集群和 Provider。
