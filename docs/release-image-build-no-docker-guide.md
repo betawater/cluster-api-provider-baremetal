@@ -251,9 +251,9 @@ https://dl.k8s.io/v1.31.1/kubernetes-server-linux-amd64.tar.gz
 
 | Registry | 镜像 |
 |----------|------|
-| `registry.k8s.io` | kube-apiserver, kube-controller-manager, kube-scheduler, kube-proxy, pause, etcd, coredns |
+| `registry.k8s.io` | kube-apiserver, kube-controller-manager, kube-scheduler, kube-proxy, pause, etcd, coredns, csi-attacher, csi-provisioner, csi-snapshotter, csi-resizer, csi-node-driver-registrar |
 | `docker.io` | calico/node, calico/kube-controllers, calico/cni |
-| `quay.io` | cephcsi, csi-attacher, csi-provisioner, csi-snapshotter, csi-resizer, csi-node-driver-registrar, metallb |
+| `quay.io` | cephcsi, metallb |
 
 ### 6.3 Helm Charts
 
