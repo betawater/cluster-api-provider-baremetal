@@ -154,7 +154,7 @@ create_directory_structure() {
     mkdir -p "$OUTPUT_DIR/addons/ceph-csi/${CEPH_CSI_VERSION}/charts"
     mkdir -p "$OUTPUT_DIR/addons/metallb/${METALLB_VERSION}/manifests"
     mkdir -p "$OUTPUT_DIR/addons/gateway-api/${GATEWAY_API_VERSION}/manifests"
-    mkdir -p "$OUTPUT_DIR/addons/capi-core/v1.7.0/charts"
+    mkdir -p "$OUTPUT_DIR/addons/capi-core/v1.7.0/manifests"
     mkdir -p "$OUTPUT_DIR/addons/envoy-gateway/v1.0.0/charts"
     mkdir -p "$OUTPUT_DIR/checksums"
     
@@ -449,28 +449,16 @@ download_charts() {
         fi
     fi
     
-    # CAPI Core - Download from Helm repo index
-    local capi_file="$OUTPUT_DIR/addons/capi-core/${CAPI_CORE_VERSION}/charts/cluster-api.tgz"
+    # CAPI Core - Download manifest from GitHub releases
+    local capi_file="$OUTPUT_DIR/addons/capi-core/${CAPI_CORE_VERSION}/manifests/cluster-api-components.yaml"
     if [ -f "$capi_file" ] && [ "$FORCE_DOWNLOAD" = "false" ]; then
-        log_info "  CAPI Core chart already exists, skipping..."
+        log_info "  CAPI Core manifest already exists, skipping..."
     else
-        log_info "  Downloading CAPI Core chart..."
-        local capi_version="${CAPI_CORE_VERSION#v}"
-        local capi_chart_url=$(curl -sL "https://kubernetes-sigs.github.io/cluster-api/index.yaml" | \
-            grep -A5 "cluster-api-${capi_version}" | \
-            grep "url:" | head -1 | \
-            sed 's/.*url: //')
-        
-        if [ -n "$capi_chart_url" ]; then
-            curl -fSL -o "$capi_file" "$capi_chart_url"
-            log_success "  Downloaded CAPI Core chart"
-        else
-            log_warning "  Failed to get CAPI Core chart URL, trying alternative..."
-            # Alternative: try direct GitHub URL
-            curl -fSL -o "$capi_file" \
-              "https://github.com/kubernetes-sigs/cluster-api/releases/download/v${capi_version}/cluster-api-${capi_version}.tgz" || \
-            log_error "  Failed to download CAPI Core chart"
-        fi
+        log_info "  Downloading CAPI Core manifest..."
+        mkdir -p "$(dirname "$capi_file")"
+        curl -fSL "https://github.com/kubernetes-sigs/cluster-api/releases/download/${CAPI_CORE_VERSION}/cluster-api-components.yaml" \
+            -o "$capi_file"
+        log_success "  Downloaded CAPI Core manifest"
     fi
     
     log_success "Helm charts downloaded"

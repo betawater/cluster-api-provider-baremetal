@@ -132,7 +132,7 @@ create_directory_structure() {
     mkdir -p "$OUTPUT_DIR/addons/ceph-csi/${CEPH_CSI_VERSION}/charts"
     mkdir -p "$OUTPUT_DIR/addons/metallb/${METALLB_VERSION}/manifests"
     mkdir -p "$OUTPUT_DIR/addons/gateway-api/${GATEWAY_API_VERSION}/manifests"
-    mkdir -p "$OUTPUT_DIR/addons/capi-core/${CAPI_CORE_VERSION}/charts"
+    mkdir -p "$OUTPUT_DIR/addons/capi-core/${CAPI_CORE_VERSION}/manifests"
     mkdir -p "$OUTPUT_DIR/addons/envoy-gateway/v1.0.0/charts"
     mkdir -p "$OUTPUT_DIR/checksums"
     
@@ -392,7 +392,6 @@ download_charts() {
     log_info "  Adding Helm repositories..."
     helm repo add projectcalico https://docs.tigera.io/calico/charts --force-update
     helm repo add ceph-csi https://ceph.github.io/csi-charts --force-update
-    helm repo add capi https://kubernetes-sigs.github.io/cluster-api/ --force-update
     helm repo update
     
     # Calico
@@ -417,15 +416,16 @@ download_charts() {
         log_success "  Downloaded Ceph CSI chart"
     fi
     
-    # CAPI Core
-    local capi_file="$OUTPUT_DIR/addons/capi-core/${CAPI_CORE_VERSION}/charts/cluster-api.tgz"
+    # CAPI Core - Download manifest from GitHub releases
+    local capi_file="$OUTPUT_DIR/addons/capi-core/${CAPI_CORE_VERSION}/manifests/cluster-api-components.yaml"
     if [ -f "$capi_file" ] && [ "$FORCE_DOWNLOAD" = "false" ]; then
-        log_info "  CAPI Core chart already exists, skipping..."
+        log_info "  CAPI Core manifest already exists, skipping..."
     else
-        log_info "  Downloading CAPI Core chart..."
-        helm pull capi/cluster-api --version ${CAPI_CORE_VERSION#v} \
-            -d "$OUTPUT_DIR/addons/capi-core/${CAPI_CORE_VERSION}/charts"
-        log_success "  Downloaded CAPI Core chart"
+        log_info "  Downloading CAPI Core manifest..."
+        mkdir -p "$(dirname "$capi_file")"
+        curl -fSL "https://github.com/kubernetes-sigs/cluster-api/releases/download/${CAPI_CORE_VERSION}/cluster-api-components.yaml" \
+            -o "$capi_file"
+        log_success "  Downloaded CAPI Core manifest"
     fi
     
     log_success "Helm charts downloaded"

@@ -281,9 +281,9 @@
     },
     {
       "name": "capi-core-controller",
-      "type": "helm",
+      "type": "manifest",
       "version": "v1.7.0",
-      "contentPath": "addons/capi-core/v1.7.0/charts/capi-core-controller.tgz",
+      "contentPath": "addons/capi-core/v1.7.0/manifests/cluster-api-components.yaml",
       "namespace": "capi-system",
       "dependencies": [],
       "installStrategy": {
