@@ -23,6 +23,8 @@
 https://dl.k8s.io/v1.31.1/kubernetes-server-linux-amd64.tar.gz
 ```
 
+**注意**: `RELEASE_VERSION` 环境变量已包含 `v` 前缀（如 `v1.31.1`），所以 URL 构建时使用 `${RELEASE_VERSION}` 而不是 `v${RELEASE_VERSION}`。
+
 **下载流程**:
 1. 下载 server 包
 2. 解压到临时目录
@@ -118,6 +120,33 @@ crane digest registry.k8s.io/kube-apiserver:v1.31.1
 | 中国大陆访问 docker.io/quay.io 受限 | 容器镜像拉取失败 | 使用代理或镜像 registry |
 | GitHub Releases 访问受限 | 二进制文件下载失败 | 使用国内镜像站 |
 | Helm repo 访问受限 | Charts 下载失败 | 手动下载 charts 并放入目录 |
+
+### Docker 权限问题
+
+**问题**:
+```
+permission denied while trying to connect to the docker API at unix:///var/run/docker.sock
+```
+
+**原因**: 当前用户不在 docker 组中
+
+**解决方案**:
+
+```bash
+# 1. 将当前用户添加到 docker 组
+sudo usermod -aG docker $USER
+
+# 2. 重新登录或运行以下命令使更改生效
+newgrp docker
+
+# 3. 验证 Docker 权限
+docker ps
+```
+
+**注意**:
+- 添加用户到 docker 组后，需要重新登录或运行 `newgrp docker` 才能使更改生效
+- 如果使用 SSH 连接，需要断开并重新连接
+- 在 CI/CD 环境中，可能需要使用 `sudo` 运行 Docker 命令
 
 ### 备选方案
 

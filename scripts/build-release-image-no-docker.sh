@@ -201,7 +201,7 @@ download_kubernetes() {
         log_info "  Downloading Kubernetes server for $arch..."
         
         # Download Kubernetes server package from dl.k8s.io
-        local url="https://dl.k8s.io/v${RELEASE_VERSION}/kubernetes-server-linux-${arch}.tar.gz"
+        local url="https://dl.k8s.io/${RELEASE_VERSION}/kubernetes-server-linux-${arch}.tar.gz"
         local output_file="/tmp/kubernetes-server-linux-${arch}.tar.gz"
         
         log_info "    Downloading from $url..."

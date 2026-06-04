@@ -91,6 +91,46 @@ sudo mv crane /usr/local/bin/
 crane version
 ```
 
+### 3.3 修复 Docker 权限（如果使用 build-release-image.sh）
+
+如果您选择使用 `build-release-image.sh`（需要 Docker 的版本），可能会遇到 Docker 权限问题：
+
+```
+permission denied while trying to connect to the docker API at unix:///var/run/docker.sock
+```
+
+**解决方案**：
+
+```bash
+# 1. 将当前用户添加到 docker 组
+sudo usermod -aG docker $USER
+
+# 2. 重新登录或运行以下命令使更改生效
+newgrp docker
+
+# 3. 验证 Docker 权限
+docker ps
+```
+
+**验证 Docker 安装**：
+
+```bash
+# 检查 Docker 是否安装
+docker --version
+
+# 检查 Docker 服务是否运行
+sudo systemctl status docker
+
+# 如果未运行，启动 Docker
+sudo systemctl start docker
+sudo systemctl enable docker
+```
+
+**注意**：
+- 添加用户到 docker 组后，需要重新登录或运行 `newgrp docker` 才能使更改生效
+- 如果使用 SSH 连接，需要断开并重新连接
+- 在 CI/CD 环境中，可能需要使用 `sudo` 运行 Docker 命令
+
 ---
 
 ## 4. 构建 ReleaseImage
@@ -267,6 +307,7 @@ sha256sum -c checksums/sha256sums.txt
 | 拉取镜像失败 | 认证问题 | 配置 registry 认证 |
 | 磁盘空间不足 | 空间不足 | 清理磁盘或增加空间 |
 | 校验和不匹配 | 文件损坏 | 重新下载文件 |
+| Docker 权限拒绝 | 用户不在 docker 组 | 运行 `sudo usermod -aG docker $USER && newgrp docker` |
 
 ### 8.2 调试模式
 
