@@ -92,7 +92,7 @@
           "etcdSnapshot": true
         },
         "rollback": {
-          "script": "scripts/rollback-kubernetes.sh",
+          "script": "binaries/kubernetes/v1.31.1/rollback.sh",
           "timeout": "600s"
         },
         "healthCheck": {
@@ -131,7 +131,7 @@
           ]
         },
         "rollback": {
-          "script": "scripts/rollback-containerd.sh",
+          "script": "binaries/containerd/1.7.24/rollback.sh",
           "timeout": "300s"
         },
         "healthCheck": {
@@ -165,7 +165,7 @@
       "name": "calico",
       "type": "helm",
       "version": "v3.28.1",
-      "contentPath": "charts/calico-v3.28.1.tgz",
+      "contentPath": "addons/calico/v3.28.1/charts/tigera-operator.tgz",
       "namespace": "kube-system",
       "dependencies": [],
       "variables": [
@@ -224,7 +224,7 @@
           ]
         },
         "rollback": {
-          "script": "scripts/rollback-calico.sh",
+          "script": "addons/calico/v3.28.1/rollback.sh",
           "timeout": "300s"
         },
         "healthCheck": {
@@ -238,7 +238,7 @@
       "name": "ceph-csi",
       "type": "helm",
       "version": "v3.11.0",
-      "contentPath": "charts/ceph-csi-rbd-v3.11.0.tgz",
+      "contentPath": "addons/ceph-csi/v3.11.0/charts/ceph-csi-rbd.tgz",
       "namespace": "ceph-csi",
       "dependencies": ["calico"],
       "variables": [
@@ -269,7 +269,7 @@
           ]
         },
         "rollback": {
-          "script": "scripts/rollback-ceph-csi.sh",
+          "script": "addons/ceph-csi/v3.11.0/rollback.sh",
           "timeout": "300s"
         },
         "healthCheck": {
@@ -283,7 +283,7 @@
       "name": "capi-core-controller",
       "type": "helm",
       "version": "v1.7.0",
-      "contentPath": "charts/capi-core-controller-v1.7.0.tgz",
+      "contentPath": "addons/capi-core/v1.7.0/charts/capi-core-controller.tgz",
       "namespace": "capi-system",
       "dependencies": [],
       "installStrategy": {
@@ -300,7 +300,7 @@
           ]
         },
         "rollback": {
-          "script": "scripts/rollback-capi-core.sh",
+          "script": "addons/capi-core/v1.7.0/rollback.sh",
           "timeout": "300s"
         },
         "healthCheck": {
@@ -314,7 +314,7 @@
       "name": "metallb",
       "type": "manifest",
       "version": "v0.14.8",
-      "contentPath": "manifests/metallb-v0.14.8.yaml",
+      "contentPath": "addons/metallb/v0.14.8/manifests/metallb-native.yaml",
       "namespace": "metallb-system",
       "dependencies": ["calico"],
       "installStrategy": {
@@ -331,7 +331,7 @@
           ]
         },
         "rollback": {
-          "script": "scripts/rollback-metallb.sh",
+          "script": "addons/metallb/v0.14.8/rollback.sh",
           "timeout": "300s"
         },
         "healthCheck": {
@@ -345,7 +345,7 @@
       "name": "gateway-api",
       "type": "manifest",
       "version": "v1.1.0",
-      "contentPath": "manifests/gateway-api-v1.1.0.yaml",
+      "contentPath": "addons/gateway-api/v1.1.0/manifests/standard-install.yaml",
       "namespace": "gateway-system",
       "dependencies": [],
       "installStrategy": {
@@ -359,7 +359,7 @@
           "enabled": false
         },
         "rollback": {
-          "script": "scripts/rollback-gateway-api.sh",
+          "script": "addons/gateway-api/v1.1.0/rollback.sh",
           "timeout": "120s"
         },
         "healthCheck": {
@@ -373,7 +373,7 @@
       "name": "envoy-gateway",
       "type": "helm",
       "version": "v1.0.0",
-      "contentPath": "charts/envoy-gateway-v1.0.0.tgz",
+      "contentPath": "addons/envoy-gateway/v1.0.0/charts/envoy-gateway.tgz",
       "namespace": "envoy-gateway-system",
       "dependencies": ["gateway-api"],
       "variables": [
@@ -403,7 +403,7 @@
           ]
         },
         "rollback": {
-          "script": "scripts/rollback-envoy-gateway.sh",
+          "script": "addons/envoy-gateway/v1.0.0/rollback.sh",
           "timeout": "300s"
         },
         "healthCheck": {
@@ -427,7 +427,7 @@
           "name": "containerd",
           "blocking": true,
           "dependsOn": [],
-          "scripts": ["scripts/upgrade-containerd.sh"],
+          "scripts": ["binaries/containerd/1.7.24/upgrade.sh"],
           "healthCheck": {
             "type": "ServiceRunning",
             "name": "containerd",
@@ -448,7 +448,7 @@
           "name": "kubernetes",
           "blocking": true,
           "dependsOn": ["containerd"],
-          "scripts": ["scripts/upgrade-kubernetes.sh"],
+          "scripts": ["binaries/kubernetes/v1.31.1/upgrade.sh"],
           "healthCheck": {
             "type": "DeploymentReady",
             "namespace": "kube-system",

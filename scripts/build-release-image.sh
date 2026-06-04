@@ -117,23 +117,38 @@ create_directory_structure() {
     for os in "${OS_FAMILIES[@]}"; do
         for arch in "${ARCHS[@]}"; do
             mkdir -p "$OUTPUT_DIR/binaries/kubernetes/${K8S_VERSION}/${os}/${arch}"
-            mkdir -p "$OUTPUT_DIR/binaries/containerd/${CONTAINERD_VERSION}/${os}/${arch}"
-            mkdir -p "$OUTPUT_DIR/binaries/helm/${HELM_VERSION}/${os}/${arch}"
-            mkdir -p "$OUTPUT_DIR/binaries/cni-plugins/${CNI_PLUGINS_VERSION}/${os}/${arch}"
         done
     done
     
-    # Create other directories
-    mkdir -p "$OUTPUT_DIR/charts/calico/${CALICO_VERSION}"
-    mkdir -p "$OUTPUT_DIR/charts/ceph-csi/${CEPH_CSI_VERSION}"
-    mkdir -p "$OUTPUT_DIR/manifests/gateway-api/${GATEWAY_API_VERSION}"
-    mkdir -p "$OUTPUT_DIR/manifests/metallb/${METALLB_VERSION}"
-    mkdir -p "$OUTPUT_DIR/scripts"
+    # Create binary directories for linux-only components (shared across OS families)
+    for arch in "${ARCHS[@]}"; do
+        mkdir -p "$OUTPUT_DIR/binaries/containerd/${CONTAINERD_VERSION}/linux/${arch}"
+        mkdir -p "$OUTPUT_DIR/binaries/helm/${HELM_VERSION}/linux/${arch}"
+        mkdir -p "$OUTPUT_DIR/binaries/cni-plugins/${CNI_PLUGINS_VERSION}/linux/${arch}"
+    done
+    
+    # Create addon directories
+    mkdir -p "$OUTPUT_DIR/addons/calico/${CALICO_VERSION}/charts"
+    mkdir -p "$OUTPUT_DIR/addons/ceph-csi/${CEPH_CSI_VERSION}/charts"
+    mkdir -p "$OUTPUT_DIR/addons/metallb/${METALLB_VERSION}/manifests"
+    mkdir -p "$OUTPUT_DIR/addons/gateway-api/${GATEWAY_API_VERSION}/manifests"
+    mkdir -p "$OUTPUT_DIR/addons/capi-core/${CAPI_CORE_VERSION}/charts"
+    mkdir -p "$OUTPUT_DIR/addons/envoy-gateway/v1.0.0/charts"
     mkdir -p "$OUTPUT_DIR/checksums"
     
-    # Copy existing scripts
-    if [ -d "release-image/scripts" ]; then
-        cp release-image/scripts/*.sh "$OUTPUT_DIR/scripts/" 2>/dev/null || true
+    # Copy existing scripts to component directories
+    if [ -d "release-image/binaries/kubernetes" ]; then
+        cp release-image/binaries/kubernetes/*/upgrade.sh "$OUTPUT_DIR/binaries/kubernetes/${K8S_VERSION}/" 2>/dev/null || true
+        cp release-image/binaries/kubernetes/*/rollback.sh "$OUTPUT_DIR/binaries/kubernetes/${K8S_VERSION}/" 2>/dev/null || true
+    fi
+    if [ -d "release-image/binaries/containerd" ]; then
+        cp release-image/binaries/containerd/*/upgrade.sh "$OUTPUT_DIR/binaries/containerd/${CONTAINERD_VERSION}/" 2>/dev/null || true
+        cp release-image/binaries/containerd/*/rollback.sh "$OUTPUT_DIR/binaries/containerd/${CONTAINERD_VERSION}/" 2>/dev/null || true
+    fi
+    if [ -d "release-image/addons" ]; then
+        for addon in calico ceph-csi metallb gateway-api capi-core envoy-gateway; do
+            cp release-image/addons/${addon}/*/rollback.sh "$OUTPUT_DIR/addons/${addon}/" 2>/dev/null || true
+        done
     fi
     
     log_success "Directory structure created: $OUTPUT_DIR"
@@ -380,24 +395,24 @@ download_charts() {
     helm repo update
     
     # Calico
-    local calico_file="$OUTPUT_DIR/charts/calico/${CALICO_VERSION}/tigera-operator.tgz"
+    local calico_file="$OUTPUT_DIR/addons/calico/${CALICO_VERSION}/charts/tigera-operator.tgz"
     if [ -f "$calico_file" ] && [ "$FORCE_DOWNLOAD" = "false" ]; then
         log_info "  Calico chart already exists, skipping..."
     else
         log_info "  Downloading Calico chart..."
         helm pull projectcalico/tigera-operator --version ${CALICO_VERSION} \
-            -d "$OUTPUT_DIR/charts/calico/${CALICO_VERSION}"
+            -d "$OUTPUT_DIR/addons/calico/${CALICO_VERSION}/charts"
         log_success "  Downloaded Calico chart"
     fi
     
     # Ceph CSI
-    local ceph_csi_file="$OUTPUT_DIR/charts/ceph-csi/${CEPH_CSI_VERSION}/ceph-csi-rbd.tgz"
+    local ceph_csi_file="$OUTPUT_DIR/addons/ceph-csi/${CEPH_CSI_VERSION}/charts/ceph-csi-rbd.tgz"
     if [ -f "$ceph_csi_file" ] && [ "$FORCE_DOWNLOAD" = "false" ]; then
         log_info "  Ceph CSI chart already exists, skipping..."
     else
         log_info "  Downloading Ceph CSI chart..."
         helm pull ceph-csi/ceph-csi-rbd --version ${CEPH_CSI_VERSION} \
-            -d "$OUTPUT_DIR/charts/ceph-csi/${CEPH_CSI_VERSION}"
+            -d "$OUTPUT_DIR/addons/ceph-csi/${CEPH_CSI_VERSION}/charts"
         log_success "  Downloaded Ceph CSI chart"
     fi
     
@@ -415,7 +430,7 @@ generate_manifests() {
     log_info "Generating Kubernetes manifests..."
     
     # MetalLB
-    local metallb_dir="$OUTPUT_DIR/manifests/metallb/${METALLB_VERSION}"
+    local metallb_dir="$OUTPUT_DIR/addons/metallb/${METALLB_VERSION}/manifests"
     mkdir -p "$metallb_dir"
     local metallb_file="$metallb_dir/metallb-native.yaml"
     if [ -f "$metallb_file" ] && [ "$FORCE_DOWNLOAD" = "false" ]; then
@@ -428,7 +443,7 @@ generate_manifests() {
     fi
     
     # Gateway API
-    local gateway_dir="$OUTPUT_DIR/manifests/gateway-api/${GATEWAY_API_VERSION}"
+    local gateway_dir="$OUTPUT_DIR/addons/gateway-api/${GATEWAY_API_VERSION}/manifests"
     mkdir -p "$gateway_dir"
     local gateway_file="$gateway_dir/standard-install.yaml"
     if [ -f "$gateway_file" ] && [ "$FORCE_DOWNLOAD" = "false" ]; then
