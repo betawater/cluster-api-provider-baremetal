@@ -36,6 +36,11 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: 'v3.15.0'
+
       - name: Build and push CVO Docker image
         run: |
           make docker-build-cvo CVO_IMG=ghcr.io/${{ github.repository_owner }}/cvo-manager:${{ github.ref_name }}
@@ -43,6 +48,14 @@ jobs:
       - name: Build and push CAPBM Docker image
         run: |
           make docker-build-capbm CAPBM_IMG=ghcr.io/${{ github.repository_owner }}/capbm-manager:${{ github.ref_name }}
+
+      - name: Download Release Components
+        run: |
+          chmod +x scripts/build-release-image.sh
+          ./scripts/build-release-image.sh
+        env:
+          RELEASE_VERSION: ${{ github.ref_name }}
+          OUTPUT_DIR: release-image
 
       - name: Build Release Image
         run: |
