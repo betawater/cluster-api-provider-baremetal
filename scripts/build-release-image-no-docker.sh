@@ -39,6 +39,9 @@ OS_FAMILIES=("ubuntu" "debian" "centos")
 # Output Directory
 OUTPUT_DIR="${OUTPUT_DIR:-release-image}"
 
+# Force Download (set to true to re-download all files)
+FORCE_DOWNLOAD="${FORCE_DOWNLOAD:-false}"
+
 # Image Tool (skopeo or crane)
 IMAGE_TOOL="${IMAGE_TOOL:-auto}"
 
@@ -199,6 +202,21 @@ download_kubernetes() {
     log_info "Downloading Kubernetes binaries..."
     
     for arch in "${ARCHS[@]}"; do
+        # Check if binaries already exist for all OS families
+        local all_exist=true
+        for os in "ubuntu" "debian" "centos"; do
+            local output_dir="$OUTPUT_DIR/binaries/kubernetes/$os/$arch"
+            if [ ! -f "$output_dir/kubeadm" ] || [ ! -f "$output_dir/kubelet" ] || [ ! -f "$output_dir/kubectl" ]; then
+                all_exist=false
+                break
+            fi
+        done
+        
+        if [ "$all_exist" = true ] && [ "$FORCE_DOWNLOAD" = "false" ]; then
+            log_info "  Kubernetes binaries for $arch already exist, skipping..."
+            continue
+        fi
+        
         log_info "  Downloading Kubernetes server for $arch..."
         
         # Download Kubernetes server package from dl.k8s.io
@@ -244,9 +262,15 @@ download_containerd() {
     log_info "Downloading containerd..."
     
     for arch in "${ARCHS[@]}"; do
+        local output_file="$OUTPUT_DIR/binaries/containerd/containerd-${CONTAINERD_VERSION}-linux-${arch}.tar.gz"
+        
+        if [ -f "$output_file" ] && [ "$FORCE_DOWNLOAD" = "false" ]; then
+            log_info "  Containerd for $arch already exists, skipping..."
+            continue
+        fi
+        
         log_info "  Downloading for $arch..."
         local url="https://github.com/containerd/containerd/releases/download/v${CONTAINERD_VERSION}/containerd-${CONTAINERD_VERSION}-linux-${arch}.tar.gz"
-        local output_file="$OUTPUT_DIR/binaries/containerd/containerd-${CONTAINERD_VERSION}-linux-${arch}.tar.gz"
         
         if curl -fSL -o "$output_file" "$url"; then
             log_success "  Downloaded containerd for $arch"
@@ -267,9 +291,15 @@ download_cni_plugins() {
     log_info "Downloading CNI plugins..."
     
     for arch in "${ARCHS[@]}"; do
+        local output_file="$OUTPUT_DIR/binaries/cni-plugins/cni-plugins-linux-${arch}-${CNI_PLUGINS_VERSION}.tgz"
+        
+        if [ -f "$output_file" ] && [ "$FORCE_DOWNLOAD" = "false" ]; then
+            log_info "  CNI plugins for $arch already exist, skipping..."
+            continue
+        fi
+        
         log_info "  Downloading for $arch..."
         local url="https://github.com/containernetworking/plugins/releases/download/${CNI_PLUGINS_VERSION}/cni-plugins-linux-${arch}-${CNI_PLUGINS_VERSION}.tgz"
-        local output_file="$OUTPUT_DIR/binaries/cni-plugins/cni-plugins-linux-${arch}-${CNI_PLUGINS_VERSION}.tgz"
         
         if curl -fSL -o "$output_file" "$url"; then
             log_success "  Downloaded CNI plugins for $arch"
@@ -304,10 +334,10 @@ pull_images() {
     log_info "Pulling container images using $IMAGE_TOOL..."
     
     local images=(
-        "registry.k8s.io/kube-apiserver:${RELEASE_VERSION}"
-        "registry.k8s.io/kube-controller-manager:${RELEASE_VERSION}"
-        "registry.k8s.io/kube-scheduler:${RELEASE_VERSION}"
-        "registry.k8s.io/kube-proxy:${RELEASE_VERSION}"
+        "registry.k8s.io/kube-apiserver:${K8S_VERSION}"
+        "registry.k8s.io/kube-controller-manager:${K8S_VERSION}"
+        "registry.k8s.io/kube-scheduler:${K8S_VERSION}"
+        "registry.k8s.io/kube-proxy:${K8S_VERSION}"
         "registry.k8s.io/pause:3.9"
         "registry.k8s.io/etcd:3.5.15-0"
         "registry.k8s.io/coredns/coredns:v1.11.1"
@@ -325,9 +355,15 @@ pull_images() {
     )
 
     for image in "${images[@]}"; do
-        log_info "  Pulling $image..."
         local safe_name=$(echo "$image" | tr '/:' '_')
         local output_file="$OUTPUT_DIR/images/${safe_name}.tar"
+        
+        if [ -f "$output_file" ] && [ "$FORCE_DOWNLOAD" = "false" ]; then
+            log_info "  $image already exists, skipping..."
+            continue
+        fi
+        
+        log_info "  Pulling $image..."
         
         if [ "$IMAGE_TOOL" = "skopeo" ]; then
             if pull_image_with_skopeo "$image" "$output_file"; then
@@ -357,39 +393,49 @@ download_charts() {
     log_info "Downloading Helm charts..."
     
     # Calico - Download from Helm repo index
-    log_info "  Downloading Calico chart..."
-    local calico_chart_url=$(curl -sL "https://docs.tigera.io/calico/charts/index.yaml" | \
-        grep -A5 "tigera-operator-${CALICO_VERSION}" | \
-        grep "url:" | head -1 | \
-        sed 's/.*url: //')
-    
-    if [ -n "$calico_chart_url" ]; then
-        curl -fSL -o "$OUTPUT_DIR/charts/tigera-operator-${CALICO_VERSION}.tgz" "$calico_chart_url"
-        log_success "  Downloaded Calico chart"
+    local calico_file="$OUTPUT_DIR/charts/tigera-operator-${CALICO_VERSION}.tgz"
+    if [ -f "$calico_file" ] && [ "$FORCE_DOWNLOAD" = "false" ]; then
+        log_info "  Calico chart already exists, skipping..."
     else
-        log_warning "  Failed to get Calico chart URL, trying alternative..."
-        # Alternative: try direct GitHub URL
-        curl -fSL -o "$OUTPUT_DIR/charts/tigera-operator-${CALICO_VERSION}.tgz" \
-          "https://github.com/projectcalico/calico/releases/download/${CALICO_VERSION}/tigera-operator-${CALICO_VERSION}.tgz" || \
-        log_error "  Failed to download Calico chart"
+        log_info "  Downloading Calico chart..."
+        local calico_chart_url=$(curl -sL "https://docs.tigera.io/calico/charts/index.yaml" | \
+            grep -A5 "tigera-operator-${CALICO_VERSION}" | \
+            grep "url:" | head -1 | \
+            sed 's/.*url: //')
+        
+        if [ -n "$calico_chart_url" ]; then
+            curl -fSL -o "$calico_file" "$calico_chart_url"
+            log_success "  Downloaded Calico chart"
+        else
+            log_warning "  Failed to get Calico chart URL, trying alternative..."
+            # Alternative: try direct GitHub URL
+            curl -fSL -o "$calico_file" \
+              "https://github.com/projectcalico/calico/releases/download/${CALICO_VERSION}/tigera-operator-${CALICO_VERSION}.tgz" || \
+            log_error "  Failed to download Calico chart"
+        fi
     fi
     
     # Ceph CSI - Download from Helm repo index
-    log_info "  Downloading Ceph CSI chart..."
-    local ceph_csi_chart_url=$(curl -sL "https://ceph.github.io/csi-charts/index.yaml" | \
-        grep -A5 "ceph-csi-rbd-${CEPH_CSI_VERSION}" | \
-        grep "url:" | head -1 | \
-        sed 's/.*url: //')
-    
-    if [ -n "$ceph_csi_chart_url" ]; then
-        curl -fSL -o "$OUTPUT_DIR/charts/ceph-csi-rbd-${CEPH_CSI_VERSION}.tgz" "$ceph_csi_chart_url"
-        log_success "  Downloaded Ceph CSI chart"
+    local ceph_csi_file="$OUTPUT_DIR/charts/ceph-csi-rbd-${CEPH_CSI_VERSION}.tgz"
+    if [ -f "$ceph_csi_file" ] && [ "$FORCE_DOWNLOAD" = "false" ]; then
+        log_info "  Ceph CSI chart already exists, skipping..."
     else
-        log_warning "  Failed to get Ceph CSI chart URL, trying alternative..."
-        # Alternative: try direct GitHub URL
-        curl -fSL -o "$OUTPUT_DIR/charts/ceph-csi-rbd-${CEPH_CSI_VERSION}.tgz" \
-          "https://github.com/ceph/ceph-csi/releases/download/${CEPH_CSI_VERSION}/ceph-csi-rbd-${CEPH_CSI_VERSION}.tgz" || \
-        log_error "  Failed to download Ceph CSI chart"
+        log_info "  Downloading Ceph CSI chart..."
+        local ceph_csi_chart_url=$(curl -sL "https://ceph.github.io/csi-charts/index.yaml" | \
+            grep -A5 "ceph-csi-rbd-${CEPH_CSI_VERSION}" | \
+            grep "url:" | head -1 | \
+            sed 's/.*url: //')
+        
+        if [ -n "$ceph_csi_chart_url" ]; then
+            curl -fSL -o "$ceph_csi_file" "$ceph_csi_chart_url"
+            log_success "  Downloaded Ceph CSI chart"
+        else
+            log_warning "  Failed to get Ceph CSI chart URL, trying alternative..."
+            # Alternative: try direct GitHub URL
+            curl -fSL -o "$ceph_csi_file" \
+              "https://github.com/ceph/ceph-csi/releases/download/${CEPH_CSI_VERSION}/ceph-csi-rbd-${CEPH_CSI_VERSION}.tgz" || \
+            log_error "  Failed to download Ceph CSI chart"
+        fi
     fi
     
     log_success "Helm charts downloaded"
@@ -403,16 +449,26 @@ generate_manifests() {
     log_info "Generating Kubernetes manifests..."
     
     # MetalLB
-    log_info "  Downloading MetalLB manifest..."
-    curl -fSL "https://raw.githubusercontent.com/metallb/metallb/${METALLB_VERSION}/config/manifests/metallb-native.yaml" \
-        -o "$OUTPUT_DIR/manifests/metallb-${METALLB_VERSION}.yaml"
-    log_success "  Downloaded MetalLB manifest"
+    local metallb_file="$OUTPUT_DIR/manifests/metallb-${METALLB_VERSION}.yaml"
+    if [ -f "$metallb_file" ] && [ "$FORCE_DOWNLOAD" = "false" ]; then
+        log_info "  MetalLB manifest already exists, skipping..."
+    else
+        log_info "  Downloading MetalLB manifest..."
+        curl -fSL "https://raw.githubusercontent.com/metallb/metallb/${METALLB_VERSION}/config/manifests/metallb-native.yaml" \
+            -o "$metallb_file"
+        log_success "  Downloaded MetalLB manifest"
+    fi
     
     # Gateway API
-    log_info "  Downloading Gateway API manifest..."
-    curl -fSL "https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/standard-install.yaml" \
-        -o "$OUTPUT_DIR/manifests/gateway-api-${GATEWAY_API_VERSION}.yaml"
-    log_success "  Downloaded Gateway API manifest"
+    local gateway_file="$OUTPUT_DIR/manifests/gateway-api-${GATEWAY_API_VERSION}.yaml"
+    if [ -f "$gateway_file" ] && [ "$FORCE_DOWNLOAD" = "false" ]; then
+        log_info "  Gateway API manifest already exists, skipping..."
+    else
+        log_info "  Downloading Gateway API manifest..."
+        curl -fSL "https://github.com/kubernetes-sigs/gateway-api/releases/download/${GATEWAY_API_VERSION}/standard-install.yaml" \
+            -o "$gateway_file"
+        log_success "  Downloaded Gateway API manifest"
+    fi
     
     log_success "Kubernetes manifests generated"
 }
@@ -442,8 +498,17 @@ generate_checksums() {
 generate_release_json() {
     log_info "Generating release.json..."
     
-    if [ -f "release-image/release.json" ]; then
-        cp release-image/release.json "$OUTPUT_DIR/release.json"
+    local source_file="release-image/release.json"
+    local dest_file="$OUTPUT_DIR/release.json"
+    
+    # Skip if source and destination are the same
+    if [ "$(realpath "$source_file" 2>/dev/null)" = "$(realpath "$dest_file" 2>/dev/null)" ]; then
+        log_info "release.json already exists in output directory, skipping..."
+        return
+    fi
+    
+    if [ -f "$source_file" ]; then
+        cp "$source_file" "$dest_file"
         log_success "Copied existing release.json"
     else
         log_warning "No existing release.json found, please create manually"
@@ -468,6 +533,7 @@ main() {
     echo "Gateway API: $GATEWAY_API_VERSION"
     echo "Architectures: ${ARCHS[*]}"
     echo "Image Tool: $IMAGE_TOOL"
+    echo "Force Download: $FORCE_DOWNLOAD"
     echo "Output Directory: $OUTPUT_DIR"
     echo "============================================================"
     echo ""
