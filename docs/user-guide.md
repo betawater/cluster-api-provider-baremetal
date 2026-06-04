@@ -99,8 +99,6 @@ clusterctl version
 clusterctl version: &version.Info{Major:"1", Minor:"13", GitVersion:"v1.13.0", ...}
 ```
 
----
-
 ## 3. 安装 CAPBM Provider
 
 ### 3.1 安装 Cluster API 核心组件
