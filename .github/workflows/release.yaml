@@ -44,6 +44,14 @@ jobs:
         run: |
           make docker-build-capbm CAPBM_IMG=ghcr.io/${{ github.repository_owner }}/capbm-manager:${{ github.ref_name }}
 
+      - name: Build Release Image
+        run: |
+          make release-image-build RELEASE_IMG=ghcr.io/${{ github.repository_owner }}/capbm/release:${{ github.ref_name }}
+
+      - name: Push Release Image
+        run: |
+          make release-image-push RELEASE_IMG=ghcr.io/${{ github.repository_owner }}/capbm/release:${{ github.ref_name }}
+
       - name: Generate CVO release manifests
         run: |
           make release-cvo CVO_IMG=ghcr.io/${{ github.repository_owner }}/cvo-manager:${{ github.ref_name }}
