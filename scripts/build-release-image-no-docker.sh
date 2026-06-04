@@ -1,39 +1,35 @@
 #!/bin/bash
-set -euo pipefail
-
 # =============================================================================
-# CAPBM Release Image Builder
+# CAPBM Release Image Builder (No Docker/Helm Required)
 # =============================================================================
 # This script builds a complete release image with all components for
-# offline/air-gapped installation.
+# offline/air-gapped installation without requiring Docker or Helm CLI.
 #
-# Supported Platforms:
-#   - Linux amd64
-#   - Linux arm64
+# Requirements:
+#   - curl
+#   - sha256sum
+#   - skopeo OR crane (for pulling container images)
+#
+# Supported Architectures:
+#   - linux/amd64
+#   - linux/arm64
 #
 # Supported OS Families:
 #   - Ubuntu (deb)
 #   - Debian (deb)
 #   - CentOS/RHEL (rpm)
-#
-# Requirements:
-#   - Docker
-#   - Helm
-#   - curl
-#   - sha256sum
-#   - Internet connection
 # =============================================================================
+
+set -euo pipefail
 
 # Version Configuration
 RELEASE_VERSION="${RELEASE_VERSION:-v1.31.1}"
 CONTAINERD_VERSION="${CONTAINERD_VERSION:-1.7.24}"
-HELM_VERSION="${HELM_VERSION:-v3.15.0}"
 CNI_PLUGINS_VERSION="${CNI_PLUGINS_VERSION:-v1.5.0}"
 CALICO_VERSION="${CALICO_VERSION:-v3.28.1}"
 CEPH_CSI_VERSION="${CEPH_CSI_VERSION:-v3.11.0}"
 METALLB_VERSION="${METALLB_VERSION:-v0.14.8}"
 GATEWAY_API_VERSION="${GATEWAY_API_VERSION:-v1.1.0}"
-CAPI_CORE_VERSION="${CAPI_CORE_VERSION:-v1.7.0}"
 
 # Architecture and OS Configuration
 ARCHS=("amd64" "arm64")
@@ -41,6 +37,9 @@ OS_FAMILIES=("ubuntu" "debian" "centos")
 
 # Output Directory
 OUTPUT_DIR="${OUTPUT_DIR:-release-image}"
+
+# Image Tool (skopeo or crane)
+IMAGE_TOOL="${IMAGE_TOOL:-auto}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -69,20 +68,14 @@ log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+# =============================================================================
+# Requirements Check
+# =============================================================================
+
 check_requirements() {
     log_info "Checking requirements..."
     
     local missing=0
-    
-    if ! command -v docker &> /dev/null; then
-        log_error "Docker is not installed"
-        missing=1
-    fi
-    
-    if ! command -v helm &> /dev/null; then
-        log_error "Helm is not installed"
-        missing=1
-    fi
     
     if ! command -v curl &> /dev/null; then
         log_error "curl is not installed"
@@ -92,6 +85,35 @@ check_requirements() {
     if ! command -v sha256sum &> /dev/null; then
         log_error "sha256sum is not installed"
         missing=1
+    fi
+    
+    # Check for image tool (skopeo or crane)
+    if [ "$IMAGE_TOOL" = "auto" ]; then
+        if command -v skopeo &> /dev/null; then
+            IMAGE_TOOL="skopeo"
+            log_info "Using skopeo for image operations"
+        elif command -v crane &> /dev/null; then
+            IMAGE_TOOL="crane"
+            log_info "Using crane for image operations"
+        else
+            log_error "Neither skopeo nor crane is installed"
+            log_info ""
+            log_info "Install skopeo:"
+            log_info "  Ubuntu/Debian: sudo apt-get install -y skopeo"
+            log_info "  CentOS/RHEL:   sudo yum install -y skopeo"
+            log_info "  Or download:   https://github.com/containers/skopeo/releases"
+            log_info ""
+            log_info "Install crane:"
+            log_info "  Download: https://github.com/google/go-containerregistry/releases"
+            missing=1
+        fi
+    else
+        if ! command -v "$IMAGE_TOOL" &> /dev/null; then
+            log_error "$IMAGE_TOOL is not installed"
+            missing=1
+        else
+            log_info "Using $IMAGE_TOOL for image operations"
+        fi
     fi
     
     if [ $missing -eq 1 ]; then
@@ -109,9 +131,9 @@ check_requirements() {
 create_directory_structure() {
     log_info "Creating directory structure..."
     
-    mkdir -p "$OUTPUT_DIR"/{binaries/{kubernetes/{ubuntu,debian,centos}/{amd64,arm64},containerd,helm,cni-plugins},charts,images,manifests,scripts,checksums}
+    mkdir -p "$OUTPUT_DIR"/{binaries/{kubernetes/{ubuntu,debian,centos}/{amd64,arm64},containerd,helm,cni-plugins},images,charts,manifests,scripts,checksums}
     
-    # Copy existing scripts
+    # Copy existing scripts if available
     if [ -d "release-image/scripts" ]; then
         cp release-image/scripts/*.sh "$OUTPUT_DIR/scripts/" 2>/dev/null || true
     fi
@@ -122,6 +144,55 @@ create_directory_structure() {
 # =============================================================================
 # Kubernetes Binaries
 # =============================================================================
+
+download_kubernetes_deb() {
+    local os=$1
+    local arch=$2
+    local version=${RELEASE_VERSION#v}
+    local output_dir="$OUTPUT_DIR/binaries/kubernetes/$os/$arch"
+    
+    log_info "  Downloading Kubernetes $version for $os/$arch (deb)..."
+    
+    local k8s_minor_version="${version%.*}"
+    local packages=("kubeadm" "kubelet" "kubectl")
+    
+    for pkg in "${packages[@]}"; do
+        local url="https://pkgs.k8s.io/core:/stable:/v${k8s_minor_version}/deb/${os}/pool/${pkg}_${version}-1.1_${arch}.deb"
+        local output_file="$output_dir/${pkg}_${version}-1.1_${arch}.deb"
+        
+        log_info "    Downloading $pkg..."
+        if curl -fSL -o "$output_file" "$url"; then
+            log_success "    Downloaded $pkg"
+        else
+            log_warning "    Failed to download $pkg from official repo"
+            rm -f "$output_file"
+        fi
+    done
+}
+
+download_kubernetes_rpm() {
+    local arch=$2
+    local version=${RELEASE_VERSION#v}
+    local output_dir="$OUTPUT_DIR/binaries/kubernetes/centos/$arch"
+    
+    log_info "  Downloading Kubernetes $version for centos/$arch (rpm)..."
+    
+    local k8s_minor_version="${version%.*}"
+    local packages=("kubeadm" "kubelet" "kubectl")
+    
+    for pkg in "${packages[@]}"; do
+        local url="https://pkgs.k8s.io/core:/stable:/v${k8s_minor_version}/rpm/${pkg}-${version}-150500.1.1.${arch}.rpm"
+        local output_file="$output_dir/${pkg}-${version}-150500.1.1.${arch}.rpm"
+        
+        log_info "    Downloading $pkg..."
+        if curl -fSL -o "$output_file" "$url"; then
+            log_success "    Downloaded $pkg"
+        else
+            log_warning "    Failed to download $pkg from official repo"
+            rm -f "$output_file"
+        fi
+    done
+}
 
 download_kubernetes() {
     log_info "Downloading Kubernetes binaries..."
@@ -188,29 +259,6 @@ download_containerd() {
 }
 
 # =============================================================================
-# Helm
-# =============================================================================
-
-download_helm() {
-    log_info "Downloading Helm..."
-    
-    for arch in "${ARCHS[@]}"; do
-        log_info "  Downloading for $arch..."
-        local url="https://get.helm.sh/helm-${HELM_VERSION}-linux-${arch}.tar.gz"
-        local output_file="$OUTPUT_DIR/binaries/helm/helm-${HELM_VERSION}-linux-${arch}.tar.gz"
-        
-        if curl -fSL -o "$output_file" "$url"; then
-            log_success "  Downloaded Helm for $arch"
-        else
-            log_error "  Failed to download Helm for $arch"
-            rm -f "$output_file"
-        fi
-    done
-    
-    log_success "Helm downloaded"
-}
-
-# =============================================================================
 # CNI Plugins
 # =============================================================================
 
@@ -234,11 +282,25 @@ download_cni_plugins() {
 }
 
 # =============================================================================
-# Container Images
+# Container Images (using skopeo or crane, no Docker required)
 # =============================================================================
 
-pull_and_save_images() {
-    log_info "Pulling and saving container images..."
+pull_image_with_skopeo() {
+    local image=$1
+    local output_file=$2
+    
+    skopeo copy "docker://$image" "docker-archive:$output_file"
+}
+
+pull_image_with_crane() {
+    local image=$1
+    local output_file=$2
+    
+    crane pull "$image" "$output_file"
+}
+
+pull_images() {
+    log_info "Pulling container images using $IMAGE_TOOL..."
     
     local images=(
         "registry.k8s.io/kube-apiserver:${RELEASE_VERSION}"
@@ -260,49 +322,74 @@ pull_and_save_images() {
         "quay.io/metallb/controller:${METALLB_VERSION}"
         "quay.io/metallb/speaker:${METALLB_VERSION}"
     )
-    
+
     for image in "${images[@]}"; do
         log_info "  Pulling $image..."
-        if docker pull "$image"; then
-            # Save as tar file
-            local safe_name=$(echo "$image" | tr '/:' '_')
-            docker save -o "$OUTPUT_DIR/images/${safe_name}.tar" "$image"
-            log_success "  Saved $image"
+        local safe_name=$(echo "$image" | tr '/:' '_')
+        local output_file="$OUTPUT_DIR/images/${safe_name}.tar"
+        
+        if [ "$IMAGE_TOOL" = "skopeo" ]; then
+            if pull_image_with_skopeo "$image" "$output_file"; then
+                log_success "  Saved $image"
+            else
+                log_error "  Failed to pull $image"
+                rm -f "$output_file"
+            fi
         else
-            log_error "  Failed to pull $image"
+            if pull_image_with_crane "$image" "$output_file"; then
+                log_success "  Saved $image"
+            else
+                log_error "  Failed to pull $image"
+                rm -f "$output_file"
+            fi
         fi
     done
     
-    log_success "Container images saved"
+    log_success "Container images pulled"
 }
 
 # =============================================================================
-# Helm Charts
+# Helm Charts (direct download, no Helm CLI required)
 # =============================================================================
 
 download_charts() {
     log_info "Downloading Helm charts..."
     
-    # Add Helm repositories
-    log_info "  Adding Helm repositories..."
-    helm repo add projectcalico https://docs.tigera.io/calico/charts --force-update
-    helm repo add ceph-csi https://ceph.github.io/csi-charts --force-update
-    helm repo update
-    
-    # Calico
+    # Calico - Download from Helm repo index
     log_info "  Downloading Calico chart..."
-    helm pull projectcalico/tigera-operator --version ${CALICO_VERSION} \
-        -d "$OUTPUT_DIR/charts"
-    log_success "  Downloaded Calico chart"
+    local calico_chart_url=$(curl -sL "https://docs.tigera.io/calico/charts/index.yaml" | \
+        grep -A5 "tigera-operator-${CALICO_VERSION}" | \
+        grep "url:" | head -1 | \
+        sed 's/.*url: //')
     
-    # Ceph CSI
+    if [ -n "$calico_chart_url" ]; then
+        curl -fSL -o "$OUTPUT_DIR/charts/tigera-operator-${CALICO_VERSION}.tgz" "$calico_chart_url"
+        log_success "  Downloaded Calico chart"
+    else
+        log_warning "  Failed to get Calico chart URL, trying alternative..."
+        # Alternative: try direct GitHub URL
+        curl -fSL -o "$OUTPUT_DIR/charts/tigera-operator-${CALICO_VERSION}.tgz" \
+          "https://github.com/projectcalico/calico/releases/download/${CALICO_VERSION}/tigera-operator-${CALICO_VERSION}.tgz" || \
+        log_error "  Failed to download Calico chart"
+    fi
+    
+    # Ceph CSI - Download from Helm repo index
     log_info "  Downloading Ceph CSI chart..."
-    helm pull ceph-csi/ceph-csi-rbd --version ${CEPH_CSI_VERSION} \
-        -d "$OUTPUT_DIR/charts"
-    log_success "  Downloaded Ceph CSI chart"
+    local ceph_csi_chart_url=$(curl -sL "https://ceph.github.io/csi-charts/index.yaml" | \
+        grep -A5 "ceph-csi-rbd-${CEPH_CSI_VERSION}" | \
+        grep "url:" | head -1 | \
+        sed 's/.*url: //')
     
-    # Note: CAPI Core chart needs to be built from CAPI source
-    log_warning "  Note: CAPI Core chart needs to be built from CAPI source"
+    if [ -n "$ceph_csi_chart_url" ]; then
+        curl -fSL -o "$OUTPUT_DIR/charts/ceph-csi-rbd-${CEPH_CSI_VERSION}.tgz" "$ceph_csi_chart_url"
+        log_success "  Downloaded Ceph CSI chart"
+    else
+        log_warning "  Failed to get Ceph CSI chart URL, trying alternative..."
+        # Alternative: try direct GitHub URL
+        curl -fSL -o "$OUTPUT_DIR/charts/ceph-csi-rbd-${CEPH_CSI_VERSION}.tgz" \
+          "https://github.com/ceph/ceph-csi/releases/download/${CEPH_CSI_VERSION}/ceph-csi-rbd-${CEPH_CSI_VERSION}.tgz" || \
+        log_error "  Failed to download Ceph CSI chart"
+    fi
     
     log_success "Helm charts downloaded"
 }
@@ -354,8 +441,6 @@ generate_checksums() {
 generate_release_json() {
     log_info "Generating release.json..."
     
-    # This would generate a complete release.json matching the downloaded files
-    # For now, we'll use the existing template
     if [ -f "release-image/release.json" ]; then
         cp release-image/release.json "$OUTPUT_DIR/release.json"
         log_success "Copied existing release.json"
@@ -370,17 +455,17 @@ generate_release_json() {
 
 main() {
     echo "============================================================"
-    echo "CAPBM Release Image Builder"
+    echo "CAPBM Release Image Builder (No Docker/Helm Required)"
     echo "============================================================"
     echo "Release Version: $RELEASE_VERSION"
     echo "Containerd: $CONTAINERD_VERSION"
-    echo "Helm: $HELM_VERSION"
     echo "CNI Plugins: $CNI_PLUGINS_VERSION"
     echo "Calico: $CALICO_VERSION"
     echo "Ceph CSI: $CEPH_CSI_VERSION"
     echo "MetalLB: $METALLB_VERSION"
     echo "Gateway API: $GATEWAY_API_VERSION"
     echo "Architectures: ${ARCHS[*]}"
+    echo "Image Tool: $IMAGE_TOOL"
     echo "Output Directory: $OUTPUT_DIR"
     echo "============================================================"
     echo ""
@@ -389,9 +474,8 @@ main() {
     create_directory_structure
     download_kubernetes
     download_containerd
-    download_helm
     download_cni_plugins
-    pull_and_save_images
+    pull_images
     download_charts
     generate_manifests
     generate_checksums
