@@ -115,6 +115,12 @@ type BareMetalMachineSpec struct {
 	// SELinux holds configuration for SELinux management.
 	// +optional
 	SELinux *SELinuxConfig `json:"selinux,omitempty"`
+
+	// NodeBootstrap holds configuration for node bootstrapping.
+	// When enabled, CAPBM will automatically configure the node
+	// after pre-flight checks pass.
+	// +optional
+	NodeBootstrap *NodeBootstrapConfig `json:"nodeBootstrap,omitempty"`
 }
 
 // ComponentInstallConfig defines configuration for automatic component installation.
@@ -358,6 +364,49 @@ type SELinuxConfig struct {
 	// +optional
 	// +kubebuilder:default=true
 	Configure bool `json:"configure,omitempty"`
+}
+
+// NodeBootstrapConfig defines configuration for node bootstrapping.
+type NodeBootstrapConfig struct {
+	// Enabled indicates whether node bootstrapping is enabled.
+	// +optional
+	// +kubebuilder:default=true
+	Enabled bool `json:"enabled,omitempty"`
+
+	// Hostname is the desired hostname for the node.
+	// If empty, uses the hostName from spec.
+	// +optional
+	Hostname string `json:"hostname,omitempty"`
+
+	// HostsEntries is a list of additional /etc/hosts entries.
+	// +optional
+	HostsEntries []HostsEntry `json:"hostsEntries,omitempty"`
+
+	// DisableSwap indicates whether to disable swap.
+	// +optional
+	// +kubebuilder:default=true
+	DisableSwap bool `json:"disableSwap,omitempty"`
+
+	// KernelModules is a list of kernel modules to load.
+	// +optional
+	KernelModules []string `json:"kernelModules,omitempty"`
+
+	// SysctlParams is a list of sysctl parameters to configure.
+	// +optional
+	SysctlParams map[string]string `json:"sysctlParams,omitempty"`
+
+	// TimeSync indicates whether to configure time synchronization.
+	// +optional
+	// +kubebuilder:default=true
+	TimeSync bool `json:"timeSync,omitempty"`
+}
+
+// HostsEntry defines a /etc/hosts entry.
+type HostsEntry struct {
+	// IP is the IP address.
+	IP string `json:"ip"`
+	// Hostnames is the list of hostnames for this IP.
+	Hostnames []string `json:"hostnames"`
 }
 
 // CNIConfig defines the CNI plugin installation configuration.

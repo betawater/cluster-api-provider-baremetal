@@ -758,6 +758,59 @@ spec:
                   IPAddress is the IP address of the bare metal machine.
                   This can be specified directly or allocated from HostInventory.
                 type: string
+              nodeBootstrap:
+                description: |-
+                  NodeBootstrap holds configuration for node bootstrapping.
+                  When enabled, CAPBM will automatically configure the node
+                  after pre-flight checks pass.
+                properties:
+                  disableSwap:
+                    default: true
+                    description: DisableSwap indicates whether to disable swap.
+                    type: boolean
+                  enabled:
+                    default: true
+                    description: Enabled indicates whether node bootstrapping is enabled.
+                    type: boolean
+                  hostname:
+                    description: |-
+                      Hostname is the desired hostname for the node.
+                      If empty, uses the hostName from spec.
+                    type: string
+                  hostsEntries:
+                    description: HostsEntries is a list of additional /etc/hosts entries.
+                    items:
+                      description: HostsEntry defines a /etc/hosts entry.
+                      properties:
+                        hostnames:
+                          description: Hostnames is the list of hostnames for this
+                            IP.
+                          items:
+                            type: string
+                          type: array
+                        ip:
+                          description: IP is the IP address.
+                          type: string
+                      required:
+                      - hostnames
+                      - ip
+                      type: object
+                    type: array
+                  kernelModules:
+                    description: KernelModules is a list of kernel modules to load.
+                    items:
+                      type: string
+                    type: array
+                  sysctlParams:
+                    additionalProperties:
+                      type: string
+                    description: SysctlParams is a list of sysctl parameters to configure.
+                    type: object
+                  timeSync:
+                    default: true
+                    description: TimeSync indicates whether to configure time synchronization.
+                    type: boolean
+                type: object
               powerManagement:
                 description: PowerManagement holds optional power management configuration.
                 properties:
@@ -826,6 +879,11 @@ spec:
                 default: 22
                 description: SSHPort is the SSH port to connect to.
                 type: integer
+              useSudo:
+                description: |-
+                  UseSudo indicates whether to use sudo for privileged operations.
+                  When true, all installation scripts will be executed with sudo.
+                type: boolean
             type: object
           status:
             description: BareMetalMachineStatus defines the observed state of BareMetalMachine.

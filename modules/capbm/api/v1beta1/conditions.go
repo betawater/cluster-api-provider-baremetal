@@ -58,6 +58,10 @@ const (
 	// GatewayAPIReadyCondition reports whether the Gateway API components are ready.
 	//nolint:staticcheck // ConditionType deprecated in CAPI v1beta2, will migrate when ready
 	GatewayAPIReadyCondition clusterv1.ConditionType = "GatewayAPIReady"
+
+	// NodeBootstrapCondition reports whether node bootstrapping is completed.
+	//nolint:staticcheck // ConditionType deprecated in CAPI v1beta2, will migrate when ready
+	NodeBootstrapCondition clusterv1.ConditionType = "NodeBootstrap"
 )
 
 // Common condition reasons
@@ -124,4 +128,10 @@ const (
 
 	// GatewayAPIReadyReason indicates Gateway API components are ready.
 	GatewayAPIReadyReason = "GatewayAPIReady"
+
+	// NodeBootstrapFailedReason indicates node bootstrapping failed.
+	NodeBootstrapFailedReason = "NodeBootstrapFailed"
+
+	// NodeBootstrapCompletedReason indicates node bootstrapping is completed.
+	NodeBootstrapCompletedReason = "NodeBootstrapCompleted"
 )

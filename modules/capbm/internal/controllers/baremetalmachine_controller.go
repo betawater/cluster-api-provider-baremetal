@@ -37,6 +37,7 @@ import (
 	capbmv1 "github.com/BetaWater/cluster-api-provider-baremetal/modules/capbm/api/v1beta1"
 	
 	cfov1 "github.com/BetaWater/cluster-api-provider-baremetal/modules/cvo/api/v1beta1"
+	"github.com/BetaWater/cluster-api-provider-baremetal/modules/capbm/internal/bootstrap"
 	"github.com/BetaWater/cluster-api-provider-baremetal/modules/capbm/internal/cni"
 	"github.com/BetaWater/cluster-api-provider-baremetal/modules/capbm/internal/csi"
 	"github.com/BetaWater/cluster-api-provider-baremetal/modules/capbm/internal/health"
@@ -197,6 +198,23 @@ func (r *BareMetalMachineReconciler) reconcileNormal(ctx context.Context, bmMach
 		return ctrl.Result{RequeueAfter: 60 * time.Second}, r.Status().Update(ctx, bmMachine)
 	}
 	markMachineConditionTrue(bmMachine, capbmv1.PreFlightChecksPassedCondition)
+
+	// Node bootstrapping (auto-configure OS settings)
+	if bmMachine.Spec.NodeBootstrap != nil && bmMachine.Spec.NodeBootstrap.Enabled {
+		hostname := bmMachine.Spec.NodeBootstrap.Hostname
+		if hostname == "" {
+			hostname = bmMachine.Spec.HostName
+		}
+		bootstrapper := bootstrap.NewNodeBootstrapper(sshConn, bmMachine.Spec.NodeBootstrap, bmMachine.Spec.Role, hostname)
+		bootstrapResult, err := bootstrapper.Bootstrap(ctx)
+		if err != nil {
+			log.Error(err, "Failed to bootstrap node")
+			markMachineConditionFalse(bmMachine, capbmv1.NodeBootstrapCondition, capbmv1.NodeBootstrapFailedReason, clusterv1.ConditionSeverityError, err.Error())
+			return ctrl.Result{RequeueAfter: 60 * time.Second}, r.Status().Update(ctx, bmMachine)
+		}
+		log.Info("Node bootstrap completed", "steps", bootstrapResult.Steps)
+		markMachineConditionTrue(bmMachine, capbmv1.NodeBootstrapCondition)
+	}
 
 	if err := r.configureFirewall(ctx, bmMachine, sshConn); err != nil {
 		log.Error(err, "Failed to configure firewall")

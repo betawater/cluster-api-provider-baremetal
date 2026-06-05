@@ -1,0 +1,13 @@
+name: tech-insight
+description: 对指定技术主题进行洞察分析，输出趋势、风险和机会
+inputs:
+  - topic: 技术主题（如 Kubernetes、AI、边缘计算）
+  - depth: 分析深度（overview | detailed）
+outputs:
+  - report: 洞察报告（包含趋势、风险、机会）
+executor: builtin
+steps:
+  - run: |
+      echo "分析主题: $topic"
+      echo "深度: $depth"
+      # 这里可以调用内部分析器或脚本生成报告

@@ -1,0 +1,7 @@
+phases:
+  - name: analysis
+    steps:
+      - use: tech-insight
+        with:
+          topic: "Kubernetes 集群安装部署趋势"
+          depth: "detailed"

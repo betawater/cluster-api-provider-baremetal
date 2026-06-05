@@ -258,6 +258,47 @@ spec:
           configure:
             type: boolean
             default: true
+  - name: nodeBootstrap
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          enabled:
+            type: boolean
+            default: true
+          hostname:
+            type: string
+            description: "Desired hostname for the node"
+          hostsEntries:
+            type: array
+            items:
+              type: object
+              properties:
+                ip:
+                  type: string
+                hostnames:
+                  type: array
+                  items:
+                    type: string
+          disableSwap:
+            type: boolean
+            default: true
+          kernelModules:
+            type: array
+            items:
+              type: string
+            default: ["overlay", "br_netfilter"]
+          sysctlParams:
+            type: object
+            additionalProperties:
+              type: string
+            default:
+              net.bridge.bridge-nf-call-iptables: "1"
+              net.bridge.bridge-nf-call-ip6tables: "1"
+              net.ipv4.ip_forward: "1"
+          timeSync:
+            type: boolean
+            default: true
   patches:
   - name: controlPlaneEndpoint
     definitions:
@@ -423,3 +464,27 @@ spec:
         path: /spec/template/spec/selinux
         valueFrom:
           variable: selinux
+  - name: nodeBootstrap
+    definitions:
+    - selector:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        kind: BareMetalMachineTemplate
+        matchResources:
+          controlPlane: true
+      jsonPatches:
+      - op: add
+        path: /spec/template/spec/nodeBootstrap
+        valueFrom:
+          variable: nodeBootstrap
+    - selector:
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        kind: BareMetalMachineTemplate
+        matchResources:
+          machineDeploymentClass:
+            names:
+            - default-worker
+      jsonPatches:
+      - op: add
+        path: /spec/template/spec/nodeBootstrap
+        valueFrom:
+          variable: nodeBootstrap
