@@ -33,3 +33,20 @@ var (
 	// AddToScheme adds the types in this group-version to the given scheme.
 	AddToScheme = SchemeBuilder.AddToScheme
 )
+
+func init() {
+	SchemeBuilder.Register(
+		&ClusterVersion{},
+		&ClusterVersionList{},
+		&ReleaseImage{},
+		&ReleaseImageList{},
+		&UpgradePath{},
+		&UpgradePathList{},
+		&ReleaseCatalog{},
+		&ReleaseCatalogList{},
+		&ClusterAddon{},
+		&ClusterAddonList{},
+		&SelfUpgrade{},
+		&SelfUpgradeList{},
+	)
+}
