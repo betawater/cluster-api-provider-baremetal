@@ -47,14 +47,14 @@ const (
 	PhaseFailed        SelfUpgradePhase = "Failed"
 )
 
-// ComponentType represents the type of component to upgrade.
-type ComponentType string
+// SelfUpgradeComponentType represents the type of component to upgrade.
+type SelfUpgradeComponentType string
 
 const (
-	ComponentTypeCRD       ComponentType = "crd"
-	ComponentTypeRBAC      ComponentType = "rbac"
-	ComponentTypeWebhook   ComponentType = "webhook"
-	ComponentTypeDeployment ComponentType = "deployment"
+	SelfUpgradeComponentTypeCRD       SelfUpgradeComponentType = "crd"
+	SelfUpgradeComponentTypeRBAC      SelfUpgradeComponentType = "rbac"
+	SelfUpgradeComponentTypeWebhook   SelfUpgradeComponentType = "webhook"
+	SelfUpgradeComponentTypeDeployment SelfUpgradeComponentType = "deployment"
 )
 
 // StrategyType represents the upgrade strategy type.
@@ -154,7 +154,7 @@ type SelfUpgradeComponent struct {
 	Name string `json:"name"`
 
 	// Type is the component type (deployment, crd, webhook, rbac).
-	Type ComponentType `json:"type"`
+	Type SelfUpgradeComponentType `json:"type"`
 
 	// Order defines the upgrade order.
 	// +optional
@@ -171,28 +171,6 @@ type SelfUpgradeComponent struct {
 	// HealthCheck defines the health check for this component.
 	// +optional
 	HealthCheck *HealthCheck `json:"healthCheck,omitempty"`
-}
-
-// HealthCheck defines a health check configuration.
-type HealthCheck struct {
-	// Type is the health check type.
-	Type string `json:"type"`
-
-	// Namespace is the namespace for the health check.
-	// +optional
-	Namespace string `json:"namespace,omitempty"`
-
-	// Name is the resource name for the health check.
-	// +optional
-	Name string `json:"name,omitempty"`
-
-	// Timeout is the maximum time for the health check.
-	// +optional
-	Timeout *metav1.Duration `json:"timeout,omitempty"`
-
-	// Retries is the number of retries for the health check.
-	// +optional
-	Retries int `json:"retries,omitempty"`
 }
 
 // SelfUpgradeStatus defines the observed state of SelfUpgrade.
@@ -236,7 +214,7 @@ type ComponentUpgradeStatus struct {
 	Name string `json:"name"`
 
 	// Type is the component type.
-	Type ComponentType `json:"type"`
+	Type SelfUpgradeComponentType `json:"type"`
 
 	// Phase is the current phase of this component.
 	// +optional

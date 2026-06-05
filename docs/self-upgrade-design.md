@@ -561,7 +561,87 @@ spec:
 
 ---
 
-## 8. 实现计划
+## 8. 实现状态
+
+### 8.1 已完成的文件
+
+| 文件 | 说明 | 状态 |
+|------|------|------|
+| `modules/cvo/api/v1beta1/selfupgrade_types.go` | SelfUpgrade CRD 类型定义 | ✅ 完成 |
+| `modules/cvo/api/v1beta1/groupversion_info.go` | 注册 SelfUpgrade 类型 | ✅ 完成 |
+| `modules/cvo/internal/controllers/selfupgrade_controller.go` | 自升级控制器（基于阶段的状态机） | ✅ 框架完成 |
+| `modules/cvo/internal/upgrader/self_upgrade_executor.go` | 自升级执行器 | ✅ 框架完成 |
+| `docs/self-upgrade-design.md` | 设计文档 | ✅ 完成 |
+
+### 8.2 SelfUpgrade CRD 核心字段
+
+```yaml
+apiVersion: cvo.capbm.io/v1beta1
+kind: SelfUpgrade
+spec:
+  targetVersion: v0.9.0
+  releaseImage: registry.example.com/capbm/release:v0.9.0
+  strategy:
+    type: Rolling
+    maxUnavailable: 0
+    maxSurge: 1
+    minReadySeconds: 30
+    timeout: 30m
+    autoRollback: true
+  components:
+    - name: crds
+      type: crd
+      order: 1
+      blocking: true
+    - name: rbac
+      type: rbac
+      order: 2
+      blocking: true
+      dependsOn: ["crds"]
+    - name: webhooks
+      type: webhook
+      order: 3
+      blocking: true
+      dependsOn: ["crds", "rbac"]
+    - name: cvo-manager
+      type: deployment
+      order: 4
+      blocking: true
+      dependsOn: ["crds", "rbac", "webhooks"]
+      healthCheck:
+        type: DeploymentReady
+        namespace: cvo-system
+        name: cvo-controller-manager
+        timeout: 120s
+    - name: capbm-manager
+      type: deployment
+      order: 5
+      blocking: true
+      dependsOn: ["crds", "rbac", "webhooks", "cvo-manager"]
+      healthCheck:
+        type: DeploymentReady
+        namespace: capbm-system
+        name: capbm-controller-manager
+        timeout: 120s
+```
+
+### 8.3 控制器状态机
+
+```
+Pending → Validating → PreUpgrade → Upgrading → Verifying → Completed
+                                                    ↓
+                                              RollingBack → Failed
+```
+
+### 8.4 代码复用架构
+
+- **共用层**: GraphExecutor、HealthChecker、BackupRollback、OCIPuller
+- **专用层**: SelfUpgradeController、SelfUpgradeExecutor
+- **差异**: 工作集群使用 SSH + Scripts，自升级使用 Kubernetes API
+
+---
+
+## 9. 实现计划
 
 ### Phase 1: 核心功能 (Priority 1)
 
@@ -600,7 +680,7 @@ spec:
 
 ---
 
-## 9. 使用示例
+## 10. 使用示例
 
 ### 9.1 创建 SelfUpgrade
 
@@ -662,7 +742,7 @@ kubectl get events -n cvo-system --field-selector involvedObject.kind=SelfUpgrad
 
 ---
 
-## 10. 风险缓解
+## 11. 风险缓解
 
 | 风险 | 缓解措施 |
 |------|----------|
@@ -675,7 +755,7 @@ kubectl get events -n cvo-system --field-selector involvedObject.kind=SelfUpgrad
 
 ---
 
-## 11. 参考文档
+## 12. 参考文档
 
 | 文档 | 说明 |
 |------|------|

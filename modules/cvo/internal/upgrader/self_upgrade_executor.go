@@ -24,8 +24,8 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -44,26 +44,19 @@ func NewSelfUpgradeExecutor(c client.Client, healthChecker *HealthChecker) *Self
 	}
 }
 
-func (e *SelfUpgradeExecutor) UpgradeCRDs(ctx context.Context) error {
+func (e *SelfUpgradeExecutor) BackupCRDs(ctx context.Context) error {
 	crds := &apiextensionsv1.CustomResourceDefinitionList{}
 	if err := e.Client.List(ctx, crds); err != nil {
 		return fmt.Errorf("failed to list CRDs: %w", err)
 	}
 
-	for _, crd := range crds.Items {
-		if err := e.backupCRD(ctx, &crd); err != nil {
+	for i := range crds.Items {
+		crd := &crds.Items[i]
+		if err := e.backupCRD(ctx, crd); err != nil {
 			return fmt.Errorf("failed to backup CRD %s: %w", crd.Name, err)
 		}
 	}
 
-	return nil
-}
-
-func (e *SelfUpgradeExecutor) UpgradeRBAC(ctx context.Context) error {
-	return nil
-}
-
-func (e *SelfUpgradeExecutor) UpgradeWebhooks(ctx context.Context) error {
 	return nil
 }
 
@@ -73,8 +66,15 @@ func (e *SelfUpgradeExecutor) UpgradeDeployment(ctx context.Context, namespace, 
 		return fmt.Errorf("failed to get deployment %s/%s: %w", namespace, name, err)
 	}
 
+	original := deploy.DeepCopy()
+
 	if len(deploy.Spec.Template.Spec.Containers) > 0 {
 		deploy.Spec.Template.Spec.Containers[0].Image = newImage
+	}
+
+	deploy.Spec.Strategy.Type = appsv1.RollingUpdateDeploymentStrategyType
+	if deploy.Spec.Strategy.RollingUpdate == nil {
+		deploy.Spec.Strategy.RollingUpdate = &appsv1.RollingUpdateDeployment{}
 	}
 
 	if strategy.MaxUnavailable != nil {
@@ -83,12 +83,15 @@ func (e *SelfUpgradeExecutor) UpgradeDeployment(ctx context.Context, namespace, 
 	if strategy.MaxSurge != nil {
 		deploy.Spec.Strategy.RollingUpdate.MaxSurge = strategy.MaxSurge
 	}
+	if strategy.MinReadySeconds > 0 {
+		deploy.Spec.MinReadySeconds = strategy.MinReadySeconds
+	}
 
-	if err := e.Client.Update(ctx, deploy); err != nil {
+	if err := e.Client.Patch(ctx, deploy, client.MergeFrom(original)); err != nil {
 		return fmt.Errorf("failed to update deployment %s/%s: %w", namespace, name, err)
 	}
 
-	if err := e.waitForDeploymentReady(ctx, namespace, name, strategy.Timeout); err != nil {
+	if err := e.WaitForDeploymentReady(ctx, namespace, name, strategy.Timeout); err != nil {
 		return fmt.Errorf("deployment %s/%s not ready: %w", namespace, name, err)
 	}
 
@@ -102,11 +105,16 @@ func (e *SelfUpgradeExecutor) RollbackDeployment(ctx context.Context, namespace,
 	}
 
 	if deploy.Status.ObservedGeneration < 2 {
-		return fmt.Errorf("no previous revision to rollback to")
+		return fmt.Errorf("no previous revision to rollback to for %s/%s", namespace, name)
 	}
 
-	deploy.Spec.Template.Spec.Containers[0].Image = ""
-	if err := e.Client.Update(ctx, deploy); err != nil {
+	original := deploy.DeepCopy()
+
+	if len(deploy.Spec.Template.Spec.Containers) > 0 && len(deploy.Spec.Template.Spec.Containers[0].Image) > 0 {
+		deploy.Spec.Template.Spec.Containers[0].Image = ""
+	}
+
+	if err := e.Client.Patch(ctx, deploy, client.MergeFrom(original)); err != nil {
 		return fmt.Errorf("failed to rollback deployment %s/%s: %w", namespace, name, err)
 	}
 
@@ -146,13 +154,37 @@ func (e *SelfUpgradeExecutor) WaitForDeploymentReady(ctx context.Context, namesp
 	})
 }
 
+func (e *SelfUpgradeExecutor) WaitForCRDEstablished(ctx context.Context, name string, timeout time.Duration) error {
+	if timeout == 0 {
+		timeout = 2 * time.Minute
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	return wait.PollUntilContextCancel(ctx, 5*time.Second, true, func(ctx context.Context) (bool, error) {
+		crd := &apiextensionsv1.CustomResourceDefinition{}
+		if err := e.Client.Get(ctx, types.NamespacedName{Name: name}, crd); err != nil {
+			return false, nil
+		}
+
+		for _, cond := range crd.Status.Conditions {
+			if cond.Type == apiextensionsv1.Established && cond.Status == apiextensionsv1.ConditionTrue {
+				return true, nil
+			}
+		}
+
+		return false, nil
+	})
+}
+
 func (e *SelfUpgradeExecutor) backupCRD(ctx context.Context, crd *apiextensionsv1.CustomResourceDefinition) error {
 	return nil
 }
 
 type UpgradeStrategy struct {
-	MaxUnavailable *int
-	MaxSurge       *int
+	MaxUnavailable  *intstr.IntOrString
+	MaxSurge        *intstr.IntOrString
 	MinReadySeconds int32
-	Timeout        time.Duration
+	Timeout         time.Duration
 }
