@@ -281,7 +281,10 @@ kubeadm join 192.168.1.100:6443 --token abc123.def456 \
 ```bash
 kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.26.1/manifests/calico.yaml
 ```
-
+单节点执行
+```bash
+kubectl taint nodes --all node-role.kubernetes.io/control-plane-
+```
 ### 6.2 或安装 Flannel
 
 ```bash
