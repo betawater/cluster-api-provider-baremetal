@@ -335,7 +335,7 @@ func (r *SelfUpgradeReconciler) validateComponents(su *cfov1.SelfUpgrade) error 
 func (r *SelfUpgradeReconciler) validateClusterHealth(ctx context.Context) error {
 	nodes := &metav1.PartialObjectMetadataList{}
 	nodes.SetGroupVersionKind(schema.GroupVersionKind{Group: "", Version: "v1", Kind: "Node"})
-	if err := r.Client.List(ctx, nodes); err != nil {
+	if err := r.List(ctx, nodes); err != nil {
 		return fmt.Errorf("failed to list nodes: %w", err)
 	}
 
@@ -479,7 +479,7 @@ func (r *SelfUpgradeReconciler) backupCurrentConfig(ctx context.Context, su *cfo
 	log.Info("Backing up current configuration")
 
 	crds := &apiextensionsv1.CustomResourceDefinitionList{}
-	if err := r.Client.List(ctx, crds, client.MatchingLabels{"app.kubernetes.io/part-of": "capbm"}); err != nil {
+	if err := r.List(ctx, crds, client.MatchingLabels{"app.kubernetes.io/part-of": "capbm"}); err != nil {
 		return fmt.Errorf("failed to list CRDs: %w", err)
 	}
 
@@ -490,7 +490,7 @@ func (r *SelfUpgradeReconciler) backupCurrentConfig(ctx context.Context, su *cfo
 
 	for _, ns := range deployments {
 		deploy := &appsv1.Deployment{}
-		if err := r.Client.Get(ctx, ns, deploy); err != nil {
+		if err := r.Get(ctx, ns, deploy); err != nil {
 			log.Error(err, "Failed to get deployment for backup", "namespace", ns.Namespace, "name", ns.Name)
 			continue
 		}
@@ -504,7 +504,7 @@ func (r *SelfUpgradeReconciler) upgradeCRDs(ctx context.Context, su *cfov1.SelfU
 	log.Info("Upgrading CRDs")
 
 	crds := &apiextensionsv1.CustomResourceDefinitionList{}
-	if err := r.Client.List(ctx, crds, client.MatchingLabels{"app.kubernetes.io/part-of": "capbm"}); err != nil {
+	if err := r.List(ctx, crds, client.MatchingLabels{"app.kubernetes.io/part-of": "capbm"}); err != nil {
 		return fmt.Errorf("failed to list CRDs: %w", err)
 	}
 
@@ -517,7 +517,7 @@ func (r *SelfUpgradeReconciler) upgradeCRDs(ctx context.Context, su *cfov1.SelfU
 		}
 		crd.Annotations["cvo.capbm.io/last-upgraded-version"] = su.Spec.TargetVersion
 
-		if err := r.Client.Patch(ctx, crd, client.MergeFrom(original)); err != nil {
+		if err := r.Patch(ctx, crd, client.MergeFrom(original)); err != nil {
 			return fmt.Errorf("failed to update CRD %s: %w", crd.Name, err)
 		}
 
@@ -534,12 +534,12 @@ func (r *SelfUpgradeReconciler) upgradeRBAC(ctx context.Context, su *cfov1.SelfU
 	log.Info("Upgrading RBAC")
 
 	clusterRoles := &rbacv1.ClusterRoleList{}
-	if err := r.Client.List(ctx, clusterRoles, client.MatchingLabels{"app.kubernetes.io/part-of": "capbm"}); err != nil {
+	if err := r.List(ctx, clusterRoles, client.MatchingLabels{"app.kubernetes.io/part-of": "capbm"}); err != nil {
 		return fmt.Errorf("failed to list ClusterRoles: %w", err)
 	}
 
 	clusterRoleBindings := &rbacv1.ClusterRoleBindingList{}
-	if err := r.Client.List(ctx, clusterRoleBindings, client.MatchingLabels{"app.kubernetes.io/part-of": "capbm"}); err != nil {
+	if err := r.List(ctx, clusterRoleBindings, client.MatchingLabels{"app.kubernetes.io/part-of": "capbm"}); err != nil {
 		return fmt.Errorf("failed to list ClusterRoleBindings: %w", err)
 	}
 
@@ -552,12 +552,12 @@ func (r *SelfUpgradeReconciler) upgradeWebhooks(ctx context.Context, su *cfov1.S
 	log.Info("Upgrading Webhooks")
 
 	mutatingWebhooks := &admissionregistrationv1.MutatingWebhookConfigurationList{}
-	if err := r.Client.List(ctx, mutatingWebhooks, client.MatchingLabels{"app.kubernetes.io/part-of": "capbm"}); err != nil {
+	if err := r.List(ctx, mutatingWebhooks, client.MatchingLabels{"app.kubernetes.io/part-of": "capbm"}); err != nil {
 		return fmt.Errorf("failed to list MutatingWebhookConfigurations: %w", err)
 	}
 
 	validatingWebhooks := &admissionregistrationv1.ValidatingWebhookConfigurationList{}
-	if err := r.Client.List(ctx, validatingWebhooks, client.MatchingLabels{"app.kubernetes.io/part-of": "capbm"}); err != nil {
+	if err := r.List(ctx, validatingWebhooks, client.MatchingLabels{"app.kubernetes.io/part-of": "capbm"}); err != nil {
 		return fmt.Errorf("failed to list ValidatingWebhookConfigurations: %w", err)
 	}
 
@@ -574,7 +574,7 @@ func (r *SelfUpgradeReconciler) upgradeDeployment(ctx context.Context, su *cfov1
 	}
 
 	deploy := &appsv1.Deployment{}
-	if err := r.Client.Get(ctx, types.NamespacedName{Namespace: comp.HealthCheck.Namespace, Name: comp.HealthCheck.Name}, deploy); err != nil {
+	if err := r.Get(ctx, types.NamespacedName{Namespace: comp.HealthCheck.Namespace, Name: comp.HealthCheck.Name}, deploy); err != nil {
 		return fmt.Errorf("failed to get deployment %s/%s: %w", comp.HealthCheck.Namespace, comp.HealthCheck.Name, err)
 	}
 
@@ -598,7 +598,7 @@ func (r *SelfUpgradeReconciler) upgradeDeployment(ctx context.Context, su *cfov1
 		deploy.Spec.MinReadySeconds = int32(su.Spec.Strategy.MinReadySeconds)
 	}
 
-	if err := r.Client.Patch(ctx, deploy, client.MergeFrom(original)); err != nil {
+	if err := r.Patch(ctx, deploy, client.MergeFrom(original)); err != nil {
 		return fmt.Errorf("failed to update deployment %s/%s: %w", comp.HealthCheck.Namespace, comp.HealthCheck.Name, err)
 	}
 
@@ -626,7 +626,7 @@ func (r *SelfUpgradeReconciler) rollbackComponent(ctx context.Context, su *cfov1
 		}
 
 		deploy := &appsv1.Deployment{}
-		if err := r.Client.Get(ctx, types.NamespacedName{Namespace: comp.HealthCheck.Namespace, Name: comp.HealthCheck.Name}, deploy); err != nil {
+		if err := r.Get(ctx, types.NamespacedName{Namespace: comp.HealthCheck.Namespace, Name: comp.HealthCheck.Name}, deploy); err != nil {
 			return fmt.Errorf("failed to get deployment %s/%s: %w", comp.HealthCheck.Namespace, comp.HealthCheck.Name, err)
 		}
 
@@ -636,7 +636,7 @@ func (r *SelfUpgradeReconciler) rollbackComponent(ctx context.Context, su *cfov1
 
 		original := deploy.DeepCopy()
 		deploy.Spec.Template.Spec.Containers[0].Image = ""
-		if err := r.Client.Patch(ctx, deploy, client.MergeFrom(original)); err != nil {
+		if err := r.Patch(ctx, deploy, client.MergeFrom(original)); err != nil {
 			return fmt.Errorf("failed to rollback deployment %s/%s: %w", comp.HealthCheck.Namespace, comp.HealthCheck.Name, err)
 		}
 
@@ -657,7 +657,7 @@ func (r *SelfUpgradeReconciler) waitForCRDEstablished(ctx context.Context, name 
 			return ctx.Err()
 		case <-time.After(5 * time.Second):
 			crd := &apiextensionsv1.CustomResourceDefinition{}
-			if err := r.Client.Get(ctx, types.NamespacedName{Name: name}, crd); err != nil {
+			if err := r.Get(ctx, types.NamespacedName{Name: name}, crd); err != nil {
 				continue
 			}
 
