@@ -46,7 +46,7 @@ func NewSelfUpgradeExecutor(c client.Client, healthChecker *HealthChecker) *Self
 
 func (e *SelfUpgradeExecutor) BackupCRDs(ctx context.Context) error {
 	crds := &apiextensionsv1.CustomResourceDefinitionList{}
-	if err := e.Client.List(ctx, crds); err != nil {
+	if err := e.List(ctx, crds); err != nil {
 		return fmt.Errorf("failed to list CRDs: %w", err)
 	}
 
@@ -62,7 +62,7 @@ func (e *SelfUpgradeExecutor) BackupCRDs(ctx context.Context) error {
 
 func (e *SelfUpgradeExecutor) UpgradeDeployment(ctx context.Context, namespace, name string, newImage string, strategy UpgradeStrategy) error {
 	deploy := &appsv1.Deployment{}
-	if err := e.Client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, deploy); err != nil {
+	if err := e.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, deploy); err != nil {
 		return fmt.Errorf("failed to get deployment %s/%s: %w", namespace, name, err)
 	}
 
@@ -87,7 +87,7 @@ func (e *SelfUpgradeExecutor) UpgradeDeployment(ctx context.Context, namespace, 
 		deploy.Spec.MinReadySeconds = strategy.MinReadySeconds
 	}
 
-	if err := e.Client.Patch(ctx, deploy, client.MergeFrom(original)); err != nil {
+	if err := e.Patch(ctx, deploy, client.MergeFrom(original)); err != nil {
 		return fmt.Errorf("failed to update deployment %s/%s: %w", namespace, name, err)
 	}
 
@@ -100,7 +100,7 @@ func (e *SelfUpgradeExecutor) UpgradeDeployment(ctx context.Context, namespace, 
 
 func (e *SelfUpgradeExecutor) RollbackDeployment(ctx context.Context, namespace, name string) error {
 	deploy := &appsv1.Deployment{}
-	if err := e.Client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, deploy); err != nil {
+	if err := e.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, deploy); err != nil {
 		return fmt.Errorf("failed to get deployment %s/%s: %w", namespace, name, err)
 	}
 
@@ -114,7 +114,7 @@ func (e *SelfUpgradeExecutor) RollbackDeployment(ctx context.Context, namespace,
 		deploy.Spec.Template.Spec.Containers[0].Image = ""
 	}
 
-	if err := e.Client.Patch(ctx, deploy, client.MergeFrom(original)); err != nil {
+	if err := e.Patch(ctx, deploy, client.MergeFrom(original)); err != nil {
 		return fmt.Errorf("failed to rollback deployment %s/%s: %w", namespace, name, err)
 	}
 
@@ -131,7 +131,7 @@ func (e *SelfUpgradeExecutor) WaitForDeploymentReady(ctx context.Context, namesp
 
 	return wait.PollUntilContextCancel(ctx, 5*time.Second, true, func(ctx context.Context) (bool, error) {
 		deploy := &appsv1.Deployment{}
-		if err := e.Client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, deploy); err != nil {
+		if err := e.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, deploy); err != nil {
 			if apierrors.IsNotFound(err) {
 				return false, nil
 			}
@@ -164,7 +164,7 @@ func (e *SelfUpgradeExecutor) WaitForCRDEstablished(ctx context.Context, name st
 
 	return wait.PollUntilContextCancel(ctx, 5*time.Second, true, func(ctx context.Context) (bool, error) {
 		crd := &apiextensionsv1.CustomResourceDefinition{}
-		if err := e.Client.Get(ctx, types.NamespacedName{Name: name}, crd); err != nil {
+		if err := e.Get(ctx, types.NamespacedName{Name: name}, crd); err != nil {
 			return false, nil
 		}
 
