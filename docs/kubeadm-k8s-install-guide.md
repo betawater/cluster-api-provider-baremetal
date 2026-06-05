@@ -197,9 +197,21 @@ kubectl version --client
 # 确认当前集群版本：
 kubectl version --short
 # install
-apt-get update && apt-get install -y kubeadm=1.31.0-00
+apt-get update && apt-get install -y kubeadm=1.31.0-00 kubelet=1.31.0-00 kubectl=1.31.0-00 
 ```
----
+
+```bash
+cat <<EOF | sudo tee /etc/yum.repos.d/kubernetes.repo
+[kubernetes]
+name=Kubernetes
+baseurl=https://pkgs.k8s.io/core:/stable:/v1.31/rpm/
+enabled=1
+gpgcheck=1
+gpgkey=https://pkgs.k8s.io/core:/stable:/v1.31/rpm/repodata/repomd.xml.key
+EOF
+
+sudo yum install -y kubeadm-1.31.0 kubelet-1.31.0 kubectl-1.31.0
+```
 
 ## 五、初始化 Control Plane（仅 Master 节点）
 
