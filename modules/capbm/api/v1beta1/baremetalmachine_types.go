@@ -85,6 +85,11 @@ type BareMetalMachineSpec struct {
 	// +optional
 	CredentialsRef *corev1.LocalObjectReference `json:"credentialsRef,omitempty"`
 
+	// UseSudo indicates whether to use sudo for privileged operations.
+	// When true, all installation scripts will be executed with sudo.
+	// +optional
+	UseSudo bool `json:"useSudo,omitempty"`
+
 	// PowerManagement holds optional power management configuration.
 	// +optional
 	PowerManagement *PowerManagementConfig `json:"powerManagement,omitempty"`

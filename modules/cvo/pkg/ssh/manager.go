@@ -26,16 +26,19 @@ import (
 
 // Credentials holds SSH authentication credentials.
 type Credentials struct {
-	Username string
-	Password string
+	Username     string
+	Password     string
+	SudoPassword string // Optional: sudo password if different from login password
+	UseSudo      bool   // Whether to use sudo for privileged operations
 }
 
 // SSHConnection represents an active SSH connection.
 type SSHConnection struct {
-	Client   *ssh.Client
-	Host     string
-	Port     int
-	LastUsed time.Time
+	Client      *ssh.Client
+	Host        string
+	Port        int
+	LastUsed    time.Time
+	Credentials *Credentials
 }
 
 // SSHManager manages a pool of SSH connections.
@@ -87,10 +90,11 @@ func (m *SSHManager) Connect(host string, port int, creds Credentials) (*SSHConn
 	}
 
 	conn := &SSHConnection{
-		Client:   client,
-		Host:     host,
-		Port:     port,
-		LastUsed: time.Now(),
+		Client:      client,
+		Host:        host,
+		Port:        port,
+		LastUsed:    time.Now(),
+		Credentials: &creds,
 	}
 
 	m.mu.Lock()

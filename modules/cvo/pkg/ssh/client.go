@@ -78,7 +78,20 @@ func (c *SSHConnection) ExecuteCommand(ctx context.Context, command string) (*Co
 // ExecuteScript runs a bash script on the remote host via SSH.
 func (c *SSHConnection) ExecuteScript(ctx context.Context, script string) (*CommandResult, error) {
 	escapedScript := bytes.ReplaceAll([]byte(script), []byte("'"), []byte("'\\''"))
-	command := fmt.Sprintf("bash -c '%s'", string(escapedScript))
+
+	var command string
+	if c.Credentials != nil && c.Credentials.UseSudo {
+		if c.Credentials.SudoPassword != "" && c.Credentials.SudoPassword != c.Credentials.Password {
+			// Use sudo -S to read password from stdin
+			command = fmt.Sprintf("echo '%s' | sudo -S bash -c '%s'", c.Credentials.SudoPassword, string(escapedScript))
+		} else {
+			// Use sudo without password prompt (NOPASSWD or same password)
+			command = fmt.Sprintf("sudo bash -c '%s'", string(escapedScript))
+		}
+	} else {
+		command = fmt.Sprintf("bash -c '%s'", string(escapedScript))
+	}
+
 	return c.ExecuteCommand(ctx, command)
 }
 

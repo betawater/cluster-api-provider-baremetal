@@ -486,10 +486,18 @@ func (r *BareMetalMachineReconciler) getCredentials(ctx context.Context, bmMachi
 		return nil, fmt.Errorf("credentials secret %s missing password field", bmMachine.Spec.CredentialsRef.Name)
 	}
 
-	return &ssh.Credentials{
+	creds := &ssh.Credentials{
 		Username: string(username),
 		Password: string(password),
-	}, nil
+		UseSudo:  bmMachine.Spec.UseSudo,
+	}
+
+	// Optional: sudo password if different from login password
+	if sudoPass, ok := secret.Data["sudoPassword"]; ok && string(sudoPass) != creds.Password {
+		creds.SudoPassword = string(sudoPass)
+	}
+
+	return creds, nil
 }
 
 func (r *BareMetalMachineReconciler) installComponents(ctx context.Context, bmMachine *capbmv1.BareMetalMachine, sshConn *ssh.SSHConnection, k8sVersion string) (*installer.InstallResult, error) {
