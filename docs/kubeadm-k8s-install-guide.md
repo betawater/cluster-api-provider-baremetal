@@ -191,6 +191,14 @@ kubelet --version
 kubectl version --client
 ```
 
+### 4.4 升级版本
+
+```bash
+# 确认当前集群版本：
+kubectl version --short
+# install
+apt-get update && apt-get install -y kubeadm=1.31.0-00
+```
 ---
 
 ## 五、初始化 Control Plane（仅 Master 节点）
