@@ -1,0 +1,103 @@
+# PersistentVolumeClaim for ReleaseImage content
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: release-content-pvc
+  namespace: capbm-system
+  labels:
+    app: release-http-server
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+# Deployment: Nginx HTTP Server with InitContainer
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: release-http-server
+  namespace: capbm-system
+  labels:
+    app: release-http-server
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: release-http-server
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: release-http-server
+    spec:
+      initContainers:
+        - name: content-loader
+          image: ghcr.io/betawater/capbm/release:v1.31.1
+          command: ["sh", "-c", "mkdir -p /content && cp -r /release/* /content/ 2>/dev/null || echo 'Content already loaded'"]
+          volumeMounts:
+            - name: content
+              mountPath: /content
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+      containers:
+        - name: nginx
+          image: nginx:1.25-alpine
+          ports:
+            - containerPort: 8080
+              name: http
+              protocol: TCP
+          volumeMounts:
+            - name: content
+              mountPath: /usr/share/nginx/html/release
+              readOnly: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 3
+      volumes:
+        - name: content
+          persistentVolumeClaim:
+            claimName: release-content-pvc
+---
+# Service: ClusterIP for internal access
+apiVersion: v1
+kind: Service
+metadata:
+  name: release-http-server
+  namespace: capbm-system
+  labels:
+    app: release-http-server
+spec:
+  type: ClusterIP
+  ports:
+    - port: 8080
+      targetPort: 8080
+      protocol: TCP
+      name: http
+  selector:
+    app: release-http-server

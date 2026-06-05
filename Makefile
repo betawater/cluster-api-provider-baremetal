@@ -175,6 +175,14 @@ release-image-push: ## Push release image OCI image
 .PHONY: release-image
 release-image: release-image-build release-image-push ## Build and push release image
 
+.PHONY: deploy-release-http-server
+deploy-release-http-server: ## Deploy ReleaseImage HTTP Server
+	kubectl apply -f templates/release-http-server.yaml
+
+.PHONY: undeploy-release-http-server
+undeploy-release-http-server: ## Undeploy ReleaseImage HTTP Server
+	kubectl delete -f templates/release-http-server.yaml
+
 ##@ Build Dependencies
 
 LOCALBIN ?= $(shell pwd)/bin
