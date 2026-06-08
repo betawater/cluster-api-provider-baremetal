@@ -19,6 +19,7 @@ package upgrader
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -272,10 +273,18 @@ func (e *GraphExecutor) runHealthCheck(ctx context.Context, hc *cfov1.HealthChec
 }
 
 func (e *GraphExecutor) waitForEndpointHealthy(ctx context.Context, endpoint string, timeout time.Duration) error {
+	client := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+
 	return wait.PollUntilContextTimeout(ctx, 5*time.Second, timeout, true, func(ctx context.Context) (bool, error) {
-		// In production, this would make an HTTP request to the endpoint.
-		// For now, we assume it's healthy after the timeout.
-		return true, nil
+		resp, err := client.Get(endpoint)
+		if err != nil {
+			return false, nil
+		}
+		defer resp.Body.Close()
+
+		return resp.StatusCode >= 200 && resp.StatusCode < 300, nil
 	})
 }
 

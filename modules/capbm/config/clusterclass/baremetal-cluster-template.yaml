@@ -7,5 +7,5 @@ spec:
     spec:
       controlPlaneEndpoint:
         # This value will be overwritten by ClusterClass patch from user-provided variable
-        host: "PLACEHOLDER"
+        host: "${CONTROL_PLANE_ENDPOINT_HOST}"
         port: 6443

@@ -22,12 +22,15 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/yaml"
 )
 
 type SelfUpgradeExecutor struct {
@@ -179,6 +182,36 @@ func (e *SelfUpgradeExecutor) WaitForCRDEstablished(ctx context.Context, name st
 }
 
 func (e *SelfUpgradeExecutor) backupCRD(ctx context.Context, crd *apiextensionsv1.CustomResourceDefinition) error {
+	// Serialize CRD to YAML
+	crdYAML, err := yaml.Marshal(crd)
+	if err != nil {
+		return fmt.Errorf("failed to marshal CRD %s: %w", crd.Name, err)
+	}
+
+	// Create backup ConfigMap
+	backupName := fmt.Sprintf("crd-backup-%s-%s", crd.Name, time.Now().Format("20060102150405"))
+	backupConfigMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      backupName,
+			Namespace: "cvo-system",
+			Labels: map[string]string{
+				"app.kubernetes.io/part-of": "capbm",
+				"cvo.capbm.io/backup":       "true",
+				"cvo.capbm.io/backup-type":  "crd",
+				"cvo.capbm.io/crd-name":     crd.Name,
+			},
+		},
+		Data: map[string]string{
+			"crd.yaml": string(crdYAML),
+		},
+	}
+
+	if err := e.Client.Create(ctx, backupConfigMap); err != nil {
+		if !apierrors.IsAlreadyExists(err) {
+			return fmt.Errorf("failed to create CRD backup ConfigMap: %w", err)
+		}
+	}
+
 	return nil
 }
 

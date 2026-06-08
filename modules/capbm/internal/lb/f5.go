@@ -74,12 +74,17 @@ func NewF5Provider(config *capbmv1.F5Config) (Provider, error) {
 
 	baseURL := fmt.Sprintf("https://%s:%d/mgmt/tm", config.Host, config.Port)
 
+	// Configure TLS client with optional certificate verification
+	tlsConfig := &tls.Config{
+		InsecureSkipVerify: config.InsecureSkipVerify,
+	}
+
 	return &F5Provider{
 		config:  config,
 		baseURL: baseURL,
 		httpClient: &http.Client{
 			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+				TLSClientConfig: tlsConfig,
 			},
 		},
 	}, nil

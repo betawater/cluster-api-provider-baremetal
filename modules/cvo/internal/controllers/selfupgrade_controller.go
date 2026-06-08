@@ -632,7 +632,7 @@ func (r *SelfUpgradeReconciler) upgradeRBAC(ctx context.Context, su *cfov1.SelfU
 			return fmt.Errorf("failed to decode RBAC manifest %s: %w", entry.Name(), err)
 		}
 
-		if err := r.Patch(ctx, obj, client.Apply, client.ForceOwnership, client.FieldOwner("capbm-self-upgrade")); err != nil {
+		if err := r.Patch(ctx, obj, client.Merge, client.FieldOwner("capbm-self-upgrade")); err != nil {
 			return fmt.Errorf("failed to apply RBAC manifest %s: %w", entry.Name(), err)
 		}
 
@@ -675,7 +675,7 @@ func (r *SelfUpgradeReconciler) upgradeWebhooks(ctx context.Context, su *cfov1.S
 			return fmt.Errorf("failed to decode webhook manifest %s: %w", entry.Name(), err)
 		}
 
-		if err := r.Patch(ctx, obj, client.Apply, client.ForceOwnership, client.FieldOwner("capbm-self-upgrade")); err != nil {
+		if err := r.Patch(ctx, obj, client.Merge, client.FieldOwner("capbm-self-upgrade")); err != nil {
 			return fmt.Errorf("failed to apply webhook manifest %s: %w", entry.Name(), err)
 		}
 
@@ -790,7 +790,7 @@ func (r *SelfUpgradeReconciler) rollbackComponent(ctx context.Context, su *cfov1
 					log.Error(err, "Failed to decode CRD backup", "key", key)
 					continue
 				}
-				if err := r.Patch(ctx, obj, client.Apply, client.ForceOwnership, client.FieldOwner("capbm-self-upgrade-rollback")); err != nil {
+				if err := r.Patch(ctx, obj, client.Merge, client.FieldOwner("capbm-self-upgrade-rollback")); err != nil {
 					log.Error(err, "Failed to restore CRD from backup", "key", key)
 				}
 			}
@@ -822,7 +822,7 @@ func (r *SelfUpgradeReconciler) rollbackComponent(ctx context.Context, su *cfov1
 					log.Error(err, "Failed to decode backup", "key", key)
 					continue
 				}
-				if err := r.Patch(ctx, obj, client.Apply, client.ForceOwnership, client.FieldOwner("capbm-self-upgrade-rollback")); err != nil {
+				if err := r.Patch(ctx, obj, client.Merge, client.FieldOwner("capbm-self-upgrade-rollback")); err != nil {
 					log.Error(err, "Failed to restore from backup", "key", key)
 				}
 			}

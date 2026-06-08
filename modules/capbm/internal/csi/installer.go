@@ -85,7 +85,10 @@ func (i *Installer) Install(ctx context.Context) (*InstallResult, error) {
 		i.config.InstallMode = "Helm"
 	}
 
-	existing, _ := i.checkExisting(ctx)
+	existing, err := i.checkExisting(ctx)
+	if err != nil {
+		return &InstallResult{Completed: false, Success: false, Error: fmt.Sprintf("Failed to check existing CSI: %v", err)}, err
+	}
 	if existing.installed && existing.version == i.config.Version {
 		return &InstallResult{Completed: true, Success: true, Version: existing.version}, nil
 	}
@@ -114,7 +117,10 @@ func (i *Installer) checkExisting(ctx context.Context) (*existingCSI, error) {
 
 	switch i.config.Driver {
 	case "ceph-csi":
-		result, _ := i.sshConn.ExecuteCommand(ctx, "kubectl get deployment ceph-csi-rbdplugin-provisioner -n ceph-csi -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo ''")
+		result, err := i.sshConn.ExecuteCommand(ctx, "kubectl get deployment ceph-csi-rbdplugin-provisioner -n ceph-csi -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo ''")
+		if err != nil {
+			return ec, fmt.Errorf("failed to check ceph-csi version: %w", err)
+		}
 		if strings.Contains(result.Stdout, "v") {
 			parts := strings.Split(result.Stdout, "v")
 			if len(parts) > 1 {
@@ -123,7 +129,10 @@ func (i *Installer) checkExisting(ctx context.Context) (*existingCSI, error) {
 			}
 		}
 	case "local-csi":
-		result, _ := i.sshConn.ExecuteCommand(ctx, "kubectl get deployment local-path-provisioner -n local-path-storage -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo ''")
+		result, err := i.sshConn.ExecuteCommand(ctx, "kubectl get deployment local-path-provisioner -n local-path-storage -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo ''")
+		if err != nil {
+			return ec, fmt.Errorf("failed to check local-csi version: %w", err)
+		}
 		if strings.Contains(result.Stdout, "v") {
 			parts := strings.Split(result.Stdout, "v")
 			if len(parts) > 1 {

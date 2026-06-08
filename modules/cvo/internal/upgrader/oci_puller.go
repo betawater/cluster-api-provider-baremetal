@@ -33,8 +33,8 @@ import (
 )
 
 const (
-	DefaultCatalogImage     = "registry.example.com/capbm/release-catalog:latest"
-	DefaultUpgradePathImage = "registry.example.com/capbm/upgrade-path:latest"
+	DefaultCatalogImage     = ""
+	DefaultUpgradePathImage = ""
 	MediaTypeReleaseJSON    = "application/vnd.capbm.release.json.v1+json"
 	MediaTypeBinaryLayer    = "application/vnd.capbm.binary.layer.v1.tar+gzip"
 	MediaTypeChartLayer     = "application/vnd.capbm.chart.layer.v1.tar+gzip"
@@ -155,7 +155,11 @@ func (p *OCIPuller) pullImage(ctx context.Context, image, prefix string) (string
 	if err != nil {
 		return "", fmt.Errorf("failed to create file store: %w", err)
 	}
-	defer fs.Close()
+	defer func() {
+		if closeErr := fs.Close(); closeErr != nil {
+			// File store close errors are non-critical after successful copy
+		}
+	}()
 
 	repo, err := remote.NewRepository(image)
 	if err != nil {

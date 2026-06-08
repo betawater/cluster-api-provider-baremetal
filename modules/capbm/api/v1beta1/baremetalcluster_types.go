@@ -230,6 +230,10 @@ type F5Config struct {
 	// VirtualServerName is the F5 virtual server name.
 	// +optional
 	VirtualServerName string `json:"virtualServerName,omitempty"`
+
+	// InsecureSkipVerify skips TLS certificate verification (not recommended for production).
+	// +optional
+	InsecureSkipVerify bool `json:"insecureSkipVerify,omitempty"`
 }
 
 // MetalLBConfig defines MetalLB specific configuration.

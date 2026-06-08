@@ -91,7 +91,10 @@ func (i *Installer) Install(ctx context.Context) (*InstallResult, error) {
 		i.config.InstallMode = "Manifest"
 	}
 
-	existing, _ := i.checkExisting(ctx)
+	existing, err := i.checkExisting(ctx)
+	if err != nil {
+		return &InstallResult{Completed: false, Success: false, Error: fmt.Sprintf("Failed to check existing CNI: %v", err)}, err
+	}
 	if existing.installed && existing.version == i.config.Version {
 		return &InstallResult{Completed: true, Success: true, Version: existing.version}, nil
 	}
@@ -118,14 +121,20 @@ type existingCNI struct {
 func (i *Installer) checkExisting(ctx context.Context) (*existingCNI, error) {
 	ec := &existingCNI{}
 
-	result, _ := i.sshConn.ExecuteCommand(ctx, "ls /opt/cni/bin/ 2>/dev/null | head -1 || echo ''")
+	result, err := i.sshConn.ExecuteCommand(ctx, "ls /opt/cni/bin/ 2>/dev/null | head -1 || echo ''")
+	if err != nil {
+		return ec, fmt.Errorf("failed to check CNI binaries: %w", err)
+	}
 	if strings.TrimSpace(result.Stdout) != "" {
 		ec.installed = true
 	}
 
 	switch i.config.Type {
 	case "calico":
-		result, _ := i.sshConn.ExecuteCommand(ctx, "kubectl get daemonset calico-node -n kube-system -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo ''")
+		result, err := i.sshConn.ExecuteCommand(ctx, "kubectl get daemonset calico-node -n kube-system -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo ''")
+		if err != nil {
+			return ec, fmt.Errorf("failed to check calico version: %w", err)
+		}
 		if strings.Contains(result.Stdout, "v") {
 			parts := strings.Split(result.Stdout, "v")
 			if len(parts) > 1 {
@@ -133,7 +142,10 @@ func (i *Installer) checkExisting(ctx context.Context) (*existingCNI, error) {
 			}
 		}
 	case "cilium":
-		result, _ := i.sshConn.ExecuteCommand(ctx, "kubectl get deployment cilium-operator -n kube-system -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo ''")
+		result, err := i.sshConn.ExecuteCommand(ctx, "kubectl get deployment cilium-operator -n kube-system -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo ''")
+		if err != nil {
+			return ec, fmt.Errorf("failed to check cilium version: %w", err)
+		}
 		if strings.Contains(result.Stdout, "v") {
 			parts := strings.Split(result.Stdout, "v")
 			if len(parts) > 1 {
@@ -141,7 +153,10 @@ func (i *Installer) checkExisting(ctx context.Context) (*existingCNI, error) {
 			}
 		}
 	case "flannel":
-		result, _ := i.sshConn.ExecuteCommand(ctx, "kubectl get daemonset kube-flannel-ds -n kube-flannel -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo ''")
+		result, err := i.sshConn.ExecuteCommand(ctx, "kubectl get daemonset kube-flannel-ds -n kube-flannel -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null || echo ''")
+		if err != nil {
+			return ec, fmt.Errorf("failed to check flannel version: %w", err)
+		}
 		if strings.Contains(result.Stdout, "v") {
 			parts := strings.Split(result.Stdout, "v")
 			if len(parts) > 1 {

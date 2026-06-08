@@ -45,9 +45,19 @@ func updateProgress(sshConn *sshclient.SSHConnection, step, message string) {
 }
 
 func writeProgress(sshConn *sshclient.SSHConnection, progress InstallProgress) {
-	data, _ := json.Marshal(progress)
+	if sshConn == nil {
+		return
+	}
+	data, err := json.Marshal(progress)
+	if err != nil {
+		return
+	}
 	script := fmt.Sprintf("echo '%s' > %s", string(data), progressFile)
-	_, _ = sshConn.ExecuteCommand(context.TODO(), script)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err = sshConn.ExecuteCommand(ctx, script)
+	// Progress write is non-critical; log but don't fail installation
+	_ = err
 }
 
 func GetProgress(sshConn *sshclient.SSHConnection) (*InstallProgress, error) {

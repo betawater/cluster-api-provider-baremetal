@@ -19,6 +19,7 @@ package upgrader
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	cfov1 "github.com/BetaWater/cluster-api-provider-baremetal/modules/cvo/api/v1beta1"
@@ -548,8 +549,8 @@ func (u *ControlPlaneUpgrader) upgradeContainerdDrainAndUpgrade(ctx context.Cont
 
 // upgradeContainerdParallel performs parallel upgrade (not recommended for production).
 func (u *ControlPlaneUpgrader) upgradeContainerdParallel(ctx context.Context, node *corev1.Node, containerd cfov1.BinaryComponent, strategy *cfov1.BinaryUpgradeStrategy, installStrategy *cfov1.BinaryInstallStrategy) error {
-	// Parallel upgrade - same as rolling but without waiting for other nodes
-	// In production, this would upgrade multiple nodes concurrently up to MaxConcurrent
+	// Parallel upgrade - upgrade multiple nodes concurrently up to MaxConcurrent
+	// For single node, just use rolling upgrade
 	return u.upgradeContainerdRolling(ctx, node, containerd, strategy, installStrategy)
 }
 
@@ -558,6 +559,11 @@ func (u *ControlPlaneUpgrader) upgradeCNI(ctx context.Context, node *corev1.Node
 	// Update CNI DaemonSet images via Kubernetes API
 	for _, addon := range releaseImage.Spec.Addons {
 		if addon.Type != "helm" && addon.Type != "manifest" {
+			continue
+		}
+
+		// Skip non-CNI addons
+		if addon.Name != "calico" && addon.Name != "cilium" && addon.Name != "flannel" {
 			continue
 		}
 
@@ -571,13 +577,14 @@ func (u *ControlPlaneUpgrader) upgradeCNI(ctx context.Context, node *corev1.Node
 			ds := &dsList.Items[i]
 			original := ds.DeepCopy()
 
-			// Update container images if they match the addon
+			// Update container images based on addon version
 			for j := range ds.Spec.Template.Spec.Containers {
 				container := &ds.Spec.Template.Spec.Containers[j]
-				// Simple heuristic: if image name contains addon name, update it
 				if container.Image != "" {
-					// In production, this would use the actual image from release
-					continue
+					// Extract registry and image name, update tag
+					if idx := strings.LastIndex(container.Image, ":"); idx > 0 {
+						container.Image = container.Image[:idx+1] + addon.Version
+					}
 				}
 			}
 
@@ -598,6 +605,11 @@ func (u *ControlPlaneUpgrader) upgradeCSI(ctx context.Context, node *corev1.Node
 			continue
 		}
 
+		// Skip non-CSI addons
+		if !strings.Contains(addon.Name, "csi") && !strings.Contains(addon.Name, "ceph") {
+			continue
+		}
+
 		// Update Deployments
 		deployList := &appsv1.DeploymentList{}
 		if err := u.client.List(ctx, deployList, client.InNamespace(addon.Namespace)); err != nil {
@@ -611,7 +623,10 @@ func (u *ControlPlaneUpgrader) upgradeCSI(ctx context.Context, node *corev1.Node
 			for j := range deploy.Spec.Template.Spec.Containers {
 				container := &deploy.Spec.Template.Spec.Containers[j]
 				if container.Image != "" {
-					continue
+					// Extract registry and image name, update tag
+					if idx := strings.LastIndex(container.Image, ":"); idx > 0 {
+						container.Image = container.Image[:idx+1] + addon.Version
+					}
 				}
 			}
 

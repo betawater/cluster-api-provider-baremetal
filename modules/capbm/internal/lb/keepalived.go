@@ -121,7 +121,9 @@ func (p *KeepalivedProvider) HealthCheck(ctx context.Context, backend Backend) (
 	if err != nil {
 		return false, nil
 	}
-	_ = conn.Close()
+	if err := conn.Close(); err != nil {
+		return false, fmt.Errorf("failed to close connection: %w", err)
+	}
 	return true, nil
 }
 

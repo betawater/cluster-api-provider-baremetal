@@ -144,7 +144,10 @@ func (i *Installer) Install(ctx context.Context) (*InstallResult, error) {
 	}
 
 	if i.config.RollbackOnError {
-		_ = i.rollback(ctx)
+		if rollbackErr := i.rollback(ctx); rollbackErr != nil {
+			// Log rollback error but return original installation error
+			lastErr = fmt.Errorf("installation failed: %w; rollback also failed: %v", lastErr, rollbackErr)
+		}
 	}
 
 	return &InstallResult{
@@ -203,33 +206,51 @@ func (i *Installer) checkExistingComponents(ctx context.Context, osInfo *OSInfo)
 
 	switch containerRuntime {
 	case "containerd":
-		result, _ := i.sshConn.ExecuteCommand(ctx, "containerd --version 2>/dev/null || echo ''")
+		result, err := i.sshConn.ExecuteCommand(ctx, "containerd --version 2>/dev/null || echo ''")
+		if err != nil {
+			return ec, fmt.Errorf("failed to check containerd version: %w", err)
+		}
 		if result.Stdout != "" {
 			ec.ContainerRuntime = extractVersion(result.Stdout)
 		}
 	case "cri-o":
-		result, _ := i.sshConn.ExecuteCommand(ctx, "crio --version 2>/dev/null | head -1 || echo ''")
+		result, err := i.sshConn.ExecuteCommand(ctx, "crio --version 2>/dev/null | head -1 || echo ''")
+		if err != nil {
+			return ec, fmt.Errorf("failed to check crio version: %w", err)
+		}
 		if result.Stdout != "" {
 			ec.ContainerRuntime = extractVersion(result.Stdout)
 		}
 	case "docker":
-		result, _ := i.sshConn.ExecuteCommand(ctx, "docker --version 2>/dev/null || echo ''")
+		result, err := i.sshConn.ExecuteCommand(ctx, "docker --version 2>/dev/null || echo ''")
+		if err != nil {
+			return ec, fmt.Errorf("failed to check docker version: %w", err)
+		}
 		if result.Stdout != "" {
 			ec.ContainerRuntime = extractVersion(result.Stdout)
 		}
 	}
 
-	result, _ := i.sshConn.ExecuteCommand(ctx, "kubeadm version -o short 2>/dev/null || echo ''")
+	result, err := i.sshConn.ExecuteCommand(ctx, "kubeadm version -o short 2>/dev/null || echo ''")
+	if err != nil {
+		return ec, fmt.Errorf("failed to check kubeadm version: %w", err)
+	}
 	if result.Stdout != "" {
 		ec.Kubeadm = result.Stdout
 	}
 
-	result, _ = i.sshConn.ExecuteCommand(ctx, "kubelet --version 2>/dev/null || echo ''")
+	result, err = i.sshConn.ExecuteCommand(ctx, "kubelet --version 2>/dev/null || echo ''")
+	if err != nil {
+		return ec, fmt.Errorf("failed to check kubelet version: %w", err)
+	}
 	if result.Stdout != "" {
 		ec.Kubelet = extractVersion(result.Stdout)
 	}
 
-	result, _ = i.sshConn.ExecuteCommand(ctx, "kubectl version --client --short 2>/dev/null || kubectl version --client 2>/dev/null | grep 'Client Version' || echo ''")
+	result, err = i.sshConn.ExecuteCommand(ctx, "kubectl version --client --short 2>/dev/null || kubectl version --client 2>/dev/null | grep 'Client Version' || echo ''")
+	if err != nil {
+		return ec, fmt.Errorf("failed to check kubectl version: %w", err)
+	}
 	if result.Stdout != "" {
 		ec.Kubectl = extractVersion(result.Stdout)
 	}
@@ -412,17 +433,26 @@ func (i *Installer) installKubernetesComponents(ctx context.Context, osInfo *OSI
 func (i *Installer) collectVersions(ctx context.Context) (*ComponentVersions, error) {
 	versions := &ComponentVersions{}
 
-	result, _ := i.sshConn.ExecuteCommand(ctx, "containerd --version 2>/dev/null || crio --version 2>/dev/null | head -1 || docker --version 2>/dev/null || echo ''")
+	result, err := i.sshConn.ExecuteCommand(ctx, "containerd --version 2>/dev/null || crio --version 2>/dev/null | head -1 || docker --version 2>/dev/null || echo ''")
+	if err != nil {
+		return versions, fmt.Errorf("failed to check container runtime version: %w", err)
+	}
 	if result.Stdout != "" {
 		versions.ContainerRuntime = extractVersion(result.Stdout)
 	}
 
-	result, _ = i.sshConn.ExecuteCommand(ctx, "kubeadm version -o short 2>/dev/null || echo ''")
+	result, err = i.sshConn.ExecuteCommand(ctx, "kubeadm version -o short 2>/dev/null || echo ''")
+	if err != nil {
+		return versions, fmt.Errorf("failed to check kubeadm version: %w", err)
+	}
 	if result.Stdout != "" {
 		versions.Kubeadm = result.Stdout
 	}
 
-	result, _ = i.sshConn.ExecuteCommand(ctx, "kubelet --version 2>/dev/null || echo ''")
+	result, err = i.sshConn.ExecuteCommand(ctx, "kubelet --version 2>/dev/null || echo ''")
+	if err != nil {
+		return versions, fmt.Errorf("failed to check kubelet version: %w", err)
+	}
 	if result.Stdout != "" {
 		versions.Kubelet = extractVersion(result.Stdout)
 	}

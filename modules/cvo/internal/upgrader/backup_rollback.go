@@ -114,7 +114,9 @@ func (e *BackupRollbackExecutor) RollbackComponent(ctx context.Context, cluster 
 	for _, node := range nodes {
 		if err := e.executeRollbackScript(ctx, node, scriptPath, timeout); err != nil {
 			// Try post-rollback hooks even on failure for cleanup
-			_ = e.executePostRollbackHooks(ctx, nodes, componentName, releaseImage)
+			if postErr := e.executePostRollbackHooks(ctx, nodes, componentName, releaseImage); postErr != nil {
+				return fmt.Errorf("failed to rollback component %s on node %s: %w; post-rollback hooks also failed: %v", componentName, node.Name, err, postErr)
+			}
 			return fmt.Errorf("failed to rollback component %s on node %s: %w", componentName, node.Name, err)
 		}
 	}
@@ -560,15 +562,21 @@ func (e *BackupRollbackExecutor) executeHookOnNode(ctx context.Context, node *co
 	hookCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	// In production, this would:
-	// 1. Get SSH connection to node
-	// 2. Execute hook.Command via SSH
-	// 3. Return error if command fails
-	// For now, this is a placeholder.
-	_ = hookCtx
-	_ = node
-	_ = hook
-	_ = componentName
-	_ = phase
+	// Get SSH connection to node
+	sshConn, err := e.sshManager.Connect(node.Name, 22, capbmssh.Credentials{})
+	if err != nil {
+		return fmt.Errorf("failed to connect to node %s: %w", node.Name, err)
+	}
+	defer e.sshManager.Close(sshConn)
+
+	// Execute hook command via SSH
+	result, err := sshConn.ExecuteScript(hookCtx, hook.Command)
+	if err != nil {
+		return fmt.Errorf("%s-hook %s failed for component %s on node %s: %w", phase, hook.Name, componentName, node.Name, err)
+	}
+	if result.ExitCode != 0 {
+		return fmt.Errorf("%s-hook %s failed for component %s on node %s: %s", phase, hook.Name, componentName, node.Name, result.Stderr)
+	}
+
 	return nil
 }

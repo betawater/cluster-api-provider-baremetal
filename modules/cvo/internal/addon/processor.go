@@ -19,6 +19,8 @@ package addon
 import (
 	"bytes"
 	"text/template"
+
+	"sigs.k8s.io/yaml"
 )
 
 // ManifestProcessor processes manifest templates with variables.
@@ -53,9 +55,11 @@ func (p *ManifestProcessor) Process(content []byte, variables map[string]interfa
 
 // toYAML converts a value to YAML string.
 func toYAML(v interface{}) string {
-	// Simple implementation - in production, use a proper YAML library
-	// This is a placeholder for the actual YAML conversion
-	return ""
+	data, err := yaml.Marshal(v)
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }
 
 // indent adds indentation to a string.

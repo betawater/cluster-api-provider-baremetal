@@ -54,9 +54,15 @@ func (r *ClusterVersionReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	patchHelper, _ := patch.NewHelper(cv, r.Client)
+	patchHelper, err := patch.NewHelper(cv, r.Client)
+	if err != nil {
+		log.Error(err, "Failed to create patch helper")
+		return ctrl.Result{}, err
+	}
 	defer func() {
-		_ = patchHelper.Patch(ctx, cv)
+		if err := patchHelper.Patch(ctx, cv); err != nil {
+			log.Error(err, "Failed to patch ClusterVersion status")
+		}
 	}()
 
 	if !cv.DeletionTimestamp.IsZero() {
@@ -250,12 +256,15 @@ func (r *ClusterVersionReconciler) syncReleaseCatalog(ctx context.Context, cv *c
 }
 
 func (r *ClusterVersionReconciler) computeAvailableUpdates(ctx context.Context, cv *cfov1.ClusterVersion) {
+	log := ctrl.LoggerFrom(ctx)
 	if r.Puller == nil {
 		return
 	}
 	executor := upgrader.NewGraphExecutor(r.Client, r.Puller, nil)
 	updates, err := executor.ComputeAvailableUpdates(ctx, cv)
 	if err != nil {
+		log.Error(err, "Failed to compute available updates")
+		setCVCondition(cv, cfov1.UpgradeRetrieved, metav1.ConditionFalse, "ComputeFailed", err.Error())
 		return
 	}
 	cv.Status.AvailableUpdates = updates

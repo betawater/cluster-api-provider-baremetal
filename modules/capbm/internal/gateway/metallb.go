@@ -22,12 +22,14 @@ import (
 	"strings"
 
 	capbmv1 "github.com/BetaWater/cluster-api-provider-baremetal/modules/capbm/api/v1beta1"
+	"github.com/BetaWater/cluster-api-provider-baremetal/modules/cvo/pkg/ssh"
 )
 
 // MetalLBInstaller installs MetalLB.
 type MetalLBInstaller struct {
 	version string
 	config  *capbmv1.GatewayMetalLBConfig
+	sshConn *ssh.SSHConnection
 }
 
 // NewMetalLBInstaller creates a new MetalLB installer.
@@ -36,6 +38,12 @@ func NewMetalLBInstaller(version string, config *capbmv1.GatewayMetalLBConfig) *
 		version: version,
 		config:  config,
 	}
+}
+
+// WithSSHConnection sets the SSH connection for executing install scripts.
+func (i *MetalLBInstaller) WithSSHConnection(conn *ssh.SSHConnection) *MetalLBInstaller {
+	i.sshConn = conn
+	return i
 }
 
 // Install installs MetalLB.
@@ -88,7 +96,7 @@ fetch_resource() {
 }
 
 # Install MetalLB CRDs first
-local crds_manifest=$(mktemp)
+crds_manifest=$(mktemp)
 case "$INSTALL_SOURCE" in
     online)
         kubectl apply -f "https://raw.githubusercontent.com/metallb/metallb/v${METALLB_VERSION}/config/manifests/metallb-native.yaml"
@@ -114,7 +122,7 @@ if [ "$INSTALL_SOURCE" != "online" ]; then
 fi
 
 # Install MetalLB Controller and Speaker
-local controller_manifest=$(mktemp)
+controller_manifest=$(mktemp)
 case "$INSTALL_SOURCE" in
     online)
         kubectl apply -f "https://raw.githubusercontent.com/metallb/metallb/v${METALLB_VERSION}/config/manifests/metallb-native.yaml"
@@ -160,7 +168,26 @@ fi
 echo "=== MetalLB installation completed ==="
 `, i.version, mode, poolConfig, poolConfig)
 
-	_ = script
+	// Execute script via SSH if connection is available
+	if i.sshConn != nil {
+		result, err := i.sshConn.ExecuteScript(ctx, script)
+		if err != nil {
+			return &InstallResult{
+				Completed: true,
+				Success:   false,
+				Version:   i.version,
+				Error:     fmt.Sprintf("failed to execute install script: %v", err),
+			}, nil
+		}
+		if result.ExitCode != 0 {
+			return &InstallResult{
+				Completed: true,
+				Success:   false,
+				Version:   i.version,
+				Error:     fmt.Sprintf("install script failed: %s", result.Stderr),
+			}, nil
+		}
+	}
 
 	return &InstallResult{
 		Completed: true,

@@ -21,12 +21,14 @@ import (
 	"fmt"
 
 	capbmv1 "github.com/BetaWater/cluster-api-provider-baremetal/modules/capbm/api/v1beta1"
+	"github.com/BetaWater/cluster-api-provider-baremetal/modules/cvo/pkg/ssh"
 )
 
 // EnvoyGatewayInstaller installs Envoy Gateway Controller.
 type EnvoyGatewayInstaller struct {
 	version string
 	config  *capbmv1.EnvoyGatewayConfig
+	sshConn *ssh.SSHConnection
 }
 
 // NewEnvoyGatewayInstaller creates a new Envoy Gateway installer.
@@ -35,6 +37,12 @@ func NewEnvoyGatewayInstaller(version string, config *capbmv1.EnvoyGatewayConfig
 		version: version,
 		config:  config,
 	}
+}
+
+// WithSSHConnection sets the SSH connection for executing install scripts.
+func (i *EnvoyGatewayInstaller) WithSSHConnection(conn *ssh.SSHConnection) *EnvoyGatewayInstaller {
+	i.sshConn = conn
+	return i
 }
 
 // Install installs Envoy Gateway Controller.
@@ -67,7 +75,7 @@ fetch_resource() {
 }
 
 # Install Envoy Gateway CRDs first
-local crds_manifest=$(mktemp)
+crds_manifest=$(mktemp)
 case "$INSTALL_SOURCE" in
     online)
         kubectl apply -f "https://github.com/envoyproxy/gateway/releases/download/v${ENVOY_GATEWAY_VERSION}/install.yaml"
@@ -93,7 +101,7 @@ if [ "$INSTALL_SOURCE" != "online" ]; then
 fi
 
 # Install Envoy Gateway Controller
-local controller_manifest=$(mktemp)
+controller_manifest=$(mktemp)
 case "$INSTALL_SOURCE" in
     online)
         kubectl apply -f "https://github.com/envoyproxy/gateway/releases/download/v${ENVOY_GATEWAY_VERSION}/install.yaml"
@@ -111,7 +119,26 @@ kubectl rollout status deployment/envoy-gateway -n envoy-gateway-system --timeou
 echo "=== Envoy Gateway installation completed ==="
 `, i.version, replicaCount)
 
-	_ = script
+	// Execute script via SSH if connection is available
+	if i.sshConn != nil {
+		result, err := i.sshConn.ExecuteScript(ctx, script)
+		if err != nil {
+			return &InstallResult{
+				Completed: true,
+				Success:   false,
+				Version:   i.version,
+				Error:     fmt.Sprintf("failed to execute install script: %v", err),
+			}, nil
+		}
+		if result.ExitCode != 0 {
+			return &InstallResult{
+				Completed: true,
+				Success:   false,
+				Version:   i.version,
+				Error:     fmt.Sprintf("install script failed: %s", result.Stderr),
+			}, nil
+		}
+	}
 
 	return &InstallResult{
 		Completed: true,
