@@ -21,7 +21,7 @@ spec:
         - /cvo-manager
         args:
         - --leader-elect
-        image: cvo-manager:latest
+        image: ghcr.io/betawater/cvo-manager:v0.1.0
         name: manager
         ports:
         - containerPort: 8082
