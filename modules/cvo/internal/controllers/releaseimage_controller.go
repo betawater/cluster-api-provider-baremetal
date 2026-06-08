@@ -135,9 +135,8 @@ func (r *ReleaseImageReconciler) verifyContentHash(ctx context.Context, ri *cfov
 			return err
 		}
 		defer func() {
-			if closeErr := f.Close(); closeErr != nil {
-				// Log close error but don't fail the hash calculation
-			}
+			// Close error is non-critical for hash calculation
+			_ = f.Close()
 		}()
 		if _, err := io.Copy(hash, f); err != nil {
 			return err

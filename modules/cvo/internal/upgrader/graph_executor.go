@@ -326,9 +326,8 @@ func (e *GraphExecutor) waitForEndpointHealthy(ctx context.Context, endpoint str
 			return false, nil
 		}
 		defer func() {
-			if closeErr := resp.Body.Close(); closeErr != nil {
-				// Close error is non-critical for health check
-			}
+			// Close error is non-critical for health check
+			_ = resp.Body.Close()
 		}()
 
 		return resp.StatusCode >= 200 && resp.StatusCode < 300, nil
