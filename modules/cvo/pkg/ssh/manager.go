@@ -166,9 +166,13 @@ func AddHostKey(host string, port int, keyType string, keyData []byte, knownHost
 	if err != nil {
 		return fmt.Errorf("failed to open known_hosts file: %w", err)
 	}
-	defer f.Close()
+	defer func() {
+		if closeErr := f.Close(); closeErr != nil {
+			// Log close error but don't fail the operation
+		}
+	}()
 
 	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
-	_, err = f.WriteString(fmt.Sprintf("%s %s %s\n", addr, keyType, string(keyData)))
+	_, err = fmt.Fprintf(f, "%s %s %s\n", addr, keyType, string(keyData))
 	return err
 }

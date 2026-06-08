@@ -104,7 +104,7 @@ func (e *SelfUpgradeExecutor) UpgradeDeployment(ctx context.Context, namespace, 
 
 func (e *SelfUpgradeExecutor) RollbackDeployment(ctx context.Context, namespace, name string) error {
 	deploy := &appsv1.Deployment{}
-	if err := e.Client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, deploy); err != nil {
+	if err := e.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, deploy); err != nil {
 		return fmt.Errorf("failed to get deployment %s/%s: %w", namespace, name, err)
 	}
 
@@ -129,7 +129,7 @@ func (e *SelfUpgradeExecutor) RollbackDeployment(ctx context.Context, namespace,
 		}
 	}
 
-	if err := e.Client.Patch(ctx, deploy, client.MergeFrom(original)); err != nil {
+	if err := e.Patch(ctx, deploy, client.MergeFrom(original)); err != nil {
 		return fmt.Errorf("failed to rollback deployment %s/%s: %w", namespace, name, err)
 	}
 
@@ -218,7 +218,7 @@ func (e *SelfUpgradeExecutor) backupCRD(ctx context.Context, crd *apiextensionsv
 		},
 	}
 
-	if err := e.Client.Create(ctx, backupConfigMap); err != nil {
+	if err := e.Create(ctx, backupConfigMap); err != nil {
 		if !apierrors.IsAlreadyExists(err) {
 			return fmt.Errorf("failed to create CRD backup ConfigMap: %w", err)
 		}

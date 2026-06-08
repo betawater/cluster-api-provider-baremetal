@@ -161,9 +161,8 @@ func (p *OCIPuller) pullImage(ctx context.Context, image, prefix string) (string
 		return "", fmt.Errorf("failed to create file store: %w", err)
 	}
 	defer func() {
-		if closeErr := fs.Close(); closeErr != nil {
-			// File store close errors are non-critical after successful copy
-		}
+		// File store close errors are non-critical after successful copy
+		_ = fs.Close()
 	}()
 
 	repo, err := remote.NewRepository(image)
