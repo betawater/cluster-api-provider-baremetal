@@ -156,6 +156,16 @@ type HAProxyConfig struct {
 	// +kubebuilder:default=22
 	SSHPort int `json:"sshPort,omitempty"`
 
+	// SSHUser is the HAProxy server SSH username.
+	// +optional
+	// +kubebuilder:default=root
+	SSHUser string `json:"sshUser,omitempty"`
+
+	// SSHKnownHostsFile is the path to the SSH known_hosts file for host key verification.
+	// If empty, host key verification is disabled (not recommended for production).
+	// +optional
+	SSHKnownHostsFile string `json:"sshKnownHostsFile,omitempty"`
+
 	// SSHCredentialsRef references the SSH credentials secret.
 	// +optional
 	SSHCredentialsRef *corev1.LocalObjectReference `json:"sshCredentialsRef,omitempty"`
@@ -214,7 +224,15 @@ type F5Config struct {
 	// +kubebuilder:default=443
 	Port int `json:"port,omitempty"`
 
-	// CredentialsRef references the F5 credentials secret.
+	// Username is the F5 BIG-IP management username.
+	// +optional
+	Username string `json:"username,omitempty"`
+
+	// Password is the F5 BIG-IP management password.
+	// +optional
+	Password string `json:"password,omitempty"`
+
+	// CredentialsRef references the F5 credentials secret (alternative to username/password).
 	// +optional
 	CredentialsRef *corev1.LocalObjectReference `json:"credentialsRef,omitempty"`
 

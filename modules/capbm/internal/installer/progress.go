@@ -60,8 +60,8 @@ func writeProgress(sshConn *sshclient.SSHConnection, progress InstallProgress) {
 	_ = err
 }
 
-func GetProgress(sshConn *sshclient.SSHConnection) (*InstallProgress, error) {
-	result, err := sshConn.ExecuteCommand(context.TODO(), fmt.Sprintf("cat %s 2>/dev/null || echo '{}'", progressFile))
+func GetProgress(ctx context.Context, sshConn *sshclient.SSHConnection) (*InstallProgress, error) {
+	result, err := sshConn.ExecuteCommand(ctx, fmt.Sprintf("cat %s 2>/dev/null || echo '{}'", progressFile))
 	if err != nil {
 		return nil, err
 	}

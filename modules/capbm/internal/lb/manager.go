@@ -48,7 +48,7 @@ type Provider interface {
 // NewProvider creates a new load balancer provider based on the configuration.
 func NewProvider(config *capbmv1.LoadBalancerConfig) (Provider, error) {
 	if config == nil {
-		return nil, nil
+		return nil, fmt.Errorf("load balancer configuration is required")
 	}
 
 	switch config.Provider {
@@ -61,7 +61,7 @@ func NewProvider(config *capbmv1.LoadBalancerConfig) (Provider, error) {
 	case "metal-lb":
 		return NewMetalLBProvider(config.MetalLB)
 	case "":
-		return nil, nil
+		return nil, fmt.Errorf("load balancer provider type is required (supported: haproxy, f5, keepalived, metal-lb)")
 	default:
 		return nil, fmt.Errorf("unsupported load balancer provider: %s", config.Provider)
 	}

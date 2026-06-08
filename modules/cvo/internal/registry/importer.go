@@ -112,15 +112,11 @@ func (i *Importer) buildImportJob(releaseImage *cfov1.ReleaseImage) *batchv1.Job
 
 	// Collect addons that have images
 	for _, addon := range releaseImage.Spec.Addons {
-		// Addons may have images defined in their DefaultValues or as part of the addon definition
-		// For now, we look for common addon names that have images
-		switch addon.Name {
-		case "calico", "cilium", "flannel", "ceph-csi", "local-path-provisioner", "nfs-csi", "gateway-api", "envoy-gateway", "metallb":
-			// These addons typically have associated images
-			// In a full implementation, the addon definition would include an ImageList field
+		// Build addon image list from addon definition
+		addonImages := buildAddonImageList(addon)
+		if len(addonImages) > 0 {
 			componentList = append(componentList, addon.Name)
-			// Placeholder - actual image list would come from addon definition
-			imageLists = append(imageLists, fmt.Sprintf("%s:", addon.Name))
+			imageLists = append(imageLists, fmt.Sprintf("%s:%s", addon.Name, strings.Join(addonImages, ",")))
 		}
 	}
 
@@ -258,7 +254,10 @@ func (i *Importer) buildImportJob(releaseImage *cfov1.ReleaseImage) *batchv1.Job
 							Command: []string{"sh", "-c", i.buildImportScript()},
 							Env:     envVars,
 							SecurityContext: &corev1.SecurityContext{
-								Privileged: ptr.To(true),
+								Privileged: ptr.To(false),
+								Capabilities: &corev1.Capabilities{
+									Add: []corev1.Capability{"SYS_CHROOT"},
+								},
 							},
 							VolumeMounts: volumeMounts,
 						},

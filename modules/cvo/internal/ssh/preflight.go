@@ -223,8 +223,16 @@ func versionGreaterOrEqual(version, required string) bool {
 			return false
 		}
 
-		vNum, _ := strconv.Atoi(vParts[i])
-		rNum, _ := strconv.Atoi(rParts[i])
+		vNum, vErr := strconv.Atoi(vParts[i])
+		rNum, rErr := strconv.Atoi(rParts[i])
+
+		// If parsing fails, treat as 0
+		if vErr != nil {
+			vNum = 0
+		}
+		if rErr != nil {
+			rNum = 0
+		}
 
 		if vNum > rNum {
 			return true

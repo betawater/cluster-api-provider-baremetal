@@ -829,7 +829,35 @@ func (r *SelfUpgradeReconciler) rollbackComponent(ctx context.Context, su *cfov1
 		}
 
 	default:
-		return fmt.Errorf("rollback not implemented for component type: %s", comp.Type)
+		// For unknown component types, attempt to restore from backup if available
+		log.Info("No specific rollback logic for component type, attempting generic backup restore", "type", comp.Type)
+		backupList := &corev1.ConfigMapList{}
+		if err := r.List(ctx, backupList, client.InNamespace(su.Namespace), client.MatchingLabels{
+			"cvo.capbm.io/self-upgrade": su.Name,
+		}); err != nil {
+			return fmt.Errorf("failed to list backup ConfigMaps: %w", err)
+		}
+
+		if len(backupList.Items) == 0 {
+			log.Info("No backup found for rollback, skipping", "component", comp.Name)
+			return nil
+		}
+
+		latestBackup := &backupList.Items[0]
+		prefix := fmt.Sprintf("%s-", comp.Name)
+
+		for key, content := range latestBackup.Data {
+			if strings.HasPrefix(key, prefix) {
+				obj, err := decodeYAML([]byte(content))
+				if err != nil {
+					log.Error(err, "Failed to decode backup", "key", key)
+					continue
+				}
+				if err := r.Patch(ctx, obj, client.Merge, client.FieldOwner("capbm-self-upgrade-rollback")); err != nil {
+					log.Error(err, "Failed to restore from backup", "key", key)
+				}
+			}
+		}
 	}
 
 	return nil

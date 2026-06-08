@@ -140,6 +140,11 @@ func (p *OCIPuller) GetScriptsDir(ctx context.Context, image string) (string, er
 	return filepath.Join(dir, "scripts"), nil
 }
 
+// GetImageDir returns the directory where the OCI image content is extracted.
+func (p *OCIPuller) GetImageDir(ctx context.Context, image string) (string, error) {
+	return p.pullImage(ctx, image, "release")
+}
+
 func (p *OCIPuller) pullImage(ctx context.Context, image, prefix string) (string, error) {
 	dir := filepath.Join(p.workDir, prefix+"-"+safeImageName(image))
 

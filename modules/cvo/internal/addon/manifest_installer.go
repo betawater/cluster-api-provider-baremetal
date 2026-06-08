@@ -141,7 +141,7 @@ func (i *ManifestInstaller) buildApplyJob(addon *cfov1.ClusterAddon, strategy *c
 					Containers: []corev1.Container{
 						{
 							Name:    "kubectl",
-							Image:   "bitnami/kubectl:latest",
+							Image:   "addon.DefaultKubectlImage",
 							Command: []string{"sh", "-c", "kubectl apply -f /manifests/addon.yaml"},
 							VolumeMounts: []corev1.VolumeMount{
 								{
@@ -225,7 +225,7 @@ func (i *ManifestInstaller) executeHook(ctx context.Context, addon *cfov1.Cluste
 					Containers: []corev1.Container{
 						{
 							Name:    "hook",
-							Image:   "bitnami/kubectl:latest",
+							Image:   "addon.DefaultKubectlImage",
 							Command: []string{"sh", "-c", hook.Command},
 						},
 					},

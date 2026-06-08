@@ -65,6 +65,9 @@ func NewF5Provider(config *capbmv1.F5Config) (Provider, error) {
 	if config.Host == "" {
 		return nil, fmt.Errorf("F5 host is required")
 	}
+	if config.Username == "" && config.CredentialsRef == nil {
+		return nil, fmt.Errorf("F5 username or credentialsRef is required")
+	}
 	if config.Partition == "" {
 		config.Partition = "Common"
 	}
@@ -165,7 +168,7 @@ func (p *F5Provider) doF5Request(ctx context.Context, method, path string, body,
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 
-	req.SetBasicAuth(p.config.CredentialsRef.Name, "")
+	req.SetBasicAuth(p.config.Username, p.config.Password)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 
@@ -176,7 +179,10 @@ func (p *F5Provider) doF5Request(ctx context.Context, method, path string, body,
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode >= 400 {
-		bodyBytes, _ := io.ReadAll(resp.Body)
+		bodyBytes, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			return fmt.Errorf("F5 API returned status %d (failed to read body: %w)", resp.StatusCode, readErr)
+		}
 		return fmt.Errorf("F5 API returned status %d: %s", resp.StatusCode, string(bodyBytes))
 	}
 

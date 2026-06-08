@@ -18,16 +18,20 @@ package ssh
 
 import (
 	"fmt"
+	"net"
+	"os"
 	"sync"
 	"time"
 
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 )
 
 // Credentials holds SSH authentication credentials.
 type Credentials struct {
-	Username string
-	Password string
+	Username       string
+	Password       string
+	KnownHostsFile string // Path to known_hosts file for host key verification
 }
 
 // SSHConnection represents an active SSH connection.
@@ -40,9 +44,10 @@ type SSHConnection struct {
 
 // SSHManager manages a pool of SSH connections.
 type SSHManager struct {
-	connections map[string]*SSHConnection
-	mu          sync.RWMutex
-	idleTimeout time.Duration
+	connections    map[string]*SSHConnection
+	mu             sync.RWMutex
+	idleTimeout    time.Duration
+	knownHostsFile string
 }
 
 // NewSSHManager creates a new SSH connection manager.
@@ -54,6 +59,12 @@ func NewSSHManager(idleTimeout time.Duration) *SSHManager {
 		connections: make(map[string]*SSHConnection),
 		idleTimeout: idleTimeout,
 	}
+}
+
+// WithKnownHosts sets the known_hosts file for host key verification.
+func (m *SSHManager) WithKnownHosts(path string) *SSHManager {
+	m.knownHostsFile = path
+	return m
 }
 
 // Connect establishes an SSH connection to the specified host.
@@ -77,11 +88,27 @@ func (m *SSHManager) Connect(host string, port int, creds Credentials) (*SSHConn
 		Auth: []ssh.AuthMethod{
 			ssh.Password(creds.Password),
 		},
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		Timeout:         10 * time.Second,
+		Timeout: 10 * time.Second,
 	}
 
-	client, err := ssh.Dial("tcp", fmt.Sprintf("%s:%d", host, port), config)
+	// Configure host key verification
+	knownHostsPath := creds.KnownHostsFile
+	if knownHostsPath == "" {
+		knownHostsPath = m.knownHostsFile
+	}
+
+	if knownHostsPath != "" {
+		callback, err := knownhosts.New(knownHostsPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load known hosts file %s: %w", knownHostsPath, err)
+		}
+		config.HostKeyCallback = callback
+	} else {
+		// Use insecure callback for backward compatibility (not recommended for production)
+		config.HostKeyCallback = ssh.InsecureIgnoreHostKey()
+	}
+
+	client, err := ssh.Dial("tcp", net.JoinHostPort(host, fmt.Sprintf("%d", port)), config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to %s:%d: %w", host, port, err)
 	}
@@ -111,7 +138,10 @@ func (m *SSHManager) Close(conn *SSHConnection) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	_ = conn.Client.Close()
+	if err := conn.Client.Close(); err != nil {
+		// Log close error but continue with cleanup
+		// Connection will be removed from pool regardless
+	}
 	delete(m.connections, key)
 }
 
@@ -122,7 +152,9 @@ func (m *SSHManager) Cleanup() {
 
 	for key, conn := range m.connections {
 		if time.Since(conn.LastUsed) > m.idleTimeout {
-			_ = conn.Client.Close()
+			if err := conn.Client.Close(); err != nil {
+				// Log close error but continue with cleanup
+			}
 			delete(m.connections, key)
 		}
 	}
@@ -133,4 +165,17 @@ func (m *SSHManager) ConnectionCount() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return len(m.connections)
+}
+
+// AddHostKey adds a host key to the known_hosts file.
+func AddHostKey(host string, port int, keyType string, keyData []byte, knownHostsFile string) error {
+	f, err := os.OpenFile(knownHostsFile, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0600)
+	if err != nil {
+		return fmt.Errorf("failed to open known_hosts file: %w", err)
+	}
+	defer f.Close()
+
+	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
+	_, err = f.WriteString(fmt.Sprintf("%s %s %s\n", addr, keyType, string(keyData)))
+	return err
 }

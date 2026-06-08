@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/crypto/ssh/knownhosts"
 	capbmv1 "github.com/BetaWater/cluster-api-provider-baremetal/modules/capbm/api/v1beta1"
 )
 
@@ -271,9 +272,20 @@ func (p *HAProxyProvider) getBackendsViaSSH(ctx context.Context) ([]Backend, err
 // createSSHClient creates a new SSH client connection.
 func (p *HAProxyProvider) createSSHClient() (*ssh.Client, error) {
 	config := &ssh.ClientConfig{
-		User:            "root",
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
-		Timeout:         10 * time.Second,
+		User:    p.config.SSHUser,
+		Timeout: 10 * time.Second,
+	}
+
+	// Configure host key verification
+	if p.config.SSHKnownHostsFile != "" {
+		callback, err := knownhosts.New(p.config.SSHKnownHostsFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load known hosts file %s: %w", p.config.SSHKnownHostsFile, err)
+		}
+		config.HostKeyCallback = callback
+	} else {
+		// Use insecure callback for backward compatibility (not recommended for production)
+		config.HostKeyCallback = ssh.InsecureIgnoreHostKey()
 	}
 
 	addr := net.JoinHostPort(p.config.SSHHost, fmt.Sprintf("%d", p.config.SSHPort))

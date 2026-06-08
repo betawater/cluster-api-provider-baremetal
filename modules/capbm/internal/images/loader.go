@@ -272,7 +272,7 @@ func (l *ImageLoader) GenerateKubernetesLoadScript(version string) string {
 }
 
 // GenerateCNILoadScript generates a bash script to load CNI images.
-func (l *ImageLoader) GenerateCNILoadScript(cniType, version string) string {
+func (l *ImageLoader) GenerateCNILoadScript(cniType, version string) (string, error) {
 	var imageList []string
 
 	switch cniType {
@@ -293,14 +293,14 @@ func (l *ImageLoader) GenerateCNILoadScript(cniType, version string) string {
 			"flannel.tar",
 		}
 	default:
-		return ""
+		return "", fmt.Errorf("unsupported CNI type: %s", cniType)
 	}
 
-	return l.GenerateLoadScript(cniType, version, imageList)
+	return l.GenerateLoadScript(cniType, version, imageList), nil
 }
 
 // GenerateCSILoadScript generates a bash script to load CSI images.
-func (l *ImageLoader) GenerateCSILoadScript(csiType, version string) string {
+func (l *ImageLoader) GenerateCSILoadScript(csiType, version string) (string, error) {
 	var imageList []string
 
 	switch csiType {
@@ -324,8 +324,8 @@ func (l *ImageLoader) GenerateCSILoadScript(csiType, version string) string {
 			"csi-node-driver-registrar.tar",
 		}
 	default:
-		return ""
+		return "", fmt.Errorf("unsupported CSI type: %s", csiType)
 	}
 
-	return l.GenerateLoadScript(csiType, version, imageList)
+	return l.GenerateLoadScript(csiType, version, imageList), nil
 }

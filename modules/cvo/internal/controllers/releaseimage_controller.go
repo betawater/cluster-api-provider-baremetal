@@ -18,6 +18,13 @@ package controllers
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -28,6 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	cfov1 "github.com/BetaWater/cluster-api-provider-baremetal/modules/cvo/api/v1beta1"
+	"github.com/BetaWater/cluster-api-provider-baremetal/modules/cvo/internal/upgrader"
 )
 
 const (
@@ -102,27 +110,102 @@ func (r *ReleaseImageReconciler) reconcileDelete(ctx context.Context, ri *cfov1.
 }
 
 func (r *ReleaseImageReconciler) verifyContentHash(ctx context.Context, ri *cfov1.ReleaseImage) error {
-	// In a real implementation, this would:
-	// 1. Pull the OCI image
-	// 2. Calculate the hash of the content
-	// 3. Compare with ri.Spec.ContentHash
-	//
-	// For now, we just mark it as verified
+	if ri.Spec.Image == "" {
+		return fmt.Errorf("release image reference is empty")
+	}
+
+	// Pull OCI image and calculate content hash
+	puller := upgrader.NewOCIPuller("")
+	dir, err := puller.GetImageDir(ctx, ri.Spec.Image)
+	if err != nil {
+		return fmt.Errorf("failed to pull release image: %w", err)
+	}
+
+	// Calculate SHA256 hash of all content
+	hash := sha256.New()
+	err = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		f, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		if _, err := io.Copy(hash, f); err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("failed to calculate content hash: %w", err)
+	}
+
+	calculatedHash := "sha256:" + hex.EncodeToString(hash.Sum(nil))
+	if calculatedHash != ri.Spec.ContentHash {
+		return fmt.Errorf("content hash mismatch: expected %s, got %s", ri.Spec.ContentHash, calculatedHash)
+	}
+
 	return nil
 }
 
 func (r *ReleaseImageReconciler) countManifests(ctx context.Context, ri *cfov1.ReleaseImage) int {
-	// In a real implementation, this would:
-	// 1. Pull the OCI image
-	// 2. Count the number of manifest files
-	//
-	// For now, we return the number of addons with type "manifest"
+	if ri.Spec.Image == "" {
+		// Fallback: count addons with type "manifest"
+		count := 0
+		for _, addon := range ri.Spec.Addons {
+			if addon.Type == cfov1.AddonTypeManifest {
+				count++
+			}
+		}
+		return count
+	}
+
+	// Pull OCI image and count manifest files
+	puller := upgrader.NewOCIPuller("")
+	dir, err := puller.GetImageDir(ctx, ri.Spec.Image)
+	if err != nil {
+		// Fallback to addon count on pull failure
+		count := 0
+		for _, addon := range ri.Spec.Addons {
+			if addon.Type == cfov1.AddonTypeManifest {
+				count++
+			}
+		}
+		return count
+	}
+
+	// Count YAML/YML files in manifests directory
+	manifestsDir := filepath.Join(dir, "manifests")
 	count := 0
-	for _, addon := range ri.Spec.Addons {
-		if addon.Type == cfov1.AddonTypeManifest {
-			count++
+	if _, err := os.Stat(manifestsDir); err == nil {
+		err = filepath.Walk(manifestsDir, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			if info.IsDir() {
+				return nil
+			}
+			ext := strings.ToLower(filepath.Ext(path))
+			if ext == ".yaml" || ext == ".yml" {
+				count++
+			}
+			return nil
+		})
+		if err != nil {
+			// Fallback to addon count
+			count = 0
+			for _, addon := range ri.Spec.Addons {
+				if addon.Type == cfov1.AddonTypeManifest {
+					count++
+				}
+			}
 		}
 	}
+
 	return count
 }
 

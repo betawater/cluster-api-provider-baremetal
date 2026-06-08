@@ -26,6 +26,7 @@ import (
 	"time"
 
 	cfov1 "github.com/BetaWater/cluster-api-provider-baremetal/modules/cvo/api/v1beta1"
+	capbmssh "github.com/BetaWater/cluster-api-provider-baremetal/modules/cvo/pkg/ssh"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -38,10 +39,17 @@ type GraphExecutor struct {
 	client        client.Client
 	puller        *OCIPuller
 	healthChecker *HealthChecker
+	sshManager    *capbmssh.SSHManager
 }
 
 func NewGraphExecutor(c client.Client, puller *OCIPuller, healthChecker *HealthChecker) *GraphExecutor {
 	return &GraphExecutor{client: c, puller: puller, healthChecker: healthChecker}
+}
+
+// WithSSHManager sets the SSH manager for script execution.
+func (e *GraphExecutor) WithSSHManager(m *capbmssh.SSHManager) *GraphExecutor {
+	e.sshManager = m
+	return e
 }
 
 func (e *GraphExecutor) ValidateUpgradePath(ctx context.Context, cv *cfov1.ClusterVersion) error {
@@ -235,13 +243,48 @@ func (e *GraphExecutor) executeScripts(ctx context.Context, scripts []string, re
 			return fmt.Errorf("failed to read script %s: %w", path, err)
 		}
 
-		// Script content is loaded and validated.
-		// Actual SSH execution on target nodes is handled by the BareMetalMachine controller.
-		_ = ctx
-		_ = scriptContent
+		// Execute script via SSH if SSH manager is available
+		if e.sshManager != nil {
+			// Get target nodes from release image
+			nodes, err := e.getTargetNodes(ctx, releaseImage)
+			if err != nil {
+				return fmt.Errorf("failed to get target nodes: %w", err)
+			}
+
+			for _, node := range nodes {
+				sshConn, err := e.sshManager.Connect(node.Name, 22, capbmssh.Credentials{})
+				if err != nil {
+					return fmt.Errorf("failed to connect to node %s: %w", node.Name, err)
+				}
+
+				result, execErr := sshConn.ExecuteScript(ctx, string(scriptContent))
+				e.sshManager.Close(sshConn)
+
+				if execErr != nil {
+					return fmt.Errorf("script execution failed on node %s: %w", node.Name, execErr)
+				}
+				if result.ExitCode != 0 {
+					return fmt.Errorf("script failed on node %s with exit code %d: %s", node.Name, result.ExitCode, result.Stderr)
+				}
+			}
+		}
 	}
 
 	return nil
+}
+
+// getTargetNodes returns the list of nodes to execute scripts on.
+func (e *GraphExecutor) getTargetNodes(ctx context.Context, releaseImage *cfov1.ReleaseImage) ([]*corev1.Node, error) {
+	nodeList := &corev1.NodeList{}
+	if err := e.client.List(ctx, nodeList); err != nil {
+		return nil, err
+	}
+
+	var nodes []*corev1.Node
+	for i := range nodeList.Items {
+		nodes = append(nodes, &nodeList.Items[i])
+	}
+	return nodes, nil
 }
 
 func (e *GraphExecutor) runHealthCheck(ctx context.Context, hc *cfov1.HealthCheck) error {

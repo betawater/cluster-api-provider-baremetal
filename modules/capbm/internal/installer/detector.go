@@ -57,8 +57,11 @@ func (d *OSDetector) Detect(ctx context.Context) (*OSInfo, error) {
 
 	osInfo.PackageMgr = detectPackageManager(osInfo.Type)
 
-	archResult, _ := d.sshConn.ExecuteCommand(ctx, "uname -m")
-	if archResult.Stdout != "" {
+	archResult, archErr := d.sshConn.ExecuteCommand(ctx, "uname -m")
+	if archErr != nil {
+		// Log warning but continue with default architecture
+		osInfo.Arch = "amd64"
+	} else if archResult.Stdout != "" {
 		osInfo.Arch = strings.TrimSpace(archResult.Stdout)
 	} else {
 		osInfo.Arch = "amd64"

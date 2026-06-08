@@ -113,9 +113,15 @@ func (t *StatusTracker) buildImportedImageStatus(releaseImage *cfov1.ReleaseImag
 
 	// Add addon images (addons may have associated images)
 	for _, addon := range releaseImage.Spec.Addons {
-		// For now, addons don't have explicit image lists
-		// In a full implementation, AddonDefinition would include an ImageList field
-		_ = addon
+		// Build addon image list from addon definition
+		addonImages := buildAddonImageList(addon)
+		if len(addonImages) > 0 {
+			components = append(components, struct {
+				name      string
+				imageList []string
+				version   string
+			}{addon.Name, addonImages, addon.Version})
+		}
 	}
 
 	for _, comp := range components {
@@ -198,4 +204,40 @@ func (t *StatusTracker) GetImportStatus(ctx context.Context, releaseImage *cfov1
 	}
 
 	return status, nil
+}
+
+// buildAddonImageList builds the image list for an addon based on its type and name.
+func buildAddonImageList(addon cfov1.AddonDefinition) []string {
+	// Common addon images based on addon name
+	addonImageMap := map[string][]string{
+		"calico": {
+			"docker.io/calico/node.tar",
+			"docker.io/calico/kube-controllers.tar",
+			"docker.io/calico/cni.tar",
+		},
+		"ceph-csi": {
+			"quay.io/cephcsi/cephcsi.tar",
+			"registry.k8s.io/sig-storage/csi-attacher.tar",
+			"registry.k8s.io/sig-storage/csi-provisioner.tar",
+			"registry.k8s.io/sig-storage/csi-snapshotter.tar",
+			"registry.k8s.io/sig-storage/csi-resizer.tar",
+			"registry.k8s.io/sig-storage/csi-node-driver-registrar.tar",
+		},
+		"metallb": {
+			"quay.io/metallb/controller.tar",
+			"quay.io/metallb/speaker.tar",
+		},
+		"gateway-api": {
+			"docker.io/envoyproxy/gateway.tar",
+			"docker.io/envoyproxy/envoy.tar",
+		},
+		"capi-core-controller": {
+			"registry.k8s.io/capi/capi-controller.tar",
+		},
+	}
+
+	if images, ok := addonImageMap[addon.Name]; ok {
+		return images
+	}
+	return nil
 }

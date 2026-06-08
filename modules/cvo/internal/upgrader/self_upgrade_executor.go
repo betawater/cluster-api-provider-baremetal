@@ -19,6 +19,7 @@ package upgrader
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -103,7 +104,7 @@ func (e *SelfUpgradeExecutor) UpgradeDeployment(ctx context.Context, namespace, 
 
 func (e *SelfUpgradeExecutor) RollbackDeployment(ctx context.Context, namespace, name string) error {
 	deploy := &appsv1.Deployment{}
-	if err := e.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, deploy); err != nil {
+	if err := e.Client.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, deploy); err != nil {
 		return fmt.Errorf("failed to get deployment %s/%s: %w", namespace, name, err)
 	}
 
@@ -111,13 +112,24 @@ func (e *SelfUpgradeExecutor) RollbackDeployment(ctx context.Context, namespace,
 		return fmt.Errorf("no previous revision to rollback to for %s/%s", namespace, name)
 	}
 
+	// Rollback by removing the current image tag to use the previous revision
+	// Or restore from backup if available
 	original := deploy.DeepCopy()
 
-	if len(deploy.Spec.Template.Spec.Containers) > 0 && len(deploy.Spec.Template.Spec.Containers[0].Image) > 0 {
-		deploy.Spec.Template.Spec.Containers[0].Image = ""
+	// Check if we have a backup annotation with the previous image
+	if prevImage, ok := deploy.Annotations["cvo.capbm.io/previous-image"]; ok && prevImage != "" {
+		if len(deploy.Spec.Template.Spec.Containers) > 0 {
+			deploy.Spec.Template.Spec.Containers[0].Image = prevImage
+		}
+	} else if len(deploy.Spec.Template.Spec.Containers) > 0 {
+		// Fallback: remove tag to use untagged (previous) image
+		currentImage := deploy.Spec.Template.Spec.Containers[0].Image
+		if idx := strings.LastIndex(currentImage, ":"); idx > 0 {
+			deploy.Spec.Template.Spec.Containers[0].Image = currentImage[:idx]
+		}
 	}
 
-	if err := e.Patch(ctx, deploy, client.MergeFrom(original)); err != nil {
+	if err := e.Client.Patch(ctx, deploy, client.MergeFrom(original)); err != nil {
 		return fmt.Errorf("failed to rollback deployment %s/%s: %w", namespace, name, err)
 	}
 

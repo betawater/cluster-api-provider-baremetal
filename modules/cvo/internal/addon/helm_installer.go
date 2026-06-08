@@ -158,7 +158,7 @@ func (i *HelmInstaller) buildHelmJob(addon *cfov1.ClusterAddon, strategy *cfov1.
 					Containers: []corev1.Container{
 						{
 							Name:    "helm",
-							Image:   "alpine/helm:3.15.0",
+							Image:   getHelmImage(addon),
 							Command: []string{"sh", "-c", helmArgs},
 							VolumeMounts: []corev1.VolumeMount{
 								{
@@ -248,7 +248,7 @@ func (i *HelmInstaller) executeHook(ctx context.Context, addon *cfov1.ClusterAdd
 					Containers: []corev1.Container{
 						{
 							Name:    "hook",
-							Image:   "bitnami/kubectl:latest",
+							Image:   "DefaultKubectlImage",
 							Command: []string{"sh", "-c", hook.Command},
 						},
 					},
@@ -288,4 +288,10 @@ func (i *HelmInstaller) waitForJob(ctx context.Context, job *batchv1.Job, strate
 		}
 		return false, nil
 	})
+}
+
+// getHelmImage returns the Helm image to use for addon operations.
+func getHelmImage(addon *cfov1.ClusterAddon) string {
+	// Default Helm image - can be made configurable via addon spec in future
+	return "DefaultHelmImage"
 }

@@ -19,6 +19,7 @@ package addon
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -27,11 +28,19 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/utils/ptr"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
 	cfov1 "github.com/BetaWater/cluster-api-provider-baremetal/modules/cvo/api/v1beta1"
 
+)
+
+const (
+	// DefaultKubectlImage is the default kubectl image used for addon operations.
+	DefaultKubectlImage = "bitnami/kubectl:1.31.0"
+	// DefaultHelmImage is the default Helm image used for addon operations.
+	DefaultHelmImage = "alpine/helm:3.15.0"
 )
 
 // Upgrader handles addon upgrades with high-cohesion configuration.
@@ -274,7 +283,7 @@ func (u *Upgrader) recreateUpgrade(ctx context.Context, addon *cfov1.ClusterAddo
 					Containers: []corev1.Container{
 						{
 							Name:    "delete",
-							Image:   "bitnami/kubectl:latest",
+							Image:   "DefaultKubectlImage",
 							Command: []string{"sh", "-c", "kubectl delete -f /manifests/addon.yaml --ignore-not-found"},
 						},
 					},
@@ -313,8 +322,15 @@ func (u *Upgrader) blueGreenUpgrade(ctx context.Context, addon *cfov1.ClusterAdd
 		return err
 	}
 
-	// Switch traffic (implementation depends on addon type)
-	// For now, delete old version
+	// Switch traffic by updating Service selector to point to new version
+	if err := u.switchTraffic(ctx, addon, newAddon); err != nil {
+		return fmt.Errorf("failed to switch traffic: %w", err)
+	}
+
+	// Wait for traffic to stabilize
+	time.Sleep(30 * time.Second)
+
+	// Delete old version after traffic switch
 	deleteJob := &batchv1.Job{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      fmt.Sprintf("delete-%s", addon.Name),
@@ -328,7 +344,7 @@ func (u *Upgrader) blueGreenUpgrade(ctx context.Context, addon *cfov1.ClusterAdd
 					Containers: []corev1.Container{
 						{
 							Name:    "delete",
-							Image:   "bitnami/kubectl:latest",
+							Image:   DefaultKubectlImage,
 							Command: []string{"sh", "-c", fmt.Sprintf("kubectl delete clusteraddon %s", addon.Name)},
 						},
 					},
@@ -338,6 +354,39 @@ func (u *Upgrader) blueGreenUpgrade(ctx context.Context, addon *cfov1.ClusterAdd
 		},
 	}
 	return u.client.Create(ctx, deleteJob)
+}
+
+// switchTraffic updates Service selectors to point to the new addon version.
+func (u *Upgrader) switchTraffic(ctx context.Context, oldAddon, newAddon *cfov1.ClusterAddon) error {
+	log := ctrl.LoggerFrom(ctx)
+	log.Info("Switching traffic from old addon to new addon", "old", oldAddon.Name, "new", newAddon.Name)
+
+	// Find Services that select the old addon and update their selectors
+	svcList := &corev1.ServiceList{}
+	if err := u.client.List(ctx, svcList, client.InNamespace(oldAddon.Namespace), client.MatchingLabels{
+		"app.kubernetes.io/part-of": oldAddon.Spec.AddonName,
+	}); err != nil {
+		return fmt.Errorf("failed to list services: %w", err)
+	}
+
+	for i := range svcList.Items {
+		svc := &svcList.Items[i]
+		original := svc.DeepCopy()
+
+		// Update selector to point to new version
+		if svc.Spec.Selector != nil {
+			if version, ok := svc.Spec.Selector["version"]; ok {
+				// Replace old addon name with new addon name in selector
+				svc.Spec.Selector["version"] = strings.Replace(version, oldAddon.Spec.AddonName, newAddon.Spec.AddonName, 1)
+			}
+		}
+
+		if err := u.client.Patch(ctx, svc, client.MergeFrom(original)); err != nil {
+			log.Error(err, "Failed to update service selector", "service", svc.Name)
+		}
+	}
+
+	return nil
 }
 
 // buildUpgradeJob creates a Kubernetes Job for addon upgrade.
@@ -385,7 +434,7 @@ func (u *Upgrader) buildUpgradeJob(addon *cfov1.ClusterAddon, targetDef *cfov1.A
 					Containers: []corev1.Container{
 						{
 							Name:  "upgrade",
-							Image: "bitnami/kubectl:latest",
+							Image: "DefaultKubectlImage",
 							Command: []string{"sh", "-c", command},
 						},
 					},
@@ -434,7 +483,7 @@ func (u *Upgrader) rollbackAddon(ctx context.Context, addon *cfov1.ClusterAddon,
 					Containers: []corev1.Container{
 						{
 							Name:    "rollback",
-							Image:   "bitnami/kubectl:latest",
+							Image:   "DefaultKubectlImage",
 							Command: []string{"sh", "-c", targetDef.Upgrade.Rollback.Script},
 						},
 					},
@@ -503,7 +552,7 @@ func (u *Upgrader) executeHook(ctx context.Context, addon *cfov1.ClusterAddon, h
 					Containers: []corev1.Container{
 						{
 							Name:    "hook",
-							Image:   "bitnami/kubectl:latest",
+							Image:   "DefaultKubectlImage",
 							Command: []string{"sh", "-c", hook.Command},
 						},
 					},
@@ -546,7 +595,7 @@ func (u *Upgrader) runHealthCheck(ctx context.Context, addon *cfov1.ClusterAddon
 						Containers: []corev1.Container{
 							{
 								Name:    "healthcheck",
-								Image:   "bitnami/kubectl:latest",
+								Image:   "DefaultKubectlImage",
 								Command: []string{"sh", "-c", hc.Command},
 							},
 						},
