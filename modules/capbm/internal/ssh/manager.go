@@ -138,10 +138,8 @@ func (m *SSHManager) Close(conn *SSHConnection) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if err := conn.Client.Close(); err != nil {
-		// Log close error but continue with cleanup
-		// Connection will be removed from pool regardless
-	}
+	// Close error is non-critical; connection will be removed from pool regardless
+	_ = conn.Client.Close()
 	delete(m.connections, key)
 }
 
@@ -152,9 +150,8 @@ func (m *SSHManager) Cleanup() {
 
 	for key, conn := range m.connections {
 		if time.Since(conn.LastUsed) > m.idleTimeout {
-			if err := conn.Client.Close(); err != nil {
-				// Log close error but continue with cleanup
-			}
+			// Close error is non-critical; connection will be removed from pool regardless
+			_ = conn.Client.Close()
 			delete(m.connections, key)
 		}
 	}
@@ -173,9 +170,12 @@ func AddHostKey(host string, port int, keyType string, keyData []byte, knownHost
 	if err != nil {
 		return fmt.Errorf("failed to open known_hosts file: %w", err)
 	}
-	defer f.Close()
+	defer func() {
+		// Close error is non-critical for known_hosts write
+		_ = f.Close()
+	}()
 
 	addr := net.JoinHostPort(host, fmt.Sprintf("%d", port))
-	_, err = f.WriteString(fmt.Sprintf("%s %s %s\n", addr, keyType, string(keyData)))
+	_, err = fmt.Fprintf(f, "%s %s %s\n", addr, keyType, string(keyData))
 	return err
 }
