@@ -19,23 +19,29 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/go-logr/logr"
 	appsv1 "k8s.io/api/apps/v1"
-	rbacv1 "k8s.io/api/rbac/v1"
+	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
-	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	"sigs.k8s.io/cluster-api/util/patch"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/yaml"
 
 	cfov1 "github.com/BetaWater/cluster-api-provider-baremetal/modules/cvo/api/v1beta1"
 	"github.com/BetaWater/cluster-api-provider-baremetal/modules/cvo/internal/upgrader"
@@ -72,6 +78,13 @@ func (r *SelfUpgradeReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	controllerutil.AddFinalizer(su, cfov1.SelfUpgradeFinalizer)
+
+	// Check if upgrade is paused
+	if su.Spec.Paused {
+		su.Status.Phase = cfov1.PhasePending
+		r.setCondition(su, cfov1.SelfUpgradeValidating, metav1.ConditionTrue, "Paused", "Upgrade is paused")
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
 
 	switch su.Status.Phase {
 	case "":
@@ -333,17 +346,21 @@ func (r *SelfUpgradeReconciler) validateComponents(su *cfov1.SelfUpgrade) error 
 }
 
 func (r *SelfUpgradeReconciler) validateClusterHealth(ctx context.Context) error {
-	nodes := &metav1.PartialObjectMetadataList{}
-	nodes.SetGroupVersionKind(schema.GroupVersionKind{Group: "", Version: "v1", Kind: "Node"})
+	nodes := &corev1.NodeList{}
 	if err := r.List(ctx, nodes); err != nil {
 		return fmt.Errorf("failed to list nodes: %w", err)
 	}
 
 	for _, node := range nodes.Items {
-		for _, condition := range node.Annotations {
-			if condition == "NotReady" {
-				return fmt.Errorf("node %s is not ready", node.Name)
+		ready := false
+		for _, cond := range node.Status.Conditions {
+			if cond.Type == corev1.NodeReady && cond.Status == corev1.ConditionTrue {
+				ready = true
+				break
 			}
+		}
+		if !ready {
+			return fmt.Errorf("node %s is not ready", node.Name)
 		}
 	}
 
@@ -471,6 +488,18 @@ func (r *SelfUpgradeReconciler) executeHook(ctx context.Context, hook cfov1.Hook
 	log := ctrl.LoggerFrom(ctx)
 	log.Info("Executing hook", "hook", hook.Name, "command", hook.Command)
 
+	// Execute hook command locally via exec
+	cmd := exec.CommandContext(ctx, "bash", "-c", hook.Command)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		if hook.OnFailure == "Ignore" || hook.OnFailure == "Continue" {
+			log.Error(err, "Hook failed but continuing", "hook", hook.Name, "output", string(output))
+			return nil
+		}
+		return fmt.Errorf("hook %s failed: %w, output: %s", hook.Name, err, string(output))
+	}
+
+	log.Info("Hook completed", "hook", hook.Name, "output", string(output))
 	return nil
 }
 
@@ -478,11 +507,26 @@ func (r *SelfUpgradeReconciler) backupCurrentConfig(ctx context.Context, su *cfo
 	log := ctrl.LoggerFrom(ctx)
 	log.Info("Backing up current configuration")
 
+	backupName := fmt.Sprintf("backup-%s-%s", su.Name, time.Now().Format("20060102150405"))
+
+	// Backup CRDs
 	crds := &apiextensionsv1.CustomResourceDefinitionList{}
 	if err := r.List(ctx, crds, client.MatchingLabels{"app.kubernetes.io/part-of": "capbm"}); err != nil {
 		return fmt.Errorf("failed to list CRDs: %w", err)
 	}
 
+	backupData := make(map[string]string)
+	for i := range crds.Items {
+		crd := &crds.Items[i]
+		crdYAML, err := yaml.Marshal(crd)
+		if err != nil {
+			log.Error(err, "Failed to marshal CRD", "name", crd.Name)
+			continue
+		}
+		backupData[fmt.Sprintf("crd-%s.yaml", crd.Name)] = string(crdYAML)
+	}
+
+	// Backup Deployments
 	deployments := []types.NamespacedName{
 		{Namespace: "cvo-system", Name: "cvo-controller-manager"},
 		{Namespace: "capbm-system", Name: "capbm-controller-manager"},
@@ -494,8 +538,35 @@ func (r *SelfUpgradeReconciler) backupCurrentConfig(ctx context.Context, su *cfo
 			log.Error(err, "Failed to get deployment for backup", "namespace", ns.Namespace, "name", ns.Name)
 			continue
 		}
+		deployYAML, err := yaml.Marshal(deploy)
+		if err != nil {
+			log.Error(err, "Failed to marshal deployment", "name", deploy.Name)
+			continue
+		}
+		backupData[fmt.Sprintf("deployment-%s-%s.yaml", deploy.Namespace, deploy.Name)] = string(deployYAML)
 	}
 
+	// Store backup in ConfigMap
+	backupConfigMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      backupName,
+			Namespace: su.Namespace,
+			Labels: map[string]string{
+				"app.kubernetes.io/part-of": "capbm",
+				"cvo.capbm.io/backup":       "true",
+				"cvo.capbm.io/self-upgrade": su.Name,
+			},
+		},
+		Data: backupData,
+	}
+
+	if err := r.Create(ctx, backupConfigMap); err != nil {
+		if !apierrors.IsAlreadyExists(err) {
+			return fmt.Errorf("failed to create backup ConfigMap: %w", err)
+		}
+	}
+
+	log.Info("Backup stored in ConfigMap", "name", backupName, "items", len(backupData))
 	return nil
 }
 
@@ -533,17 +604,42 @@ func (r *SelfUpgradeReconciler) upgradeRBAC(ctx context.Context, su *cfov1.SelfU
 	log := ctrl.LoggerFrom(ctx)
 	log.Info("Upgrading RBAC")
 
-	clusterRoles := &rbacv1.ClusterRoleList{}
-	if err := r.List(ctx, clusterRoles, client.MatchingLabels{"app.kubernetes.io/part-of": "capbm"}); err != nil {
-		return fmt.Errorf("failed to list ClusterRoles: %w", err)
+	// Get RBAC manifests from release image directory
+	rbacDir := fmt.Sprintf("/tmp/capbm-upgrade/release-%s/rbac", safeImageName(su.Spec.ReleaseImage))
+	if _, err := os.Stat(rbacDir); os.IsNotExist(err) {
+		log.Info("No RBAC directory found, skipping RBAC upgrade")
+		return nil
 	}
 
-	clusterRoleBindings := &rbacv1.ClusterRoleBindingList{}
-	if err := r.List(ctx, clusterRoleBindings, client.MatchingLabels{"app.kubernetes.io/part-of": "capbm"}); err != nil {
-		return fmt.Errorf("failed to list ClusterRoleBindings: %w", err)
+	entries, err := os.ReadDir(rbacDir)
+	if err != nil {
+		return fmt.Errorf("failed to read RBAC directory: %w", err)
 	}
 
-	log.Info("RBAC update complete", "clusterRoles", len(clusterRoles.Items), "clusterRoleBindings", len(clusterRoleBindings.Items))
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry.Name(), ".yaml") && !strings.HasSuffix(entry.Name(), ".yml") {
+			continue
+		}
+
+		content, err := os.ReadFile(filepath.Join(rbacDir, entry.Name()))
+		if err != nil {
+			return fmt.Errorf("failed to read RBAC file %s: %w", entry.Name(), err)
+		}
+
+		// Apply RBAC manifest
+		obj, err := decodeYAML(content)
+		if err != nil {
+			return fmt.Errorf("failed to decode RBAC manifest %s: %w", entry.Name(), err)
+		}
+
+		if err := r.Patch(ctx, obj, client.Apply, client.ForceOwnership, client.FieldOwner("capbm-self-upgrade")); err != nil {
+			return fmt.Errorf("failed to apply RBAC manifest %s: %w", entry.Name(), err)
+		}
+
+		log.Info("Applied RBAC manifest", "file", entry.Name())
+	}
+
+	log.Info("RBAC update complete")
 	return nil
 }
 
@@ -551,17 +647,42 @@ func (r *SelfUpgradeReconciler) upgradeWebhooks(ctx context.Context, su *cfov1.S
 	log := ctrl.LoggerFrom(ctx)
 	log.Info("Upgrading Webhooks")
 
-	mutatingWebhooks := &admissionregistrationv1.MutatingWebhookConfigurationList{}
-	if err := r.List(ctx, mutatingWebhooks, client.MatchingLabels{"app.kubernetes.io/part-of": "capbm"}); err != nil {
-		return fmt.Errorf("failed to list MutatingWebhookConfigurations: %w", err)
+	// Get webhook manifests from release image directory
+	webhookDir := fmt.Sprintf("/tmp/capbm-upgrade/release-%s/webhooks", safeImageName(su.Spec.ReleaseImage))
+	if _, err := os.Stat(webhookDir); os.IsNotExist(err) {
+		log.Info("No webhooks directory found, skipping webhook upgrade")
+		return nil
 	}
 
-	validatingWebhooks := &admissionregistrationv1.ValidatingWebhookConfigurationList{}
-	if err := r.List(ctx, validatingWebhooks, client.MatchingLabels{"app.kubernetes.io/part-of": "capbm"}); err != nil {
-		return fmt.Errorf("failed to list ValidatingWebhookConfigurations: %w", err)
+	entries, err := os.ReadDir(webhookDir)
+	if err != nil {
+		return fmt.Errorf("failed to read webhooks directory: %w", err)
 	}
 
-	log.Info("Webhook update complete", "mutatingWebhooks", len(mutatingWebhooks.Items), "validatingWebhooks", len(validatingWebhooks.Items))
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry.Name(), ".yaml") && !strings.HasSuffix(entry.Name(), ".yml") {
+			continue
+		}
+
+		content, err := os.ReadFile(filepath.Join(webhookDir, entry.Name()))
+		if err != nil {
+			return fmt.Errorf("failed to read webhook file %s: %w", entry.Name(), err)
+		}
+
+		// Apply webhook manifest
+		obj, err := decodeYAML(content)
+		if err != nil {
+			return fmt.Errorf("failed to decode webhook manifest %s: %w", entry.Name(), err)
+		}
+
+		if err := r.Patch(ctx, obj, client.Apply, client.ForceOwnership, client.FieldOwner("capbm-self-upgrade")); err != nil {
+			return fmt.Errorf("failed to apply webhook manifest %s: %w", entry.Name(), err)
+		}
+
+		log.Info("Applied webhook manifest", "file", entry.Name())
+	}
+
+	log.Info("Webhook update complete")
 	return nil
 }
 
@@ -634,14 +755,81 @@ func (r *SelfUpgradeReconciler) rollbackComponent(ctx context.Context, su *cfov1
 			return fmt.Errorf("no previous revision to rollback to for %s/%s", comp.HealthCheck.Namespace, comp.HealthCheck.Name)
 		}
 
+		// Rollback to previous revision
 		original := deploy.DeepCopy()
-		deploy.Spec.Template.Spec.Containers[0].Image = ""
+		if len(deploy.Spec.Template.Spec.Containers) > 0 {
+			// Remove tag to use previous image
+			currentImage := deploy.Spec.Template.Spec.Containers[0].Image
+			if idx := strings.LastIndex(currentImage, ":"); idx > 0 {
+				deploy.Spec.Template.Spec.Containers[0].Image = currentImage[:idx]
+			}
+		}
 		if err := r.Patch(ctx, deploy, client.MergeFrom(original)); err != nil {
 			return fmt.Errorf("failed to rollback deployment %s/%s: %w", comp.HealthCheck.Namespace, comp.HealthCheck.Name, err)
 		}
 
+	case cfov1.SelfUpgradeComponentTypeCRD:
+		// Restore CRDs from backup ConfigMap
+		backupList := &corev1.ConfigMapList{}
+		if err := r.List(ctx, backupList, client.InNamespace(su.Namespace), client.MatchingLabels{
+			"cvo.capbm.io/self-upgrade": su.Name,
+		}); err != nil {
+			return fmt.Errorf("failed to list backup ConfigMaps: %w", err)
+		}
+
+		if len(backupList.Items) == 0 {
+			return fmt.Errorf("no backup found for self-upgrade %s", su.Name)
+		}
+
+		// Get latest backup
+		latestBackup := &backupList.Items[0]
+		for key, content := range latestBackup.Data {
+			if strings.HasPrefix(key, "crd-") {
+				obj, err := decodeYAML([]byte(content))
+				if err != nil {
+					log.Error(err, "Failed to decode CRD backup", "key", key)
+					continue
+				}
+				if err := r.Patch(ctx, obj, client.Apply, client.ForceOwnership, client.FieldOwner("capbm-self-upgrade-rollback")); err != nil {
+					log.Error(err, "Failed to restore CRD from backup", "key", key)
+				}
+			}
+		}
+
+	case cfov1.SelfUpgradeComponentTypeRBAC, cfov1.SelfUpgradeComponentTypeWebhook:
+		// Restore from backup ConfigMap
+		backupList := &corev1.ConfigMapList{}
+		if err := r.List(ctx, backupList, client.InNamespace(su.Namespace), client.MatchingLabels{
+			"cvo.capbm.io/self-upgrade": su.Name,
+		}); err != nil {
+			return fmt.Errorf("failed to list backup ConfigMaps: %w", err)
+		}
+
+		if len(backupList.Items) == 0 {
+			return fmt.Errorf("no backup found for self-upgrade %s", su.Name)
+		}
+
+		latestBackup := &backupList.Items[0]
+		prefix := "rbac-"
+		if comp.Type == cfov1.SelfUpgradeComponentTypeWebhook {
+			prefix = "webhook-"
+		}
+
+		for key, content := range latestBackup.Data {
+			if strings.HasPrefix(key, prefix) {
+				obj, err := decodeYAML([]byte(content))
+				if err != nil {
+					log.Error(err, "Failed to decode backup", "key", key)
+					continue
+				}
+				if err := r.Patch(ctx, obj, client.Apply, client.ForceOwnership, client.FieldOwner("capbm-self-upgrade-rollback")); err != nil {
+					log.Error(err, "Failed to restore from backup", "key", key)
+				}
+			}
+		}
+
 	default:
-		log.Info("Rollback not implemented for component type", "type", comp.Type)
+		return fmt.Errorf("rollback not implemented for component type: %s", comp.Type)
 	}
 
 	return nil
@@ -668,4 +856,47 @@ func (r *SelfUpgradeReconciler) waitForCRDEstablished(ctx context.Context, name 
 			}
 		}
 	}
+}
+
+// decodeYAML decodes a YAML manifest into a runtime.Object.
+func decodeYAML(content []byte) (client.Object, error) {
+	var typeMeta metav1.TypeMeta
+	if err := yaml.Unmarshal(content, &typeMeta); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal TypeMeta: %w", err)
+	}
+
+	gv, err := schema.ParseGroupVersion(typeMeta.APIVersion)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse apiVersion %s: %w", typeMeta.APIVersion, err)
+	}
+
+	gvk := gv.WithKind(typeMeta.Kind)
+	runtimeObj, err := scheme.Scheme.New(gvk)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create object for GVK %v: %w", gvk, err)
+	}
+
+	objClient, ok := runtimeObj.(client.Object)
+	if !ok {
+		return nil, fmt.Errorf("object %v does not implement client.Object", gvk)
+	}
+
+	if err := yaml.Unmarshal(content, objClient); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal into object: %w", err)
+	}
+
+	return objClient, nil
+}
+
+// safeImageName converts an image reference to a safe directory name.
+func safeImageName(image string) string {
+	result := ""
+	for _, c := range image {
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
+			result += string(c)
+		} else {
+			result += "-"
+		}
+	}
+	return result
 }

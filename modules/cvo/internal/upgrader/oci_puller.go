@@ -23,6 +23,12 @@ import (
 	"os"
 	"path/filepath"
 
+	"oras.land/oras-go/v2"
+	"oras.land/oras-go/v2/content/file"
+	"oras.land/oras-go/v2/registry/remote"
+	"oras.land/oras-go/v2/registry/remote/auth"
+	"oras.land/oras-go/v2/registry/remote/retry"
+
 	cfov1 "github.com/BetaWater/cluster-api-provider-baremetal/modules/cvo/api/v1beta1"
 )
 
@@ -145,10 +151,34 @@ func (p *OCIPuller) pullImage(ctx context.Context, image, prefix string) (string
 		return "", fmt.Errorf("failed to create work directory: %w", err)
 	}
 
-	// For now, just return the directory (stub behavior)
-	// Full OCI pull implementation would use oras.Copy here
-	// This requires the actual OCI image to be available in a registry
-	
+	fs, err := file.New(dir)
+	if err != nil {
+		return "", fmt.Errorf("failed to create file store: %w", err)
+	}
+	defer fs.Close()
+
+	repo, err := remote.NewRepository(image)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse image reference %s: %w", image, err)
+	}
+
+	if p.auth != nil && p.auth.Username != "" {
+		repo.PlainHTTP = false
+		repo.Client = &auth.Client{
+			Client: retry.DefaultClient,
+			Cache:  auth.NewCache(),
+			Credential: auth.StaticCredential(repo.Reference.Registry, auth.Credential{
+				Username: p.auth.Username,
+				Password: p.auth.Password,
+			}),
+		}
+	}
+
+	_, err = oras.Copy(ctx, repo, repo.Reference.Reference, fs, repo.Reference.Reference, oras.DefaultCopyOptions)
+	if err != nil {
+		return "", fmt.Errorf("failed to pull OCI image %s: %w", image, err)
+	}
+
 	return dir, nil
 }
 

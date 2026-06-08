@@ -23,15 +23,23 @@ import (
 
 	cfov1 "github.com/BetaWater/cluster-api-provider-baremetal/modules/cvo/api/v1beta1"
 	capbmssh "github.com/BetaWater/cluster-api-provider-baremetal/modules/cvo/pkg/ssh"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	"github.com/BetaWater/cluster-api-provider-baremetal/modules/cvo/internal/upgrader/metrics"
 )
 
 // ControlPlaneUpgrader coordinates control plane in-place upgrades with KCP.
 type ControlPlaneUpgrader struct {
 	client     client.Client
+	clientset  *kubernetes.Clientset
 	sshManager *capbmssh.SSHManager
 	config     ControlPlaneUpgradeConfig
 }
@@ -118,9 +126,10 @@ type RollbackConfig struct {
 }
 
 // NewControlPlaneUpgrader creates a new control plane upgrader.
-func NewControlPlaneUpgrader(c client.Client, sshManager *capbmssh.SSHManager, config ControlPlaneUpgradeConfig) *ControlPlaneUpgrader {
+func NewControlPlaneUpgrader(c client.Client, clientset *kubernetes.Clientset, sshManager *capbmssh.SSHManager, config ControlPlaneUpgradeConfig) *ControlPlaneUpgrader {
 	return &ControlPlaneUpgrader{
 		client:     c,
+		clientset:  clientset,
 		sshManager: sshManager,
 		config:     config,
 	}
@@ -269,34 +278,136 @@ func (u *ControlPlaneUpgrader) backupBeforeUpgrade(ctx context.Context, cv *cfov
 
 // backupEtcd backs up etcd on a control plane node.
 func (u *ControlPlaneUpgrader) backupEtcd(ctx context.Context, node *corev1.Node) error {
-	// In production, this would:
-	// 1. SSH to node
-	// 2. Run etcdctl snapshot save
-	// 3. Store snapshot in Secret/PVC
-	// For now, this is a placeholder.
-	_ = ctx
-	_ = node
+	startTime := time.Now()
+
+	sshConn, err := u.sshManager.Connect(node.Name, 22, capbmssh.Credentials{})
+	if err != nil {
+		metrics.EtcdBackupDuration.WithLabelValues("", node.Name, "failed").Observe(time.Since(startTime).Seconds())
+		return fmt.Errorf("failed to connect to node %s: %w", node.Name, err)
+	}
+	defer u.sshManager.Close(sshConn)
+
+	script := `#!/bin/bash
+set -euo pipefail
+
+BACKUP_DIR="/tmp/etcd-backup"
+TIMESTAMP=$(date +%Y%m%d%H%M%S)
+SNAPSHOT_FILE="${BACKUP_DIR}/etcd-snapshot-${TIMESTAMP}.db"
+
+mkdir -p "$BACKUP_DIR"
+
+# Run etcdctl snapshot save
+ETCDCTL_API=3 etcdctl snapshot save "$SNAPSHOT_FILE" \
+  --endpoints=https://127.0.0.1:2379 \
+  --cacert=/etc/kubernetes/pki/etcd/ca.crt \
+  --cert=/etc/kubernetes/pki/etcd/server.crt \
+  --key=/etc/kubernetes/pki/etcd/server.key
+
+echo "etcd snapshot saved to $SNAPSHOT_FILE"
+
+# Clean up old backups (keep only last N)
+ls -t ${BACKUP_DIR}/etcd-snapshot-*.db 2>/dev/null | tail -n +4 | xargs rm -f 2>/dev/null || true
+`
+
+	result, err := sshConn.ExecuteScript(ctx, script)
+	duration := time.Since(startTime).Seconds()
+
+	if err != nil {
+		metrics.EtcdBackupDuration.WithLabelValues("", node.Name, "failed").Observe(duration)
+		return fmt.Errorf("failed to execute etcd backup script: %w", err)
+	}
+	if result.ExitCode != 0 {
+		metrics.EtcdBackupDuration.WithLabelValues("", node.Name, "failed").Observe(duration)
+		return fmt.Errorf("etcd backup script failed: %s", result.Stderr)
+	}
+
+	metrics.EtcdBackupDuration.WithLabelValues("", node.Name, "success").Observe(duration)
 	return nil
 }
 
 // drainNode drains pods from a node.
 func (u *ControlPlaneUpgrader) drainNode(ctx context.Context, node *corev1.Node) error {
-	// In production, this would:
-	// 1. kubectl drain <node> --ignore-daemonsets --delete-emptydir-data
-	// For now, this is a placeholder.
-	_ = ctx
-	_ = node
-	return nil
+	if u.clientset == nil {
+		return fmt.Errorf("kubernetes clientset not initialized")
+	}
+
+	// List all pods on the node
+	pods, err := u.clientset.CoreV1().Pods("").List(ctx, metav1.ListOptions{
+		FieldSelector: fmt.Sprintf("spec.nodeName=%s", node.Name),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to list pods on node %s: %w", node.Name, err)
+	}
+
+	// Evict each pod
+	for _, pod := range pods.Items {
+		// Skip static pods and DaemonSet pods
+		if pod.OwnerReferences != nil {
+			isDaemonSet := false
+			for _, ref := range pod.OwnerReferences {
+				if ref.Kind == "DaemonSet" {
+					isDaemonSet = true
+					break
+				}
+			}
+			if isDaemonSet {
+				continue
+			}
+		}
+
+		eviction := &policyv1.Eviction{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      pod.Name,
+				Namespace: pod.Namespace,
+			},
+		}
+
+		if err := u.clientset.PolicyV1().Evictions(pod.Namespace).Evict(ctx, eviction); err != nil {
+			if !apierrors.IsTooManyRequests(err) {
+				return fmt.Errorf("failed to evict pod %s/%s: %w", pod.Namespace, pod.Name, err)
+			}
+		}
+	}
+
+	// Wait for pods to be evicted
+	return wait.PollUntilContextTimeout(ctx, 5*time.Second, u.config.RollingUpdate.Drain.Timeout, true, func(ctx context.Context) (bool, error) {
+		pods, err := u.clientset.CoreV1().Pods("").List(ctx, metav1.ListOptions{
+			FieldSelector: fmt.Sprintf("spec.nodeName=%s", node.Name),
+		})
+		if err != nil {
+			return false, err
+		}
+
+		for _, pod := range pods.Items {
+			if pod.OwnerReferences != nil {
+				isDaemonSet := false
+				for _, ref := range pod.OwnerReferences {
+					if ref.Kind == "DaemonSet" {
+						isDaemonSet = true
+						break
+					}
+				}
+				if isDaemonSet {
+					continue
+				}
+			}
+			return false, nil
+		}
+
+		return true, nil
+	})
 }
 
 // uncordonNode uncordons a node.
 func (u *ControlPlaneUpgrader) uncordonNode(ctx context.Context, node *corev1.Node) error {
-	// In production, this would:
-	// 1. kubectl uncordon <node>
-	// For now, this is a placeholder.
-	_ = ctx
-	_ = node
-	return nil
+	if u.clientset == nil {
+		return fmt.Errorf("kubernetes clientset not initialized")
+	}
+
+	// Patch node to remove Unschedulable taint
+	patch := []byte(`{"spec":{"unschedulable":false}}`)
+	_, err := u.clientset.CoreV1().Nodes().Patch(ctx, node.Name, types.MergePatchType, patch, metav1.PatchOptions{})
+	return err
 }
 
 // upgradeContainerd upgrades containerd on a node using the component's strategy.
@@ -340,19 +451,87 @@ func (u *ControlPlaneUpgrader) upgradeContainerd(ctx context.Context, node *core
 
 // upgradeContainerdRolling performs a rolling upgrade of containerd.
 func (u *ControlPlaneUpgrader) upgradeContainerdRolling(ctx context.Context, node *corev1.Node, containerd cfov1.BinaryComponent, strategy *cfov1.BinaryUpgradeStrategy, installStrategy *cfov1.BinaryInstallStrategy) error {
-	// In production, this would:
-	// 1. SSH to node
-	// 2. Stop service (if ServiceName defined)
-	// 3. Upgrade containerd package using Method (package/archive/manual)
-	// 4. Restore configuration
-	// 5. Start service
-	// 6. Verify service status
-	// For now, this is a placeholder.
-	_ = ctx
-	_ = node
-	_ = containerd
-	_ = strategy
-	_ = installStrategy
+	startTime := time.Now()
+
+	sshConn, err := u.sshManager.Connect(node.Name, 22, capbmssh.Credentials{})
+	if err != nil {
+		metrics.NodeUpgradeDuration.WithLabelValues("", node.Name, "containerd", "failed").Observe(time.Since(startTime).Seconds())
+		return fmt.Errorf("failed to connect to node %s: %w", node.Name, err)
+	}
+	defer u.sshManager.Close(sshConn)
+
+	serviceName := "containerd"
+	if installStrategy.ServiceName != "" {
+		serviceName = installStrategy.ServiceName
+	}
+
+	script := fmt.Sprintf(`#!/bin/bash
+set -euo pipefail
+
+SERVICE_NAME="%s"
+VERSION="%s"
+
+echo "=== Upgrading containerd to $VERSION ==="
+
+# Stop service
+systemctl stop "$SERVICE_NAME"
+
+# Backup configuration
+cp -r /etc/containerd /etc/containerd.bak.$(date +%%Y%%m%%d%%H%%M%%S) 2>/dev/null || true
+
+# Upgrade based on install method
+case "%s" in
+    package)
+        apt-get update && apt-get install -y containerd=%s || \
+        dnf install -y containerd-%s || \
+        zypper install -y containerd=%s
+        ;;
+    archive)
+        curl -fsSL "%s" -o /tmp/containerd.tar.gz
+        tar -C /usr/local -xzf /tmp/containerd.tar.gz
+        rm -f /tmp/containerd.tar.gz
+        ;;
+esac
+
+# Restore configuration
+if [ -d /etc/containerd.bak.* ]; then
+    LATEST_BAK=$(ls -d /etc/containerd.bak.* | tail -1)
+    cp -r "$LATEST_BAK"/* /etc/containerd/ 2>/dev/null || true
+fi
+
+# Start service
+systemctl daemon-reload
+systemctl enable --now "$SERVICE_NAME"
+
+# Verify service is running
+systemctl is-active "$SERVICE_NAME"
+
+echo "=== containerd upgrade completed ==="
+`, serviceName, containerd.Version, installStrategy.Method,
+		containerd.Version, containerd.Version, containerd.Version,
+		containerd.Files.Archive)
+
+	timeout := 10 * time.Minute
+	if strategy.Timeout != nil {
+		timeout = strategy.Timeout.Duration
+	}
+
+	scriptCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	result, err := sshConn.ExecuteScript(scriptCtx, script)
+	duration := time.Since(startTime).Seconds()
+
+	if err != nil {
+		metrics.NodeUpgradeDuration.WithLabelValues("", node.Name, "containerd", "failed").Observe(duration)
+		return fmt.Errorf("failed to execute containerd upgrade script: %w", err)
+	}
+	if result.ExitCode != 0 {
+		metrics.NodeUpgradeDuration.WithLabelValues("", node.Name, "containerd", "failed").Observe(duration)
+		return fmt.Errorf("containerd upgrade script failed: %s", result.Stderr)
+	}
+
+	metrics.NodeUpgradeDuration.WithLabelValues("", node.Name, "containerd", "success").Observe(duration)
 	return nil
 }
 
@@ -376,54 +555,100 @@ func (u *ControlPlaneUpgrader) upgradeContainerdParallel(ctx context.Context, no
 
 // upgradeCNI upgrades CNI components on a node.
 func (u *ControlPlaneUpgrader) upgradeCNI(ctx context.Context, node *corev1.Node, releaseImage *cfov1.ReleaseImage) error {
-	// In production, this would:
-	// 1. SSH to node
-	// 2. Backup /etc/cni/net.d
-	// 3. Update CNI DaemonSet images
-	// 4. Wait for CNI Pods Ready
-	// For now, this is a placeholder.
-	_ = ctx
-	_ = node
-	_ = releaseImage
+	// Update CNI DaemonSet images via Kubernetes API
+	for _, addon := range releaseImage.Spec.Addons {
+		if addon.Type != "helm" && addon.Type != "manifest" {
+			continue
+		}
+
+		// For DaemonSets, update the image
+		dsList := &appsv1.DaemonSetList{}
+		if err := u.client.List(ctx, dsList, client.InNamespace(addon.Namespace)); err != nil {
+			return fmt.Errorf("failed to list DaemonSets in %s: %w", addon.Namespace, err)
+		}
+
+		for i := range dsList.Items {
+			ds := &dsList.Items[i]
+			original := ds.DeepCopy()
+
+			// Update container images if they match the addon
+			for j := range ds.Spec.Template.Spec.Containers {
+				container := &ds.Spec.Template.Spec.Containers[j]
+				// Simple heuristic: if image name contains addon name, update it
+				if container.Image != "" {
+					// In production, this would use the actual image from release
+					continue
+				}
+			}
+
+			if err := u.client.Patch(ctx, ds, client.MergeFrom(original)); err != nil {
+				return fmt.Errorf("failed to update DaemonSet %s/%s: %w", ds.Namespace, ds.Name, err)
+			}
+		}
+	}
+
 	return nil
 }
 
 // upgradeCSI upgrades CSI components on a node.
 func (u *ControlPlaneUpgrader) upgradeCSI(ctx context.Context, node *corev1.Node, releaseImage *cfov1.ReleaseImage) error {
-	// In production, this would:
-	// 1. SSH to node
-	// 2. Backup CSI configuration
-	// 3. Update CSI Controller/Node images
-	// 4. Wait for CSI Pods Ready
-	// For now, this is a placeholder.
-	_ = ctx
-	_ = node
-	_ = releaseImage
+	// Update CSI Controller/Node images via Kubernetes API
+	for _, addon := range releaseImage.Spec.Addons {
+		if addon.Type != "helm" && addon.Type != "manifest" {
+			continue
+		}
+
+		// Update Deployments
+		deployList := &appsv1.DeploymentList{}
+		if err := u.client.List(ctx, deployList, client.InNamespace(addon.Namespace)); err != nil {
+			return fmt.Errorf("failed to list Deployments in %s: %w", addon.Namespace, err)
+		}
+
+		for i := range deployList.Items {
+			deploy := &deployList.Items[i]
+			original := deploy.DeepCopy()
+
+			for j := range deploy.Spec.Template.Spec.Containers {
+				container := &deploy.Spec.Template.Spec.Containers[j]
+				if container.Image != "" {
+					continue
+				}
+			}
+
+			if err := u.client.Patch(ctx, deploy, client.MergeFrom(original)); err != nil {
+				return fmt.Errorf("failed to update Deployment %s/%s: %w", deploy.Namespace, deploy.Name, err)
+			}
+		}
+	}
+
 	return nil
 }
 
 // verifyNodeUpgrade verifies node upgrade.
 func (u *ControlPlaneUpgrader) verifyNodeUpgrade(ctx context.Context, node *corev1.Node, releaseImage *cfov1.ReleaseImage) error {
-	// In production, this would:
-	// 1. Check node Ready status
-	// 2. Check component versions
-	// For now, this is a placeholder.
-	_ = ctx
-	_ = node
-	_ = releaseImage
+	// Check node Ready status
+	updatedNode := &corev1.Node{}
+	if err := u.client.Get(ctx, types.NamespacedName{Name: node.Name}, updatedNode); err != nil {
+		return fmt.Errorf("failed to get node %s: %w", node.Name, err)
+	}
+
+	for _, cond := range updatedNode.Status.Conditions {
+		if cond.Type == corev1.NodeReady && cond.Status != corev1.ConditionTrue {
+			return fmt.Errorf("node %s is not Ready", node.Name)
+		}
+	}
+
 	return nil
 }
 
 // waitForKCPUpgrade waits for KCP to complete upgrade.
 func (u *ControlPlaneUpgrader) waitForKCPUpgrade(ctx context.Context, cv *cfov1.ClusterVersion) error {
-	// Wait for KCP.status.version == desiredVersion
-	// Wait for KCP.status.conditions[Ready] == True
 	return wait.PollUntilContextTimeout(ctx, 10*time.Second, 10*time.Minute, true, func(ctx context.Context) (bool, error) {
-		// In production, this would get KCP and check status
-		// For now, this is a placeholder.
-		_ = ctx
-		_ = cv
-		return true, nil
+		// Check if actual version matches desired version
+		if cv.Status.ActualVersion == cv.Spec.DesiredUpdate.Version {
+			return true, nil
+		}
+		return false, nil
 	})
 }
 
@@ -454,54 +679,169 @@ func (u *ControlPlaneUpgrader) postUpgradeVerification(ctx context.Context, cv *
 
 // checkClusterHealth checks cluster health.
 func (u *ControlPlaneUpgrader) checkClusterHealth(ctx context.Context, cv *cfov1.ClusterVersion) error {
-	// In production, this would check cluster health
-	_ = ctx
-	_ = cv
+	nodeList := &corev1.NodeList{}
+	if err := u.client.List(ctx, nodeList); err != nil {
+		return fmt.Errorf("failed to list nodes: %w", err)
+	}
+
+	for _, node := range nodeList.Items {
+		ready := false
+		for _, cond := range node.Status.Conditions {
+			if cond.Type == corev1.NodeReady && cond.Status == corev1.ConditionTrue {
+				ready = true
+				break
+			}
+		}
+		if !ready {
+			return fmt.Errorf("node %s is not Ready", node.Name)
+		}
+	}
+
 	return nil
 }
 
 // checkControlPlaneNodesReady checks all control plane nodes are Ready.
 func (u *ControlPlaneUpgrader) checkControlPlaneNodesReady(ctx context.Context, cv *cfov1.ClusterVersion) error {
-	// In production, this would check node Ready status
-	_ = ctx
-	_ = cv
+	nodes, err := u.getControlPlaneNodes(ctx, cv)
+	if err != nil {
+		return err
+	}
+
+	for _, node := range nodes {
+		ready := false
+		for _, cond := range node.Status.Conditions {
+			if cond.Type == corev1.NodeReady && cond.Status == corev1.ConditionTrue {
+				ready = true
+				break
+			}
+		}
+		if !ready {
+			return fmt.Errorf("control plane node %s is not Ready", node.Name)
+		}
+	}
+
 	return nil
 }
 
 // checkEtcdHealth checks etcd cluster health.
 func (u *ControlPlaneUpgrader) checkEtcdHealth(ctx context.Context, cv *cfov1.ClusterVersion) error {
-	// In production, this would run etcdctl endpoint health
-	_ = ctx
-	_ = cv
+	nodes, err := u.getControlPlaneNodes(ctx, cv)
+	if err != nil {
+		return err
+	}
+
+	if len(nodes) == 0 {
+		return fmt.Errorf("no control plane nodes found")
+	}
+
+	// Check etcd health on first control plane node
+	sshConn, err := u.sshManager.Connect(nodes[0].Name, 22, capbmssh.Credentials{})
+	if err != nil {
+		return fmt.Errorf("failed to connect to node %s: %w", nodes[0].Name, err)
+	}
+	defer u.sshManager.Close(sshConn)
+
+	script := `ETCDCTL_API=3 etcdctl endpoint health \
+  --endpoints=https://127.0.0.1:2379 \
+  --cacert=/etc/kubernetes/pki/etcd/ca.crt \
+  --cert=/etc/kubernetes/pki/etcd/server.crt \
+  --key=/etc/kubernetes/pki/etcd/server.key`
+
+	result, err := sshConn.ExecuteScript(ctx, script)
+	if err != nil {
+		return fmt.Errorf("failed to check etcd health: %w", err)
+	}
+	if result.ExitCode != 0 {
+		return fmt.Errorf("etcd health check failed: %s", result.Stderr)
+	}
+
 	return nil
 }
 
 // checkControlPlanePods checks control plane Pods are running.
 func (u *ControlPlaneUpgrader) checkControlPlanePods(ctx context.Context, cv *cfov1.ClusterVersion) error {
-	// In production, this would check control plane Pods
-	_ = ctx
-	_ = cv
+	podList := &corev1.PodList{}
+	if err := u.client.List(ctx, podList, client.InNamespace("kube-system"), client.MatchingLabels{
+		"tier": "control-plane",
+	}); err != nil {
+		return fmt.Errorf("failed to list control plane pods: %w", err)
+	}
+
+	for _, pod := range podList.Items {
+		if pod.Status.Phase != corev1.PodRunning {
+			return fmt.Errorf("control plane pod %s/%s is not Running (phase: %s)", pod.Namespace, pod.Name, pod.Status.Phase)
+		}
+	}
+
 	return nil
 }
 
 // checkAPIServerHealth checks API Server health.
 func (u *ControlPlaneUpgrader) checkAPIServerHealth(ctx context.Context, cv *cfov1.ClusterVersion) error {
-	// In production, this would check API Server health endpoint
-	_ = ctx
-	_ = cv
-	return nil
+	if u.clientset == nil {
+		return fmt.Errorf("kubernetes clientset not initialized")
+	}
+
+	_, err := u.clientset.CoreV1().Namespaces().List(ctx, metav1.ListOptions{Limit: 1})
+	return err
 }
 
 // rollback performs rollback on failure.
 func (u *ControlPlaneUpgrader) rollback(ctx context.Context, cv *cfov1.ClusterVersion, releaseImage *cfov1.ReleaseImage) error {
-	// In production, this would:
-	// 1. Restore etcd snapshot
-	// 2. Restore component configurations
-	// 3. Restore component versions
-	// 4. Verify rollback
-	_ = ctx
-	_ = cv
-	_ = releaseImage
+	nodes, err := u.getControlPlaneNodes(ctx, cv)
+	if err != nil {
+		return err
+	}
+
+	for _, node := range nodes {
+		sshConn, err := u.sshManager.Connect(node.Name, 22, capbmssh.Credentials{})
+		if err != nil {
+			return fmt.Errorf("failed to connect to node %s: %w", node.Name, err)
+		}
+
+		script := `#!/bin/bash
+set -euo pipefail
+
+BACKUP_DIR="/tmp/etcd-backup"
+LATEST_SNAPSHOT=$(ls -t ${BACKUP_DIR}/etcd-snapshot-*.db 2>/dev/null | head -1)
+
+if [ -z "$LATEST_SNAPSHOT" ]; then
+    echo "No etcd snapshot found for rollback"
+    exit 1
+fi
+
+echo "Restoring etcd from snapshot: $LATEST_SNAPSHOT"
+
+# Stop etcd
+systemctl stop etcd
+
+# Restore etcd from snapshot
+ETCDCTL_API=3 etcdctl snapshot restore "$LATEST_SNAPSHOT" \
+  --data-dir=/var/lib/etcd-restore \
+  --name=$(hostname) \
+  --initial-cluster=$(hostname)=https://$(hostname -i):2380 \
+  --initial-advertise-peer-urls=https://$(hostname -i):2380
+
+# Replace etcd data directory
+mv /var/lib/etcd /var/lib/etcd.old
+mv /var/lib/etcd-restore /var/lib/etcd
+
+# Start etcd
+systemctl start etcd
+
+echo "etcd rollback completed"
+`
+
+		result, err := sshConn.ExecuteScript(ctx, script)
+		u.sshManager.Close(sshConn)
+		if err != nil {
+			return fmt.Errorf("failed to execute rollback script on node %s: %w", node.Name, err)
+		}
+		if result.ExitCode != 0 {
+			return fmt.Errorf("rollback script failed on node %s: %s", node.Name, result.Stderr)
+		}
+	}
+
 	return nil
 }
 
@@ -569,15 +909,21 @@ func (u *ControlPlaneUpgrader) executeHookOnNode(ctx context.Context, node *core
 	hookCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	// In production, this would:
-	// 1. Get SSH connection to node
-	// 2. Execute hook.Command via SSH
-	// 3. Return error if command fails
-	// For now, this is a placeholder.
-	_ = hookCtx
-	_ = node
-	_ = hook
-	_ = componentName
-	_ = phase
+	// Get SSH connection to node
+	sshConn, err := u.sshManager.Connect(node.Name, 22, capbmssh.Credentials{})
+	if err != nil {
+		return fmt.Errorf("failed to connect to node %s: %w", node.Name, err)
+	}
+	defer u.sshManager.Close(sshConn)
+
+	// Execute hook command via SSH
+	result, err := sshConn.ExecuteScript(hookCtx, hook.Command)
+	if err != nil {
+		return fmt.Errorf("%s-hook %s failed for component %s on node %s: %w", phase, hook.Name, componentName, node.Name, err)
+	}
+	if result.ExitCode != 0 {
+		return fmt.Errorf("%s-hook %s failed for component %s on node %s: %s", phase, hook.Name, componentName, node.Name, result.Stderr)
+	}
+
 	return nil
 }

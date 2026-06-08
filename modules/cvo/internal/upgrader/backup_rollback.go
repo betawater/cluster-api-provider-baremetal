@@ -19,11 +19,15 @@ package upgrader
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	cfov1 "github.com/BetaWater/cluster-api-provider-baremetal/modules/cvo/api/v1beta1"
 	capbmssh "github.com/BetaWater/cluster-api-provider-baremetal/modules/cvo/pkg/ssh"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -152,42 +156,199 @@ func (e *BackupRollbackExecutor) backupComponent(ctx context.Context, cluster *c
 
 // backupConfigItem backs up a single config item (file or directory).
 func (e *BackupRollbackExecutor) backupConfigItem(ctx context.Context, cluster *cfov1.ClusterVersion, backupName string, item cfov1.BackupItem) error {
-	// In production, this would:
-	// 1. SSH to nodes
-	// 2. Read the file/directory content
-	// 3. Store in ConfigMap/Secret
-	// For now, this is a placeholder.
-	_ = ctx
-	_ = cluster
-	_ = backupName
-	_ = item
+	nodes, err := e.getClusterNodes(ctx, cluster)
+	if err != nil {
+		return err
+	}
+
+	for _, node := range nodes {
+		sshConn, err := e.sshManager.Connect(node.Name, 22, capbmssh.Credentials{})
+		if err != nil {
+			return fmt.Errorf("failed to connect to node %s: %w", node.Name, err)
+		}
+
+		script := fmt.Sprintf(`#!/bin/bash
+set -euo pipefail
+
+PATH="%s"
+TYPE="%s"
+
+if [ "$TYPE" = "file" ]; then
+    if [ ! -f "$PATH" ]; then
+        echo "File not found: $PATH"
+        exit 1
+    fi
+    cat "$PATH"
+elif [ "$TYPE" = "directory" ]; then
+    if [ ! -d "$PATH" ]; then
+        echo "Directory not found: $PATH"
+        exit 1
+    fi
+    tar -czf - -C "$(dirname "$PATH")" "$(basename "$PATH")" | base64
+else
+    echo "Unknown type: $TYPE"
+    exit 1
+fi
+`, item.Path, item.Type)
+
+		result, err := sshConn.ExecuteScript(ctx, script)
+		e.sshManager.Close(sshConn)
+		if err != nil {
+			return fmt.Errorf("failed to backup %s on node %s: %w", item.Path, node.Name, err)
+		}
+		if result.ExitCode != 0 {
+			return fmt.Errorf("backup script failed for %s on node %s: %s", item.Path, node.Name, result.Stderr)
+		}
+
+		// Store backup data in ConfigMap
+		backupData := map[string]string{
+			"node":      node.Name,
+			"path":      item.Path,
+			"type":      item.Type,
+			"timestamp": time.Now().Format(time.RFC3339),
+			"content":   result.Stdout,
+		}
+
+		backupConfigMap := &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      backupName,
+				Namespace: "cvo-system",
+				Labels: map[string]string{
+					"app.kubernetes.io/part-of":    "capbm",
+					"cvo.capbm.io/backup":          "true",
+					"cvo.capbm.io/backup-component": item.Path,
+				},
+			},
+			Data: backupData,
+		}
+
+		if err := e.client.Create(ctx, backupConfigMap); err != nil {
+			if !apierrors.IsAlreadyExists(err) {
+				return fmt.Errorf("failed to create backup ConfigMap: %w", err)
+			}
+			// Update existing ConfigMap
+			existing := &corev1.ConfigMap{}
+			if err := e.client.Get(ctx, types.NamespacedName{Name: backupName, Namespace: "cvo-system"}, existing); err != nil {
+				return fmt.Errorf("failed to get existing backup ConfigMap: %w", err)
+			}
+			existing.Data[fmt.Sprintf("%s-%s", node.Name, item.Path)] = result.Stdout
+			if err := e.client.Update(ctx, existing); err != nil {
+				return fmt.Errorf("failed to update backup ConfigMap: %w", err)
+			}
+		}
+	}
+
 	return nil
 }
 
 // createEtcdSnapshot creates an etcd snapshot for control-plane backup.
 func (e *BackupRollbackExecutor) createEtcdSnapshot(ctx context.Context, cluster *cfov1.ClusterVersion, backupName string) error {
-	// In production, this would:
-	// 1. SSH to control-plane nodes
-	// 2. Run etcdctl snapshot save
-	// 3. Store snapshot in Secret
-	// For now, this is a placeholder.
-	_ = ctx
-	_ = cluster
-	_ = backupName
+	nodes, err := e.getClusterNodes(ctx, cluster)
+	if err != nil {
+		return err
+	}
+
+	// Find control-plane nodes
+	var controlPlaneNodes []*corev1.Node
+	for _, node := range nodes {
+		if _, ok := node.Labels["node-role.kubernetes.io/control-plane"]; ok {
+			controlPlaneNodes = append(controlPlaneNodes, node)
+		}
+	}
+
+	if len(controlPlaneNodes) == 0 {
+		return fmt.Errorf("no control-plane nodes found for etcd backup")
+	}
+
+	// Backup etcd on first control-plane node
+	node := controlPlaneNodes[0]
+	sshConn, err := e.sshManager.Connect(node.Name, 22, capbmssh.Credentials{})
+	if err != nil {
+		return fmt.Errorf("failed to connect to node %s: %w", node.Name, err)
+	}
+	defer e.sshManager.Close(sshConn)
+
+	script := `#!/bin/bash
+set -euo pipefail
+
+BACKUP_DIR="/tmp/etcd-backup"
+TIMESTAMP=$(date +%Y%m%d%H%M%S)
+SNAPSHOT_FILE="${BACKUP_DIR}/etcd-snapshot-${TIMESTAMP}.db"
+
+mkdir -p "$BACKUP_DIR"
+
+ETCDCTL_API=3 etcdctl snapshot save "$SNAPSHOT_FILE" \
+  --endpoints=https://127.0.0.1:2379 \
+  --cacert=/etc/kubernetes/pki/etcd/ca.crt \
+  --cert=/etc/kubernetes/pki/etcd/server.crt \
+  --key=/etc/kubernetes/pki/etcd/server.key
+
+# Output snapshot as base64
+base64 "$SNAPSHOT_FILE"
+
+# Clean up old backups
+ls -t ${BACKUP_DIR}/etcd-snapshot-*.db 2>/dev/null | tail -n +4 | xargs rm -f 2>/dev/null || true
+`
+
+	result, err := sshConn.ExecuteScript(ctx, script)
+	if err != nil {
+		return fmt.Errorf("failed to execute etcd snapshot script: %w", err)
+	}
+	if result.ExitCode != 0 {
+		return fmt.Errorf("etcd snapshot script failed: %s", result.Stderr)
+	}
+
+	// Store snapshot in Secret
+	snapshotSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      backupName,
+			Namespace: "cvo-system",
+			Labels: map[string]string{
+				"app.kubernetes.io/part-of": "capbm",
+				"cvo.capbm.io/backup":       "true",
+				"cvo.capbm.io/backup-type":  "etcd-snapshot",
+			},
+		},
+		Data: map[string][]byte{
+			"snapshot": []byte(result.Stdout),
+			"node":     []byte(node.Name),
+		},
+	}
+
+	if err := e.client.Create(ctx, snapshotSecret); err != nil {
+		if !apierrors.IsAlreadyExists(err) {
+			return fmt.Errorf("failed to create etcd snapshot Secret: %w", err)
+		}
+	}
+
 	return nil
 }
 
 // executeRollbackScript executes a rollback script on a node.
 func (e *BackupRollbackExecutor) executeRollbackScript(ctx context.Context, node *corev1.Node, scriptPath string, timeout time.Duration) error {
-	// In production, this would:
-	// 1. Get SSH connection to node
-	// 2. Read rollback script from release image
-	// 3. Execute script with timeout
-	// For now, this is a placeholder.
-	_ = ctx
-	_ = node
-	_ = scriptPath
-	_ = timeout
+	sshConn, err := e.sshManager.Connect(node.Name, 22, capbmssh.Credentials{})
+	if err != nil {
+		return fmt.Errorf("failed to connect to node %s: %w", node.Name, err)
+	}
+	defer e.sshManager.Close(sshConn)
+
+	// Read rollback script content
+	scriptContent, err := os.ReadFile(scriptPath)
+	if err != nil {
+		return fmt.Errorf("failed to read rollback script %s: %w", scriptPath, err)
+	}
+
+	rollbackCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	result, err := sshConn.ExecuteScript(rollbackCtx, string(scriptContent))
+	if err != nil {
+		return fmt.Errorf("failed to execute rollback script on node %s: %w", node.Name, err)
+	}
+	if result.ExitCode != 0 {
+		return fmt.Errorf("rollback script failed on node %s: %s", node.Name, result.Stderr)
+	}
+
 	return nil
 }
 
@@ -207,13 +368,43 @@ func (e *BackupRollbackExecutor) runHealthCheck(ctx context.Context, cluster *cf
 		retries = 3
 	}
 
-	// In production, this would execute the health check command on nodes
-	// For now, this is a placeholder.
-	_ = ctx
-	_ = cluster
-	_ = timeout
-	_ = retries
-	return nil
+	nodes, err := e.getClusterNodes(ctx, cluster)
+	if err != nil {
+		return err
+	}
+
+	var lastErr error
+	for i := 0; i < retries; i++ {
+		allHealthy := true
+		for _, node := range nodes {
+			sshConn, err := e.sshManager.Connect(node.Name, 22, capbmssh.Credentials{})
+			if err != nil {
+				lastErr = fmt.Errorf("failed to connect to node %s: %w", node.Name, err)
+				allHealthy = false
+				break
+			}
+
+			checkCtx, cancel := context.WithTimeout(ctx, timeout)
+			result, err := sshConn.ExecuteScript(checkCtx, hc.Command)
+			e.sshManager.Close(sshConn)
+			cancel()
+
+			if err != nil || result.ExitCode != 0 {
+				lastErr = fmt.Errorf("health check failed on node %s: %s", node.Name, result.Stderr)
+				allHealthy = false
+				break
+			}
+		}
+
+		if allHealthy {
+			return nil
+		}
+
+		// Wait before retry
+		time.Sleep(10 * time.Second)
+	}
+
+	return fmt.Errorf("health check failed after %d retries: %w", retries, lastErr)
 }
 
 // getComponentUpgradeConfigsWithNames gets all component upgrade configs from release image with their names.

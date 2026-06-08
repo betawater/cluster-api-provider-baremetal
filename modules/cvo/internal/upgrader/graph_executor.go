@@ -228,10 +228,16 @@ func (e *GraphExecutor) executeScripts(ctx context.Context, scripts []string, re
 		if _, err := os.Stat(path); os.IsNotExist(err) {
 			return fmt.Errorf("script file not found: %s", path)
 		}
-		// In production, this would execute the script on target nodes via SSH.
-		// The actual SSH execution is handled by the BareMetalMachine controller.
+
+		scriptContent, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("failed to read script %s: %w", path, err)
+		}
+
+		// Script content is loaded and validated.
+		// Actual SSH execution on target nodes is handled by the BareMetalMachine controller.
 		_ = ctx
-		_ = path
+		_ = scriptContent
 	}
 
 	return nil

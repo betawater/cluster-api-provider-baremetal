@@ -19,6 +19,8 @@ package gateway
 import (
 	"context"
 	"fmt"
+
+	"github.com/BetaWater/cluster-api-provider-baremetal/modules/cvo/pkg/ssh"
 )
 
 // InstallResult holds the result of a Gateway component installation.
@@ -37,11 +39,18 @@ type Installer interface {
 // GatewayAPICRDsInstaller installs Gateway API CRDs.
 type GatewayAPICRDsInstaller struct {
 	version string
+	sshConn *ssh.SSHConnection
 }
 
 // NewGatewayAPICRDsInstaller creates a new Gateway API CRDs installer.
 func NewGatewayAPICRDsInstaller(version string) *GatewayAPICRDsInstaller {
 	return &GatewayAPICRDsInstaller{version: version}
+}
+
+// WithSSHConnection sets the SSH connection for executing install scripts.
+func (i *GatewayAPICRDsInstaller) WithSSHConnection(conn *ssh.SSHConnection) *GatewayAPICRDsInstaller {
+	i.sshConn = conn
+	return i
 }
 
 // Install installs Gateway API CRDs.
@@ -71,7 +80,7 @@ fetch_resource() {
     esac
 }
 
-local manifest=$(mktemp)
+manifest=$(mktemp)
 case "$INSTALL_SOURCE" in
     online)
         kubectl apply -f "$MANIFEST_URL"
@@ -91,9 +100,26 @@ kubectl wait --for=condition=Established crd/httproutes.gateway.networking.k8s.i
 echo "=== Gateway API CRDs installation completed ==="
 `, i.version, manifestURL)
 
-	// Execute script via SSH (caller provides SSH connection)
-	// This is a placeholder - actual execution depends on the caller's SSH setup
-	_ = script
+	// Execute script via SSH if connection is available
+	if i.sshConn != nil {
+		res, err := i.sshConn.ExecuteScript(ctx, script)
+		if err != nil {
+			return &InstallResult{
+				Completed: true,
+				Success:   false,
+				Version:   i.version,
+				Error:     fmt.Sprintf("failed to execute install script: %v", err),
+			}, nil
+		}
+		if res.ExitCode != 0 {
+			return &InstallResult{
+				Completed: true,
+				Success:   false,
+				Version:   i.version,
+				Error:     fmt.Sprintf("install script failed: %s", res.Stderr),
+			}, nil
+		}
+	}
 
 	return &InstallResult{
 		Completed: true,

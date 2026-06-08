@@ -36,6 +36,7 @@ import (
 	cfov1 "github.com/BetaWater/cluster-api-provider-baremetal/modules/cvo/api/v1beta1"
 	"github.com/BetaWater/cluster-api-provider-baremetal/modules/cvo/internal/addon"
 	"github.com/BetaWater/cluster-api-provider-baremetal/modules/cvo/internal/upgrader"
+	"github.com/BetaWater/cluster-api-provider-baremetal/modules/cvo/internal/upgrader/metrics"
 )
 
 type ClusterVersionReconciler struct {
@@ -63,6 +64,12 @@ func (r *ClusterVersionReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 
 	controllerutil.AddFinalizer(cv, cfov1.ClusterVersionFinalizer)
+
+	// Check if upgrade is paused
+	if cv.Spec.Paused {
+		setCVCondition(cv, cfov1.UpgradePaused, metav1.ConditionTrue, cfov1.UpgradePausedReason, "Upgrade is paused")
+		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
+	}
 
 	if err := r.syncUpgradePath(ctx, cv); err != nil {
 		log.Error(err, "Failed to sync UpgradePath")
@@ -128,10 +135,27 @@ func (r *ClusterVersionReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		setCVCondition(cv, cfov1.UpgradeProgressing, metav1.ConditionTrue, "Upgrading", fmt.Sprintf("Upgrading to %s", cv.Spec.DesiredUpdate.Version))
 	}
 
+	// Record upgrade session metrics
+	metrics.UpgradeSessionsTotal.WithLabelValues(cv.Name, "started").Inc()
+	metrics.UpgradeInProgress.WithLabelValues(cv.Name).Set(1)
+
+	startTime := time.Now()
 	if err := r.executeUpgrade(ctx, cv, releaseImage, needsK8SUpgrade); err != nil {
 		setCVCondition(cv, cfov1.UpgradeFailing, metav1.ConditionTrue, cfov1.UpgradeFailedReason, err.Error())
+		metrics.UpgradeErrorsTotal.WithLabelValues(cv.Name, "", "", "upgrade_failed").Inc()
+		metrics.UpgradeInProgress.WithLabelValues(cv.Name).Set(0)
 		return ctrl.Result{RequeueAfter: 60 * time.Second}, nil
 	}
+
+	// Record upgrade duration
+	duration := time.Since(startTime).Seconds()
+	metrics.UpgradeDuration.WithLabelValues(
+		cv.Name,
+		cv.Status.ActualVersion,
+		cv.Spec.DesiredUpdate.Version,
+		"success",
+	).Observe(duration)
+	metrics.UpgradeInProgress.WithLabelValues(cv.Name).Set(0)
 
 	cv.Status.ActualVersion = cv.Spec.DesiredUpdate.Version
 	if len(cv.Status.History) > 0 {

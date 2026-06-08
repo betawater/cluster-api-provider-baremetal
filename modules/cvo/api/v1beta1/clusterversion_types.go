@@ -37,12 +37,15 @@ const (
 	UpgradeUpgradeable clusterv1.ConditionType = "Upgradeable"
 	//nolint:staticcheck // ConditionType deprecated in CAPI v1beta2, will migrate when ready
 	UpgradeRetrieved   clusterv1.ConditionType = "RetrievedUpdates"
+	//nolint:staticcheck // ConditionType deprecated in CAPI v1beta2, will migrate when ready
+	UpgradePaused      clusterv1.ConditionType = "Paused"
 
 	UpgradeAvailableReason   = "AsExpected"
 	UpgradeProgressingReason = "AsExpected"
 	UpgradeFailingReason     = "AsExpected"
 	UpgradeUpgradeableReason = "PreconditionsPassed"
 	UpgradeRetrievedReason   = "AsExpected"
+	UpgradePausedReason      = "UpgradePaused"
 	ValidationFailedReason   = "ValidationFailed"
 	PullFailedReason         = "PullFailed"
 	UpgradeFailedReason      = "UpgradeFailed"
@@ -77,6 +80,11 @@ type ClusterVersionSpec struct {
 	ClusterRef    corev1.ObjectReference `json:"clusterRef"`
 	Channel       string                 `json:"channel,omitempty"`
 	DesiredUpdate *Update       `json:"desiredUpdate,omitempty"`
+
+	// Paused indicates whether the upgrade is paused.
+	// When true, the controller will not proceed with the upgrade.
+	// +optional
+	Paused bool `json:"paused,omitempty"`
 }
 
 // ClusterVersionStatus defines the observed state of ClusterVersion.

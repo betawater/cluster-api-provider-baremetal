@@ -102,6 +102,11 @@ type SelfUpgradeSpec struct {
 	// Components defines which components to upgrade.
 	// +optional
 	Components []SelfUpgradeComponent `json:"components,omitempty"`
+
+	// Paused indicates whether the upgrade is paused.
+	// When true, the controller will not proceed with the upgrade.
+	// +optional
+	Paused bool `json:"paused,omitempty"`
 }
 
 // SelfUpgradeStrategy defines the upgrade strategy.

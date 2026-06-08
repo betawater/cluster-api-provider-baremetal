@@ -23,11 +23,20 @@ import (
 	"time"
 
 	capbmv1 "github.com/BetaWater/cluster-api-provider-baremetal/modules/capbm/api/v1beta1"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // KeepalivedProvider implements the Provider interface for Keepalived.
 type KeepalivedProvider struct {
-	config *capbmv1.KeepalivedConfig
+	config    *capbmv1.KeepalivedConfig
+	k8sClient client.Client
+	namespace string
+	backends  []Backend
+	vip       string
 }
 
 // NewKeepalivedProvider creates a new Keepalived provider.
@@ -50,23 +59,59 @@ func NewKeepalivedProvider(config *capbmv1.KeepalivedConfig) (Provider, error) {
 	if config.AdvertInterval == 0 {
 		config.AdvertInterval = 1
 	}
-	return &KeepalivedProvider{config: config}, nil
+	return &KeepalivedProvider{
+		config:   config,
+		backends: make([]Backend, 0),
+		vip:      config.VirtualIP,
+	}, nil
 }
 
-// RegisterBackend adds a backend server. For Keepalived, this is a no-op since
-// Keepalived manages VIP failover, not backend registration.
+// WithK8sClient sets the Kubernetes client for Keepalived operations.
+func (p *KeepalivedProvider) WithK8sClient(c client.Client, namespace string) *KeepalivedProvider {
+	p.k8sClient = c
+	p.namespace = namespace
+	return p
+}
+
+// RegisterBackend adds a backend server by updating the Keepalived configuration.
 func (p *KeepalivedProvider) RegisterBackend(ctx context.Context, backend Backend) error {
+	// Check if backend already exists
+	for _, b := range p.backends {
+		if b.Name == backend.Name && b.IP == backend.IP {
+			return nil
+		}
+	}
+
+	p.backends = append(p.backends, backend)
+
+	// If Kubernetes client is available, update the Service with VIP annotation
+	if p.k8sClient != nil {
+		if err := p.updateServiceVIP(ctx, backend); err != nil {
+			return fmt.Errorf("failed to update Service VIP: %w", err)
+		}
+	}
+
 	return nil
 }
 
-// UnregisterBackend removes a backend server. For Keepalived, this is a no-op.
+// UnregisterBackend removes a backend server.
 func (p *KeepalivedProvider) UnregisterBackend(ctx context.Context, backend Backend) error {
+	for i, b := range p.backends {
+		if b.Name == backend.Name && b.IP == backend.IP {
+			p.backends = append(p.backends[:i], p.backends[i+1:]...)
+			break
+		}
+	}
+
 	return nil
 }
 
 // GetBackends returns the current list of backend servers.
 func (p *KeepalivedProvider) GetBackends(ctx context.Context) ([]Backend, error) {
-	return nil, nil
+	if p.k8sClient != nil {
+		return p.getBackendsFromServices(ctx)
+	}
+	return p.backends, nil
 }
 
 // HealthCheck checks if a backend is healthy.
@@ -78,4 +123,97 @@ func (p *KeepalivedProvider) HealthCheck(ctx context.Context, backend Backend) (
 	}
 	_ = conn.Close()
 	return true, nil
+}
+
+// updateServiceVIP updates a Kubernetes Service with the Keepalived VIP.
+func (p *KeepalivedProvider) updateServiceVIP(ctx context.Context, backend Backend) error {
+	serviceName := fmt.Sprintf("svc-%s", backend.Name)
+
+	svc := &corev1.Service{}
+	err := p.k8sClient.Get(ctx, types.NamespacedName{
+		Name:      serviceName,
+		Namespace: p.namespace,
+	}, svc)
+
+	if err != nil {
+		// Create new Service with VIP annotation
+		svc = &corev1.Service{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      serviceName,
+				Namespace: p.namespace,
+				Labels: map[string]string{
+					"app.kubernetes.io/part-of": "capbm",
+					"app":                       backend.Name,
+				},
+				Annotations: map[string]string{
+					"metallb.universe.tf/loadBalancerIPs": p.vip,
+					"keepalived.org/vip":                  p.vip,
+				},
+			},
+			Spec: corev1.ServiceSpec{
+				Type: corev1.ServiceTypeLoadBalancer,
+				Ports: []corev1.ServicePort{
+					{
+						Port:       int32(backend.Port),
+						TargetPort: intstr.FromInt(backend.Port),
+						Protocol:   corev1.ProtocolTCP,
+					},
+				},
+				Selector: map[string]string{
+					"app": backend.Name,
+				},
+			},
+		}
+		return p.k8sClient.Create(ctx, svc)
+	}
+
+	// Update existing Service
+	original := svc.DeepCopy()
+	if svc.Annotations == nil {
+		svc.Annotations = make(map[string]string)
+	}
+	svc.Annotations["keepalived.org/vip"] = p.vip
+	svc.Spec.Ports = []corev1.ServicePort{
+		{
+			Port:       int32(backend.Port),
+			TargetPort: intstr.FromInt(backend.Port),
+			Protocol:   corev1.ProtocolTCP,
+		},
+	}
+	svc.Spec.Selector = map[string]string{
+		"app": backend.Name,
+	}
+	return p.k8sClient.Patch(ctx, svc, client.MergeFrom(original))
+}
+
+// getBackendsFromServices retrieves backends from Services with VIP annotations.
+func (p *KeepalivedProvider) getBackendsFromServices(ctx context.Context) ([]Backend, error) {
+	svcList := &corev1.ServiceList{}
+	if err := p.k8sClient.List(ctx, svcList, client.InNamespace(p.namespace), client.MatchingLabels{
+		"app.kubernetes.io/part-of": "capbm",
+	}); err != nil {
+		return nil, err
+	}
+
+	var backends []Backend
+	for _, svc := range svcList.Items {
+		if svc.Spec.Type != corev1.ServiceTypeLoadBalancer {
+			continue
+		}
+
+		vip := svc.Annotations["keepalived.org/vip"]
+		if vip == "" {
+			continue
+		}
+
+		for _, port := range svc.Spec.Ports {
+			backends = append(backends, Backend{
+				Name: svc.Name,
+				IP:   vip,
+				Port: int(port.Port),
+			})
+		}
+	}
+
+	return backends, nil
 }

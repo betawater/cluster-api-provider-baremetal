@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+
+	"github.com/BetaWater/cluster-api-provider-baremetal/modules/cvo/pkg/ssh"
 )
 
 // LoadResult holds the result of image loading.
@@ -36,6 +38,7 @@ type LoadResult struct {
 type ImageLoader struct {
 	releaseServer string
 	namespace     string
+	sshConn       *ssh.SSHConnection
 }
 
 // NewImageLoader creates a new image loader.
@@ -47,6 +50,12 @@ func NewImageLoader(releaseServer, namespace string) *ImageLoader {
 		releaseServer: strings.TrimRight(releaseServer, "/"),
 		namespace:     namespace,
 	}
+}
+
+// WithSSHConnection sets the SSH connection for executing load scripts.
+func (l *ImageLoader) WithSSHConnection(conn *ssh.SSHConnection) *ImageLoader {
+	l.sshConn = conn
+	return l
 }
 
 // LoadComponentImages loads all images for a component.
@@ -187,9 +196,20 @@ rm -f "$DEST"
 echo "Successfully imported: $(basename $DEST)"
 `, tarURL, dest, l.namespace)
 
-		// Execute script via SSH (caller provides SSH connection)
-		// This is a placeholder - actual execution depends on the caller's SSH setup
-		_ = script
+		// Execute script via SSH if connection is available
+		if l.sshConn != nil {
+			res, err := l.sshConn.ExecuteScript(ctx, script)
+			if err != nil {
+				result.Failed = append(result.Failed, imageTar)
+				result.Error = fmt.Sprintf("failed to load %s: %v", imageTar, err)
+				continue
+			}
+			if res.ExitCode != 0 {
+				result.Failed = append(result.Failed, imageTar)
+				result.Error = fmt.Sprintf("failed to load %s: %s", imageTar, res.Stderr)
+				continue
+			}
+		}
 
 		result.Loaded = append(result.Loaded, imageTar)
 	}

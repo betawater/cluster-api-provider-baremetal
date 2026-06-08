@@ -241,6 +241,14 @@ type MetalLBConfig struct {
 	// LoadBalancerIP is the specific IP to assign.
 	// +optional
 	LoadBalancerIP string `json:"loadBalancerIP,omitempty"`
+
+	// AddressPool is the MetalLB address pool name (alias for IPAddressPool).
+	// +optional
+	AddressPool string `json:"addressPool,omitempty"`
+
+	// Addresses is the list of IP address ranges for the pool.
+	// +optional
+	Addresses []string `json:"addresses,omitempty"`
 }
 
 // BareMetalClusterInitializationStatus provides observations of the BareMetalCluster initialization process.
