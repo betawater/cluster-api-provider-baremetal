@@ -18,7 +18,7 @@ spec:
       serviceAccountName: cvo-controller-manager
       containers:
       - command:
-        - /cvo-manager
+        - /manager
         args:
         - --leader-elect
         image: ghcr.io/betawater/cvo-manager:latest

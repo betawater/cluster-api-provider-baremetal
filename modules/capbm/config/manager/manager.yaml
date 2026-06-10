@@ -20,7 +20,7 @@ spec:
       - name: manager
         image: ghcr.io/betawater/capbm-manager:latest
         command:
-        - /capbm-manager
+        - /manager
         args:
         - --leader-elect
         ports:
