@@ -1,341 +1,273 @@
-# GHCR 镜像拉取认证指南
+# GHCR 镜像拉取认证问题排查指南
 
-## 问题描述
+## 问题现象
 
-尝试从 GitHub Container Registry (GHCR) 拉取镜像时出现认证错误：
+Pod 处于 `ImagePullBackOff` 状态，kubelet 无法拉取 GHCR 镜像：
 
-```bash
-$ docker pull ghcr.io/betawater/capbm/release:v0.8.1
-Error response from daemon: error from registry: unauthorized
-unauthorized
+```
+Events:
+  Type     Reason     Age   From     Message
+  ----     ------     ----  ----     -------
+  Normal   Scheduled  51s   default-scheduler  Successfully assigned capbm-system/capbm-controller-manager-xxx to node-0004
+  Normal   Pulling    29s   kubelet  Pulling image "ghcr.io/betawater/capbm-manager:v0.8.1"
+  Warning  Failed     26s   kubelet  Failed to pull image "ghcr.io/betawater/capbm-manager:v0.8.1": 
+           failed to authorize: failed to fetch anonymous token: 
+           unexpected status from GET request to https://ghcr.io/token: 401 Unauthorized
+  Warning  Failed     26s   kubelet  Error: ErrImagePull
+  Normal   BackOff    14s   kubelet  Back-off pulling image "ghcr.io/betawater/capbm-manager:v0.8.1"
+  Warning  Failed     14s   kubelet  Error: ImagePullBackOff
 ```
 
-**原因**：GHCR 默认要求认证才能拉取镜像，即使是公开镜像也可能需要基本的 GitHub 认证。
+但是 `docker pull` 可以成功拉取：
 
----
+```bash
+$ docker pull ghcr.io/betawater/capbm-manager:v0.8.1
+v0.8.1: Pulling from betawater/capbm-manager
+Digest: sha256:9a9656057ec06c31347a1fb50db9b526ca12472dfc0e9f1a8e5422b4243135e0
+Status: Image is up to date for ghcr.io/betawater/capbm-manager:v0.8.1
+```
+
+## 问题根因
+
+**kubelet 不会使用 Docker CLI 的认证信息**。
+
+- `docker pull` 使用 `~/.docker/config.json` 中的认证信息
+- `kubelet`（使用 containerd）有独立的认证机制
+- 即使 Docker 已登录 GHCR，kubelet 仍然无法拉取私有镜像
 
 ## 解决方案
 
-### 方案一：使用 GitHub Personal Access Token (PAT) 认证
+### 方案 A：创建 imagePullSecret（推荐）
 
-#### 1. 创建 Personal Access Token
+适用于生产环境，镜像保持私有。
+
+#### 步骤 1：创建 GitHub Personal Access Token
 
 1. 访问 https://github.com/settings/tokens
-2. 点击 **Generate new token** → **Generate new token (classic)**
-3. 填写 Token 描述（例如：`GHCR Image Pull`）
+2. 点击 "Generate new token" -> "Generate new token (classic)"
+3. 设置 Token 名称（如 `ghcr-image-pull`）
 4. 勾选以下权限：
-   - ✅ `read:packages` - 下载容器镜像和其他包
-   - ✅ `repo` - （如果是私有镜像仓库需要此权限）
-5. 点击 **Generate token**
-6. **立即复制 Token**（离开页面后将无法再次查看）
+   - `read:packages` - 读取包
+   - `repo` - （如果镜像在私有仓库中）
+5. 点击 "Generate token" 并复制 token 值
 
-#### 2. 登录 GHCR
+#### 步骤 2：在 Kubernetes 集群中创建 Secret
 
 ```bash
-# 使用 GitHub 用户名和 Token 登录
-echo <YOUR_GITHUB_TOKEN> | docker login ghcr.io -u <YOUR_GITHUB_USERNAME> --password-stdin
+kubectl create secret docker-registry ghcr-secret \
+  --docker-server=ghcr.io \
+  --docker-username=<YOUR_GITHUB_USERNAME> \
+  --docker-password=<YOUR_GITHUB_TOKEN> \
+  --docker-email=<YOUR_EMAIL> \
+  -n capbm-system
 ```
 
-**示例：**
+**参数说明**：
+| 参数 | 说明 | 示例 |
+|------|------|------|
+| `--docker-server` | 镜像仓库地址 | `ghcr.io` |
+| `--docker-username` | GitHub 用户名 | `betawater` |
+| `--docker-password` | GitHub Personal Access Token | `ghp_xxxx...` |
+| `--docker-email` | 邮箱地址（可选） | `user@example.com` |
+| `-n` | 命名空间 | `capbm-system` |
+
+#### 步骤 3：将 Secret 绑定到 ServiceAccount
+
 ```bash
-echo ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx | docker login ghcr.io -u myuser --password-stdin
-Login Succeeded
+kubectl patch serviceaccount capbm-controller-manager \
+  -n capbm-system \
+  -p '{"imagePullSecrets": [{"name": "ghcr-secret"}]}'
 ```
 
-#### 3. 拉取镜像
+#### 步骤 4：验证 Secret 已绑定
 
 ```bash
-docker pull ghcr.io/betawater/capbm/release:v0.8.1
+kubectl get serviceaccount capbm-controller-manager -n capbm-system -o yaml
 ```
 
-#### 4. 验证镜像
+预期输出应包含：
+```yaml
+imagePullSecrets:
+- name: ghcr-secret
+```
+
+#### 步骤 5：重启 Pod
 
 ```bash
-docker images | grep capbm/release
+kubectl rollout restart deployment/capbm-controller-manager -n capbm-system
+```
+
+#### 步骤 6：验证 Pod 状态
+
+```bash
+kubectl get pods -n capbm-system
+kubectl describe pod -n capbm-system -l control-plane=capbm-controller-manager
+```
+
+预期输出应包含：
+```
+Normal  Pulling    kubelet  Pulling image "ghcr.io/betawater/capbm-manager:v0.8.1"
+Normal  Pulled     kubelet  Successfully pulled image "ghcr.io/betawater/capbm-manager:v0.8.1"
+Normal  Created    kubelet  Created container manager
+Normal  Started    kubelet  Started container manager
 ```
 
 ---
 
-### 方案二：使用 GitHub CLI 认证
+### 方案 B：将镜像设为公开
 
-如果您已安装 [GitHub CLI](https://cli.github.com/)，可以使用它进行认证：
+适用于开源项目，简化部署流程。
+
+#### 步骤 1：修改镜像可见性
+
+1. 访问 GitHub Packages 页面：
+   - CAPBM: https://github.com/orgs/betawater/packages/container/capbm-manager
+   - CVO: https://github.com/orgs/betawater/packages/container/cvo-manager
+   - Release: https://github.com/orgs/betawater/packages/container/capbm/release
+
+2. 点击 "Package settings"
+
+3. 在 "Danger zone" 区域，点击 "Change visibility"
+
+4. 选择 "Public" 并确认
+
+#### 步骤 2：验证公开访问
 
 ```bash
-# 登录 GitHub
-gh auth login
+# 在未登录 Docker 的情况下尝试拉取
+docker logout ghcr.io
+docker pull ghcr.io/betawater/capbm-manager:v0.8.1
+```
 
-# 使用 gh 的 token 登录 GHCR
-gh auth token | docker login ghcr.io -u <YOUR_GITHUB_USERNAME> --password-stdin
+如果拉取成功，说明镜像已公开。
+
+#### 步骤 3：重启 Pod
+
+```bash
+kubectl rollout restart deployment/capbm-controller-manager -n capbm-system
+kubectl rollout restart deployment/cvo-controller-manager -n cvo-system
 ```
 
 ---
 
-### 方案三：使用 Docker Credential Helper
+### 方案 C：配置 containerd 认证（不推荐）
 
-#### Linux
+适用于特殊场景，但管理复杂。
+
+#### 步骤 1：在每个节点上创建认证配置
 
 ```bash
-# 安装 ghcr-docker-credential-helper
-curl -sSL https://github.com/containerd/nerdctl/releases/download/v1.7.0/nerdctl-1.7.0-linux-amd64.tar.gz | tar xz
-sudo mv nerdctl /usr/local/bin/
+# 在每个 Kubernetes 节点上执行
+sudo mkdir -p /etc/containerd/certs.d/ghcr.io/betawater
 
-# 配置 Docker 使用 credential helper
-mkdir -p ~/.docker
-cat > ~/.docker/config.json <<EOF
-{
-  "credHelpers": {
-    "ghcr.io": "ecr-login"
-  }
-}
+cat << EOF | sudo tee /etc/containerd/certs.d/ghcr.io/betawater/hosts.toml
+[host."https://ghcr.io"]
+  capabilities = ["pull", "resolve"]
+  [host."https://ghcr.io".header]
+    Authorization = "Bearer <YOUR_GITHUB_TOKEN>"
 EOF
 ```
 
-#### macOS
+#### 步骤 2：重启 containerd
 
 ```bash
-# 使用 Homebrew 安装
-brew install docker-credential-helper
+sudo systemctl restart containerd
+```
 
-# 配置 Docker
-cat > ~/.docker/config.json <<EOF
-{
-  "credHelpers": {
-    "ghcr.io": "osxkeychain"
-  }
-}
-EOF
+#### 步骤 3：重启 Pod
+
+```bash
+kubectl rollout restart deployment/capbm-controller-manager -n capbm-system
 ```
 
 ---
 
-## CI/CD 环境配置
+## 方案对比
 
-### GitHub Actions
+| 方案 | 优点 | 缺点 | 适用场景 |
+|------|------|------|---------|
+| **A: imagePullSecret** | 安全、标准做法 | 需要管理 Secret | 生产环境、私有镜像 |
+| **B: 公开镜像** | 部署简单、无需认证 | 镜像公开可见 | 开源项目 |
+| **C: containerd 认证** | 无需修改 K8s 配置 | 管理复杂、每个节点都要配置 | 特殊场景 |
 
-在 GitHub Actions 工作流中添加登录步骤：
+## 推荐方案
 
-```yaml
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Login to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Pull release image
-        run: docker pull ghcr.io/betawater/capbm/release:v0.8.1
-
-      - name: Deploy
-        run: |
-          # 使用镜像进行部署...
-```
-
-### GitLab CI
-
-```yaml
-deploy:
-  image: docker:latest
-  services:
-    - docker:dind
-  script:
-    - echo $GHCR_TOKEN | docker login ghcr.io -u $GHCR_USERNAME --password-stdin
-    - docker pull ghcr.io/betawater/capbm/release:v0.8.1
-    # 部署步骤...
-  variables:
-    GHCR_TOKEN:
-      value: $GHCR_PERSONAL_ACCESS_TOKEN
-      masked: true
-    GHCR_USERNAME:
-      value: $GHCR_USER
-```
-
-### Jenkins
-
-```groovy
-pipeline {
-    agent any
-    stages {
-        stage('Pull Image') {
-            steps {
-                withCredentials([usernamePassword(credentialsId: 'ghcr-credentials', usernameVariable: 'USERNAME', passwordVariable: 'PASSWORD')]) {
-                    sh 'echo $PASSWORD | docker login ghcr.io -u $USERNAME --password-stdin'
-                    sh 'docker pull ghcr.io/betawater/capbm/release:v0.8.1'
-                }
-            }
-        }
-    }
-}
-```
-
----
-
-## 自行构建镜像
-
-如果您无法访问 GHCR 上的镜像，可以自行构建：
-
-### 1. 克隆仓库
-
-```bash
-git clone https://github.com/betawater/cluster-api-provider-baremetal.git
-cd cluster-api-provider-baremetal
-```
-
-### 2. 构建镜像
-
-```bash
-# 设置镜像标签
-export RELEASE_VERSION=v0.8.1
-export REGISTRY=your-registry.example.com
-
-# 构建 release image
-make docker-build-release RELEASE_IMG=${REGISTRY}/capbm/release:${RELEASE_VERSION}
-```
-
-### 3. 推送到自己的镜像仓库
-
-```bash
-docker push ${REGISTRY}/capbm/release:${RELEASE_VERSION}
-```
-
-### 4. 使用自定义镜像
-
-在 ReleaseImage CR 中指定您的镜像地址：
-
-```yaml
-apiVersion: cvo.capbm.io/v1beta1
-kind: ReleaseImage
-metadata:
-  name: v0-8-1
-spec:
-  version: v0.8.1
-  image: your-registry.example.com/capbm/release:v0.8.1
-  # ... 其他配置
-```
-
----
-
-## 离线环境镜像传输
-
-### 1. 在有网络的环境导出镜像
-
-```bash
-docker save ghcr.io/betawater/capbm/release:v0.8.1 -o capbm-release-v0.8.1.tar
-```
-
-### 2. 传输到离线环境
-
-```bash
-# 使用 SCP
-scp capbm-release-v0.8.1.tar user@offline-host:/tmp/
-
-# 或使用 USB 驱动器
-```
-
-### 3. 在离线环境导入镜像
-
-```bash
-docker load -i capbm-release-v0.8.1.tar
-```
-
-### 4. 推送到离线镜像仓库（可选）
-
-```bash
-docker tag ghcr.io/betawater/capbm/release:v0.8.1 offline-registry.example.com/capbm/release:v0.8.1
-docker push offline-registry.example.com/capbm/release:v0.8.1
-```
-
----
+- **生产环境**：方案 A（imagePullSecret）
+- **开源项目**：方案 B（公开镜像）
+- **开发测试**：方案 B 或 A
 
 ## 常见问题
 
-### Q1: Token 权限不足
-
-**错误信息：**
-```
-Error response from daemon: unauthorized: authentication required
-```
-
-**解决方案：**
-- 确保 Token 包含 `read:packages` 权限
-- 如果是私有镜像，还需要 `repo` 权限
-- 重新生成 Token 并检查权限设置
-
-### Q2: Token 已过期
-
-**错误信息：**
-```
-Error response from daemon: unauthorized: token has expired
-```
-
-**解决方案：**
-```bash
-# 重新登录
-docker logout ghcr.io
-echo <NEW_TOKEN> | docker login ghcr.io -u <USERNAME> --password-stdin
-```
-
-### Q3: 用户名错误
-
-**错误信息：**
-```
-Error response from daemon: unauthorized: incorrect username or password
-```
-
-**解决方案：**
-- 确保使用 GitHub 用户名（不是邮箱）
-- 检查 Token 是否正确复制（无多余空格）
-
-### Q4: Docker 版本过旧
-
-**错误信息：**
-```
-Error response from daemon: Get https://ghcr.io/v2/: unauthorized
-```
-
-**解决方案：**
-```bash
-# 升级 Docker 到最新版本
-sudo apt-get update
-sudo apt-get install docker-ce docker-ce-cli containerd.io
-```
-
-### Q5: 网络代理问题
-
-**错误信息：**
-```
-Error response from daemon: Get https://ghcr.io/v2/: proxyconnect tcp: dial tcp: lookup proxy.example.com: no such host
-```
-
-**解决方案：**
-
-配置 Docker 代理：
+### Q1: 如何检查 Secret 是否已正确创建？
 
 ```bash
-# 创建或编辑 Docker 代理配置
-sudo mkdir -p /etc/systemd/system/docker.service.d
-cat > /etc/systemd/system/docker.service.d/http-proxy.conf <<EOF
-[Service]
-Environment="HTTP_PROXY=http://proxy.example.com:8080"
-Environment="HTTPS_PROXY=http://proxy.example.com:8080"
-Environment="NO_PROXY=localhost,127.0.0.1,.example.com"
-EOF
+kubectl get secret ghcr-secret -n capbm-system -o yaml
+```
 
-# 重启 Docker
-sudo systemctl daemon-reload
-sudo systemctl restart docker
+### Q2: 如何检查 ServiceAccount 是否已绑定 Secret？
+
+```bash
+kubectl get serviceaccount capbm-controller-manager -n capbm-system -o jsonpath='{.imagePullSecrets}'
+```
+
+### Q3: 多个命名空间都需要拉取镜像怎么办？
+
+在每个命名空间中创建 Secret，或使用 `--all-namespaces` 标志：
+
+```bash
+kubectl create secret docker-registry ghcr-secret \
+  --docker-server=ghcr.io \
+  --docker-username=<USERNAME> \
+  --docker-password=<TOKEN> \
+  -n capbm-system
+
+kubectl create secret docker-registry ghcr-secret \
+  --docker-server=ghcr.io \
+  --docker-username=<USERNAME> \
+  --docker-password=<TOKEN> \
+  -n cvo-system
+```
+
+### Q4: Token 过期了怎么办？
+
+1. 删除旧 Secret：
+   ```bash
+   kubectl delete secret ghcr-secret -n capbm-system
+   ```
+
+2. 创建新 Secret（使用新 Token）：
+   ```bash
+   kubectl create secret docker-registry ghcr-secret \
+     --docker-server=ghcr.io \
+     --docker-username=<USERNAME> \
+     --docker-password=<NEW_TOKEN> \
+     -n capbm-system
+   ```
+
+3. 重启 Pod：
+   ```bash
+   kubectl rollout restart deployment/capbm-controller-manager -n capbm-system
+   ```
+
+### Q5: 如何在 GitHub Actions 中自动创建 imagePullSecret？
+
+可以在部署 workflow 中添加：
+
+```yaml
+- name: Create imagePullSecret
+  run: |
+    kubectl create secret docker-registry ghcr-secret \
+      --docker-server=ghcr.io \
+      --docker-username=${{ github.actor }} \
+      --docker-password=${{ secrets.GITHUB_TOKEN }} \
+      -n capbm-system \
+      --dry-run=client -o yaml | kubectl apply -f -
 ```
 
 ---
 
 ## 参考链接
 
-| 资源 | 链接 |
-|------|------|
-| GitHub Packages 文档 | https://docs.github.com/en/packages |
-| GHCR 认证指南 | https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry |
-| Personal Access Token | https://github.com/settings/tokens |
-| Docker 登录文档 | https://docs.docker.com/engine/reference/commandline/login/ |
+- [GitHub Packages 文档](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-container-registry)
+- [Kubernetes imagePullSecrets 文档](https://kubernetes.io/docs/tasks/configure-pod-container/pull-image-private-registry/)
+- [containerd 认证配置](https://github.com/containerd/containerd/blob/main/docs/hosts.md)
