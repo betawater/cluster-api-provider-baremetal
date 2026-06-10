@@ -28,7 +28,7 @@ unauthorized
    - ✅ `repo` - （如果是私有镜像仓库需要此权限）
 5. 点击 **Generate token**
 6. **立即复制 Token**（离开页面后将无法再次查看）
-   > - key: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
+
 #### 2. 登录 GHCR
 
 ```bash
