@@ -18,7 +18,7 @@ spec:
       serviceAccountName: capbm-controller-manager
       containers:
       - name: manager
-        image: ghcr.io/betawater/capbm-manager:v0.1.0
+        image: ghcr.io/betawater/capbm-manager:latest
         command:
         - /capbm-manager
         args:

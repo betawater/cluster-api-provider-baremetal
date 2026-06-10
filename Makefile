@@ -13,8 +13,8 @@
 # limitations under the License.
 
 # Image URLs to use all building/pushing image targets
-CAPBM_IMG ?= ghcr.io/betawater/capbm-manager:v0.1.0
-CVO_IMG ?= ghcr.io/betawater/cvo-manager:v0.1.0
+CAPBM_IMG ?= ghcr.io/betawater/capbm-manager:v0.8.1
+CVO_IMG ?= ghcr.io/betawater/cvo-manager:v0.8.1
 RELEASE_IMG ?= ghcr.io/betawater/capbm/release:v1.31.1
 
 # ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
