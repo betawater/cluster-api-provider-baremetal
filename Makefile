@@ -12,10 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Get version from git tag, fallback to 'latest' if not on a tag
+VERSION ?= $(shell git describe --tags --abbrev=0 2>/dev/null || echo latest)
+# Strip leading 'v' if present
+VERSION := $(patsubst v%,%,$(VERSION))
+
 # Image URLs to use all building/pushing image targets
-CAPBM_IMG ?= ghcr.io/betawater/capbm-manager:v0.8.1
-CVO_IMG ?= ghcr.io/betawater/cvo-manager:v0.8.1
-RELEASE_IMG ?= ghcr.io/betawater/capbm/release:v1.31.1
+CAPBM_IMG ?= ghcr.io/betawater/capbm-manager:$(VERSION)
+CVO_IMG ?= ghcr.io/betawater/cvo-manager:$(VERSION)
+RELEASE_IMG ?= ghcr.io/betawater/capbm/release:$(VERSION)
 
 # ENVTEST_K8S_VERSION refers to the version of kubebuilder assets to be downloaded by envtest binary.
 ENVTEST_K8S_VERSION = 1.31.0
@@ -103,6 +108,12 @@ docker-push-capbm: ## Push CAPBM docker image.
 docker-push-cvo: ## Push CVO docker image.
 	docker push ${CVO_IMG}
 
+.PHONY: docker-build-push-capbm
+docker-build-push-capbm: docker-build-capbm docker-push-capbm ## Build and push CAPBM docker image.
+
+.PHONY: docker-build-push-cvo
+docker-build-push-cvo: docker-build-cvo docker-push-cvo ## Build and push CVO docker image.
+
 ##@ Deployment
 
 .PHONY: install-capbm
@@ -147,12 +158,12 @@ deploy-clusterclass: manifests kustomize ## Deploy ClusterClass templates.
 
 .PHONY: release-capbm
 release-capbm: manifests kustomize ## Generate CAPBM release manifests.
-	cd modules/capbm/config/manager && $(KUSTOMIZE) edit set image controller=${CAPBM_IMG}
+	cd modules/capbm/config/manager && $(KUSTOMIZE) edit set image ghcr.io/betawater/capbm-manager=${CAPBM_IMG}
 	$(KUSTOMIZE) build modules/capbm/config > infrastructure-components.yaml
 
 .PHONY: release-cvo
 release-cvo: manifests kustomize ## Generate CVO release manifests.
-	cd modules/cvo/config/manager && $(KUSTOMIZE) edit set image controller=${CVO_IMG}
+	cd modules/cvo/config/manager && $(KUSTOMIZE) edit set image ghcr.io/betawater/cvo-manager=${CVO_IMG}
 	$(KUSTOMIZE) build modules/cvo/config > cvo-components.yaml
 
 .PHONY: release-manifests
