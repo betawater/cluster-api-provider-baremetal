@@ -126,7 +126,8 @@ clusterctl version: &version.Info{Major:"1", Minor:"13", GitVersion:"v1.13.0", .
 
 ### 2.1 使用 clusterctl 安装（推荐）
 
-在管理集群上执行：
+> **注意**: `baremetal` provider 尚未发布到 CAPI 官方仓库。
+> 如果你已配置本地 Provider 源（见 [第六章](#六配置本地-provider-源)），可以使用以下命令：
 
 ```bash
 clusterctl init \
@@ -135,6 +136,8 @@ clusterctl init \
   --control-plane kubeadm \
   --infrastructure baremetal
 ```
+
+如果未配置本地源，请使用 **2.2 手动部署** 方式。
 
 ### 2.2 验证安装
 
@@ -160,11 +163,11 @@ capi-kubeadm-bootstrap-controller-xxxxx-xxxxx         1/1     Running
 capi-kubeadm-control-plane-controller-xxxxx-xxxxx     1/1     Running
 ```
 
-### 2.3 不使用 clusterctl 安装（高级/离线环境）
+### 2.2 手动部署（高级/离线环境）
 
 对于离线环境或需要完全控制的场景，可以手动安装所有组件。
 
-#### 2.3.1 安装 CAPI 核心组件
+#### 2.2.1 安装 CAPI 核心组件
 
 ```bash
 # 下载 CAPI 核心 CRDs 和 Controller
@@ -177,19 +180,19 @@ kubectl apply -f https://github.com/kubernetes-sigs/cluster-api/releases/downloa
 kubectl apply -f https://github.com/kubernetes-sigs/cluster-api/releases/download/v1.13.0/control-plane-kubeadm-components.yaml
 ```
 
-#### 2.3.2 安装 CAPBM Provider
+#### 2.2.2 安装 CAPBM Provider
 
 ```bash
-kubectl apply -k modules/capbm/config/default/
+kubectl apply -k modules/capbm/config/
 ```
 
-#### 2.3.3 安装 CVO (Cluster Version Operator)
+#### 2.2.3 安装 CVO (Cluster Version Operator)
 
 ```bash
-kubectl apply -k modules/cvo/config/default/
+kubectl apply -k modules/cvo/config/
 ```
 
-#### 2.3.4 离线环境安装
+#### 2.2.4 离线环境安装
 
 对于完全离线的环境：
 
@@ -219,8 +222,69 @@ cd /tmp/capi-offline
 kubectl apply -f cluster-api-components.yaml
 kubectl apply -f bootstrap-kubeadm-components.yaml
 kubectl apply -f control-plane-kubeadm-components.yaml
-kubectl apply -k /path/to/capbm/config/default/
-kubectl apply -k /path/to/cvo/config/default/
+kubectl apply -k /path/to/capbm/config/
+kubectl apply -k /path/to/cvo/config/
+```
+
+---
+
+## 二、配置 GHCR 镜像拉取认证
+
+> **重要**: 如果 Pod 出现 `ImagePullBackOff` 错误，说明 kubelet 无法拉取 GHCR 私有镜像。
+> 即使 `docker pull` 成功，kubelet 也不会使用 Docker CLI 的认证信息。
+
+### 2.1 创建 GitHub Personal Access Token
+
+1. 访问 https://github.com/settings/tokens
+2. 点击 "Generate new token" → "Generate new token (classic)"
+3. 勾选权限：
+   - ✅ `read:packages`
+4. 点击 "Generate token" 并**立即复制 token 值**（只显示一次）
+
+### 2.2 在 Kubernetes 集群中创建 Secret
+
+```bash
+kubectl create secret docker-registry ghcr-secret \
+  --docker-server=ghcr.io \
+  --docker-username=<YOUR_GITHUB_USERNAME> \
+  --docker-password=<YOUR_GITHUB_TOKEN> \
+  --docker-email=<YOUR_EMAIL> \
+  -n capbm-system
+
+kubectl create secret docker-registry ghcr-secret \
+  --docker-server=ghcr.io \
+  --docker-username=<YOUR_GITHUB_USERNAME> \
+  --docker-password=<YOUR_GITHUB_TOKEN> \
+  --docker-email=<YOUR_EMAIL> \
+  -n cvo-system
+```
+
+### 2.3 将 Secret 绑定到 ServiceAccount
+
+```bash
+kubectl patch serviceaccount capbm-controller-manager \
+  -n capbm-system \
+  -p '{"imagePullSecrets": [{"name": "ghcr-secret"}]}'
+
+kubectl patch serviceaccount cvo-controller-manager \
+  -n cvo-system \
+  -p '{"imagePullSecrets": [{"name": "ghcr-secret"}]}'
+```
+
+### 2.4 验证
+
+```bash
+# 检查 ServiceAccount 是否已绑定 Secret
+kubectl get serviceaccount capbm-controller-manager -n capbm-system -o yaml
+# 预期输出应包含: imagePullSecrets: - name: ghcr-secret
+
+# 重启 Pod
+kubectl rollout restart deployment/capbm-controller-manager -n capbm-system
+kubectl rollout restart deployment/cvo-controller-manager -n cvo-system
+
+# 检查 Pod 状态
+kubectl get pods -n capbm-system
+kubectl get pods -n cvo-system
 ```
 
 ---
@@ -230,8 +294,10 @@ kubectl apply -k /path/to/cvo/config/default/
 ### 3.1 应用 ClusterClass 及相关模板
 
 ```bash
-kubectl apply -f config/clusterclass/
+kubectl apply -k modules/capbm/config/clusterclass/
 ```
+
+> **注意**: 路径是 `modules/capbm/config/clusterclass/`，不是 `config/clusterclass/`。
 
 ### 3.2 验证部署
 
@@ -301,7 +367,50 @@ kubectl get baremetalhostinventory single-node-hosts -n cluster-single-node -o y
 
 ## 五、创建单节点集群
 
-### 5.1 创建集群配置
+### 5.1 使用 clusterctl generate 生成集群配置（推荐）
+
+`clusterctl generate` 会自动处理模板变量替换，这是 CAPI 官方推荐的做法。
+
+```bash
+clusterctl generate cluster single-node-cluster \
+  --from templates/clusterclass/baremetal-clusterclass-v0.1.0.yaml \
+  --variable CLUSTER_NAME=single-node-cluster \
+  --variable NAMESPACE=default \
+  --variable KUBERNETES_VERSION=v1.31.0 \
+  --variable CONTROL_PLANE_MACHINE_COUNT=1 \
+  --variable WORKER_MACHINE_COUNT=0 \
+  --variable CONTROL_PLANE_ENDPOINT_HOST=192.168.1.101 \
+  --variable CONTROL_PLANE_ENDPOINT_PORT=6443 \
+  --variable SSH_CREDENTIALS_SECRET=single-node-credentials \
+  --variable SSH_USERNAME=root \
+  --variable SSH_PASSWORD=<your-password> \
+  > single-node-cluster.yaml
+```
+
+**变量说明**：
+
+| 变量 | 说明 | 示例值 |
+|------|------|--------|
+| `CLUSTER_NAME` | 集群名称 | `single-node-cluster` |
+| `NAMESPACE` | 命名空间 | `default` |
+| `KUBERNETES_VERSION` | Kubernetes 版本 | `v1.31.0` |
+| `CONTROL_PLANE_MACHINE_COUNT` | 控制面节点数（单节点为 1） | `1` |
+| `WORKER_MACHINE_COUNT` | Worker 节点数（单节点为 0） | `0` |
+| `CONTROL_PLANE_ENDPOINT_HOST` | API Server 地址（节点 IP） | `192.168.1.101` |
+| `CONTROL_PLANE_ENDPOINT_PORT` | API Server 端口 | `6443` |
+| `SSH_CREDENTIALS_SECRET` | SSH 凭据 Secret 名称 | `single-node-credentials` |
+| `SSH_USERNAME` | SSH 用户名 | `root` |
+| `SSH_PASSWORD` | SSH 密码 | `<your-password>` |
+
+生成后，检查生成的配置：
+
+```bash
+cat single-node-cluster.yaml
+```
+
+### 5.2 手动编写集群配置（备选）
+
+如果不想使用 `clusterctl generate`，可以直接创建配置文件：
 
 创建 `single-node-cluster.yaml`:
 
@@ -346,13 +455,13 @@ spec:
         version: "3.27.0"
 ```
 
-### 5.2 应用集群配置
+### 5.3 应用集群配置
 
 ```bash
-kubectl apply -f single-node-cluster.yaml -n cluster-single-node
+kubectl apply -f single-node-cluster.yaml
 ```
 
-### 5.3 监控集群创建过程
+### 5.4 监控集群创建过程
 
 ```bash
 # 查看集群状态
@@ -633,6 +742,11 @@ kubectl --kubeconfig workload-kubeconfig run -it dns-test --image=busybox:1.28 -
 | Pod 无法调度 | 控制面污点未移除 | 执行 taint nodes 命令 |
 | 镜像拉取失败 | 网络或认证问题 | 检查私有仓库配置 |
 | etcd 启动失败 | 磁盘空间不足 | 清理磁盘空间 |
+| **ImagePullBackOff** | kubelet 无法拉取 GHCR 私有镜像 | 创建 imagePullSecret 并绑定到 ServiceAccount（见第二章） |
+| **容器启动失败: /capbm-manager not found** | manager.yaml 中 command 路径与 Dockerfile 不匹配 | 确保 command 为 `/manager`（已修复） |
+| **namespace "capbm-system" not found** | 部署时 namespace 资源未创建 | 确保 `modules/capbm/config/kustomization.yaml` 包含 `namespace.yaml` |
+| **clusterctl init 报错 "release not found"** | baremetal provider 未发布到官方仓库 | 使用 `make deploy-capbm` 或配置本地 Provider 源 |
+| **clusterctl generate 变量未替换** | 变量名不匹配或 clusterctl 版本过低 | 检查变量名，确保 clusterctl >= v1.13 |
 
 ---
 
@@ -640,7 +754,9 @@ kubectl --kubeconfig workload-kubeconfig run -it dns-test --image=busybox:1.28 -
 
 - [ ] 管理集群 Kubernetes v1.32+ 已就绪
 - [ ] clusterctl v1.13+ 已安装
+- [ ] GHCR imagePullSecret 已创建并绑定到 ServiceAccount
 - [ ] CAPBM Provider 已安装并运行
+- [ ] CVO Provider 已安装并运行
 - [ ] ClusterClass 模板已部署
 - [ ] 目标机器 OS 符合要求 (Ubuntu 20.04+/CentOS 7+/Rocky 8+)
 - [ ] 目标机器 Swap 已关闭
