@@ -371,22 +371,10 @@ spec:
         path: /spec/template/spec/hostInventoryRef/name
         valueFrom:
           variable: hostInventoryRef
-  - name: kubernetesVersion
-    definitions:
-    - selector:
-        apiVersion: controlplane.cluster.x-k8s.io/v1beta2
-        kind: KubeadmControlPlaneTemplate
-        matchResources:
-          controlPlane: true
-      jsonPatches:
-      - op: add
-        path: /spec/template/spec/version
-        valueFrom:
-          variable: kubernetesVersion
   - name: networkCIDRs
     definitions:
     - selector:
-        apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+        apiVersion: controlplane.cluster.x-k8s.io/v1beta1
         kind: KubeadmControlPlaneTemplate
         matchResources:
           controlPlane: true
