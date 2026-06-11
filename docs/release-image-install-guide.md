@@ -212,7 +212,7 @@ kubectl apply -k modules/capbm/config/clusterclass/
 ```
 
 这将部署：
-- `ClusterClass`: `baremetal-clusterclass-v0.1.0`
+- `ClusterClass`: `baremetal-clusterclass`
 - `BareMetalClusterTemplate`
 - `BareMetalMachineTemplate`（控制平面和工作节点）
 - `KubeadmControlPlaneTemplate`

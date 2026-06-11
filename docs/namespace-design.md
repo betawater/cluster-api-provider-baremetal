@@ -16,7 +16,7 @@
 │  ├── Deployment: capbm-controller-manager                   │
 │  ├── ServiceAccount: capbm-controller-manager               │
 │  ├── ClusterRole: capbm-manager-role                        │
-│  └── ClusterClass: baremetal-clusterclass-v0.1.0            │
+│  └── ClusterClass: baremetal-clusterclass            │
 │                                                             │
 │  cluster-my-cluster              # 集群 my-cluster 命名空间   │
 │  ├── Cluster: my-cluster                                    │

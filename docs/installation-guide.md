@@ -120,7 +120,7 @@ kubectl get pods -n capi-kubeadm-control-plane-system
 kubectl get pods -n capbm-system
 
 # 检查 ClusterClass
-kubectl get clusterclass baremetal-clusterclass-v0.1.0
+kubectl get clusterclass baremetal-clusterclass
 ```
 
 预期输出：
@@ -148,7 +148,7 @@ kubectl apply -k modules/capbm/config/clusterclass/
 验证 ClusterClass 部署：
 
 ```bash
-kubectl get clusterclass baremetal-clusterclass-v0.1.0
+kubectl get clusterclass baremetal-clusterclass
 kubectl get baremetalclustertemplate
 kubectl get baremetalmachinetemplate
 kubectl get kubeadmcontrolplanetemplate
@@ -235,7 +235,7 @@ kubectl logs -n capbm-system -l control-plane=controller-manager --tail=100
 
 **解决方案**: 执行步骤 2.3 中的步骤 2，patch Deployment 的 Feature Gates。
 
-### Q5: `ClusterClass water/baremetal-clusterclass-v0.1.0 not found`
+### Q5: `ClusterClass water/baremetal-clusterclass not found`
 
 **原因**: ClusterClass 和 Cluster 不在同一个命名空间。
 

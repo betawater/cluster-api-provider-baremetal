@@ -302,7 +302,7 @@ kubectl apply -k modules/capbm/config/clusterclass/
 ### 3.2 验证部署
 
 ```bash
-kubectl get clusterclass baremetal-clusterclass-v0.1.0
+kubectl get clusterclass baremetal-clusterclass
 kubectl get baremetalclustertemplate
 kubectl get baremetalmachinetemplate
 kubectl get kubeadmcontrolplanetemplate
@@ -373,7 +373,7 @@ kubectl get baremetalhostinventory single-node-hosts -n cluster-single-node -o y
 
 ```bash
 clusterctl generate cluster single-node-cluster \
-  --from templates/clusterclass/baremetal-clusterclass-v0.1.0.yaml \
+  --from templates/clusterclass/baremetal-clusterclass.yaml \
   --variable CLUSTER_NAME=single-node-cluster \
   --variable NAMESPACE=default \
   --variable KUBERNETES_VERSION=v1.31.0 \
@@ -423,7 +423,7 @@ metadata:
 spec:
   topology:
     classRef:
-      name: baremetal-clusterclass-v0.1.0
+      name: baremetal-clusterclass
       namespace: capbm-system     # ClusterClass 在系统 namespace
     version: v1.31.0
     controlPlane:
@@ -785,7 +785,7 @@ metadata:
 spec:
   topology:
     classRef:
-      name: baremetal-clusterclass-v0.1.0
+      name: baremetal-clusterclass
     version: v1.31.0
     controlPlane:
       replicas: 1

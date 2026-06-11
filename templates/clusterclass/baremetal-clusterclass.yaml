@@ -1,5 +1,5 @@
 # ClusterClass-based Bare Metal Cluster Template
-# Usage: clusterctl generate cluster my-cluster --from templates/clusterclass/baremetal-clusterclass-v0.1.0.yaml
+# Usage: clusterctl generate cluster my-cluster --from templates/clusterclass/baremetal-clusterclass.yaml
 
 apiVersion: cluster.x-k8s.io/v1beta2
 kind: Cluster
@@ -9,7 +9,7 @@ metadata:
 spec:
   topology:
     classRef:
-      name: baremetal-clusterclass-v0.1.0
+      name: baremetal-clusterclass
     version: "${KUBERNETES_VERSION}"
     controlPlane:
       replicas: ${CONTROL_PLANE_MACHINE_COUNT}

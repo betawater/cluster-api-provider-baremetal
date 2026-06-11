@@ -11,7 +11,7 @@
 │ spec:                                                           │
 │   topology:                                                     │
 │     classRef:                                                   │
-│       name: baremetal-clusterclass-v0.1.0                       │
+│       name: baremetal-clusterclass                       │
 │     variables:                                                  │
 │     - name: controlPlaneEndpoint                                │
 │       value:                                                    │
@@ -26,7 +26,7 @@
 │ ClusterClass.spec.infrastructure:                               │
 │   templateRef:                                                  │
 │     kind: BareMetalClusterTemplate                              │
-│     name: baremetal-clusterclass-v0.1.0                         │
+│     name: baremetal-clusterclass                         │
 │                                                                 │
 │ ClusterClass.spec.patches:                                      │
 │ - name: controlPlaneEndpoint                                    │
@@ -86,7 +86,7 @@ spec:
     templateRef:
       apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
       kind: BareMetalClusterTemplate
-      name: baremetal-clusterclass-v0.1.0
+      name: baremetal-clusterclass
   variables:
   - name: controlPlaneEndpoint
     required: true

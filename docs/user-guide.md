@@ -212,7 +212,7 @@ kubectl apply -k modules/capbm/config/clusterclass/
 ### 3.2 验证部署
 
 ```bash
-kubectl get clusterclass baremetal-clusterclass-v0.1.0
+kubectl get clusterclass baremetal-clusterclass
 kubectl get baremetalclustertemplate
 kubectl get baremetalmachinetemplate
 kubectl get kubeadmcontrolplanetemplate
@@ -424,7 +424,7 @@ metadata:
 spec:
   topology:
     classRef:
-      name: baremetal-clusterclass-v0.1.0
+      name: baremetal-clusterclass
     version: v1.31.0
     controlPlane:
       replicas: 3
@@ -606,7 +606,7 @@ metadata:
 spec:
   topology:
     classRef:
-      name: baremetal-clusterclass-v0.1.0
+      name: baremetal-clusterclass
     version: v1.31.0
     controlPlane:
       replicas: 1
@@ -680,7 +680,7 @@ metadata:
 spec:
   topology:
     classRef:
-      name: baremetal-clusterclass-v0.1.0
+      name: baremetal-clusterclass
     version: v1.31.0
     controlPlane:
       replicas: 3
@@ -969,7 +969,7 @@ variables:
 ### Q6: 如何查看 ClusterClass 的完整定义？
 
 ```bash
-kubectl get clusterclass baremetal-clusterclass-v0.1.0 -o yaml
+kubectl get clusterclass baremetal-clusterclass -o yaml
 ```
 
 ### Q7: 如何查看机器池分配状态？

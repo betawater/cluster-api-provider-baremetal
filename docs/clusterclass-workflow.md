@@ -91,7 +91,7 @@ metadata:
 spec:
   topology:
     classRef:
-      name: baremetal-clusterclass-v0.1.0
+      name: baremetal-clusterclass
     version: v1.31.0
     controlPlane:
       replicas: 3

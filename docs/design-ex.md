@@ -169,7 +169,7 @@ type BareMetalClusterStatus struct {
 apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
 kind: BareMetalClusterTemplate
 metadata:
-  name: baremetal-clusterclass-v0.1.0
+  name: baremetal-clusterclass
   namespace: default
 spec:
   template:
@@ -185,7 +185,7 @@ spec:
 apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
 kind: BareMetalMachineTemplate
 metadata:
-  name: baremetal-clusterclass-v0.1.0-control-plane
+  name: baremetal-clusterclass-control-plane
   namespace: default
 spec:
   template:
@@ -339,19 +339,19 @@ const (
 apiVersion: cluster.x-k8s.io/v1beta2
 kind: ClusterClass
 metadata:
-  name: baremetal-clusterclass-v0.1.0
+  name: baremetal-clusterclass
   namespace: default
 spec:
   controlPlane:
     templateRef:
       apiVersion: controlplane.cluster.x-k8s.io/v1beta2
       kind: KubeadmControlPlaneTemplate
-      name: baremetal-clusterclass-v0.1.0-control-plane
+      name: baremetal-clusterclass-control-plane
     machineInfrastructure:
       templateRef:
         apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
         kind: BareMetalMachineTemplate
-        name: baremetal-clusterclass-v0.1.0-control-plane
+        name: baremetal-clusterclass-control-plane
     healthCheck:
       checks:
         nodeStartupTimeoutSeconds: 900
@@ -366,7 +366,7 @@ spec:
     templateRef:
       apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
       kind: BareMetalClusterTemplate
-      name: baremetal-clusterclass-v0.1.0
+      name: baremetal-clusterclass
   workers:
     machineDeployments:
     - class: default-worker
@@ -374,12 +374,12 @@ spec:
         templateRef:
           apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
           kind: KubeadmConfigTemplate
-          name: baremetal-clusterclass-v0.1.0-default-worker
+          name: baremetal-clusterclass-default-worker
       infrastructure:
         templateRef:
           apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
           kind: BareMetalMachineTemplate
-          name: baremetal-clusterclass-v0.1.0-default-worker
+          name: baremetal-clusterclass-default-worker
       healthCheck:
         checks:
           nodeStartupTimeoutSeconds: 600
@@ -538,7 +538,7 @@ spec:
 apiVersion: controlplane.cluster.x-k8s.io/v1beta2
 kind: KubeadmControlPlaneTemplate
 metadata:
-  name: baremetal-clusterclass-v0.1.0-control-plane
+  name: baremetal-clusterclass-control-plane
   namespace: default
 spec:
   template:
@@ -566,7 +566,7 @@ spec:
 apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
 kind: KubeadmConfigTemplate
 metadata:
-  name: baremetal-clusterclass-v0.1.0-default-worker
+  name: baremetal-clusterclass-default-worker
   namespace: default
 spec:
   template:
@@ -590,7 +590,7 @@ metadata:
 spec:
   topology:
     classRef:
-      name: baremetal-clusterclass-v0.1.0
+      name: baremetal-clusterclass
     version: v1.31.0
     controlPlane:
       replicas: 3
@@ -650,7 +650,7 @@ metadata:
 spec:
   topology:
     classRef:
-      name: baremetal-clusterclass-v0.1.0
+      name: baremetal-clusterclass
     version: v1.31.0
     controlPlane:
       replicas: 3
@@ -2155,7 +2155,7 @@ kind: Cluster
 spec:
   topology:
     classRef:
-      name: baremetal-clusterclass-v0.1.0
+      name: baremetal-clusterclass
     version: v1.31.0
     controlPlane:
       replicas: 3
@@ -4428,7 +4428,7 @@ metadata:
 spec:
   topology:
     classRef:
-      name: baremetal-clusterclass-v0.1.0
+      name: baremetal-clusterclass
     version: v1.31.0
     controlPlane:
       replicas: 3
@@ -4955,7 +4955,7 @@ metadata:
 spec:
   topology:
     classRef:
-      name: baremetal-clusterclass-v0.1.0
+      name: baremetal-clusterclass
     version: v1.31.0
     controlPlane:
       replicas: 3
@@ -6272,7 +6272,7 @@ kind: Cluster
 spec:
   topology:
     classRef:
-      name: baremetal-clusterclass-v0.1.0
+      name: baremetal-clusterclass
     version: v1.31.0
     controlPlane:
       replicas: 3
@@ -6898,7 +6898,7 @@ metadata:
 spec:
   topology:
     classRef:
-      name: baremetal-clusterclass-v0.1.0
+      name: baremetal-clusterclass
     version: v1.31.0
     controlPlane:
       replicas: 3
@@ -8662,7 +8662,7 @@ cluster-api-provider-baremetal/
 │   └── manager/
 ├── templates/
 │   └── clusterclass/
-│       └── baremetal-clusterclass-v0.1.0.yaml
+│       └── baremetal-clusterclass.yaml
 ├── hack/
 │   ├── prepare-offline-packages.sh              # 离线包准备脚本
 │   ├── preload-images.sh                        # 镜像预加载脚本
