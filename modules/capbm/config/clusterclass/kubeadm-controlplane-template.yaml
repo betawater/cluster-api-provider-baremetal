@@ -5,15 +5,18 @@ metadata:
 spec:
   template:
     spec:
+      version: ""
       kubeadmConfigSpec:
         clusterConfiguration:
           apiServer:
             extraArgs:
               authorization-mode: "Node,RBAC"
+            timeoutForControlPlane: 10m
           etcd:
             local:
               dataDir: /var/lib/etcd
         initConfiguration:
           nodeRegistration:
-            kubeletExtraArgs:
-              max-pods: "250"
+            kubelet:
+              extraArgs:
+                max-pods: "250"
