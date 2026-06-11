@@ -1,4 +1,4 @@
-apiVersion: cluster.x-k8s.io/v1beta1
+apiVersion: cluster.x-k8s.io/v1beta2
 kind: ClusterClass
 metadata:
   name: baremetal-clusterclass-v0.1.0
@@ -10,7 +10,7 @@ spec:
       name: baremetal-clusterclass-v0.1.0-control-plane
     machineInfrastructure:
       templateRef:
-        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
         kind: BareMetalMachineTemplate
         name: baremetal-clusterclass-v0.1.0-control-plane
     healthCheck:
@@ -33,12 +33,12 @@ spec:
     - class: default-worker
       bootstrap:
         templateRef:
-          apiVersion: bootstrap.cluster.x-k8s.io/v1beta1
+          apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
           kind: KubeadmConfigTemplate
           name: baremetal-clusterclass-v0.1.0-default-worker
       infrastructure:
         templateRef:
-          apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+          apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
           kind: BareMetalMachineTemplate
           name: baremetal-clusterclass-v0.1.0-default-worker
       healthCheck:
@@ -303,7 +303,7 @@ spec:
   - name: controlPlaneEndpoint
     definitions:
     - selector:
-        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
         kind: BareMetalClusterTemplate
         matchResources:
           infrastructureCluster: true
@@ -319,7 +319,7 @@ spec:
   - name: credentialsSecret
     definitions:
     - selector:
-        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
         kind: BareMetalMachineTemplate
         matchResources:
           controlPlane: true
@@ -329,7 +329,7 @@ spec:
         valueFrom:
           variable: credentialsSecret
     - selector:
-        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
         kind: BareMetalMachineTemplate
         matchResources:
           machineDeploymentClass:
@@ -343,7 +343,7 @@ spec:
   - name: hostInventoryRef
     definitions:
     - selector:
-        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
         kind: BareMetalMachineTemplate
         matchResources:
           controlPlane: true
@@ -353,7 +353,7 @@ spec:
         valueFrom:
           variable: hostInventoryRef
     - selector:
-        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
         kind: BareMetalMachineTemplate
         matchResources:
           machineDeploymentClass:
@@ -367,7 +367,7 @@ spec:
   - name: kubernetesVersion
     definitions:
     - selector:
-        apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+        apiVersion: controlplane.cluster.x-k8s.io/v1beta2
         kind: KubeadmControlPlaneTemplate
         matchResources:
           controlPlane: true
@@ -379,7 +379,7 @@ spec:
   - name: networkCIDRs
     definitions:
     - selector:
-        apiVersion: controlplane.cluster.x-k8s.io/v1beta1
+        apiVersion: controlplane.cluster.x-k8s.io/v1beta2
         kind: KubeadmControlPlaneTemplate
         matchResources:
           controlPlane: true
@@ -395,7 +395,7 @@ spec:
   - name: componentInstall
     definitions:
     - selector:
-        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
         kind: BareMetalMachineTemplate
         matchResources:
           controlPlane: true
@@ -405,7 +405,7 @@ spec:
         valueFrom:
           variable: componentInstall
     - selector:
-        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
         kind: BareMetalMachineTemplate
         matchResources:
           machineDeploymentClass:
@@ -419,7 +419,7 @@ spec:
   - name: firewall
     definitions:
     - selector:
-        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
         kind: BareMetalMachineTemplate
         matchResources:
           controlPlane: true
@@ -429,7 +429,7 @@ spec:
         valueFrom:
           variable: firewall
     - selector:
-        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
         kind: BareMetalMachineTemplate
         matchResources:
           machineDeploymentClass:
@@ -443,7 +443,7 @@ spec:
   - name: selinux
     definitions:
     - selector:
-        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
         kind: BareMetalMachineTemplate
         matchResources:
           controlPlane: true
@@ -453,7 +453,7 @@ spec:
         valueFrom:
           variable: selinux
     - selector:
-        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
         kind: BareMetalMachineTemplate
         matchResources:
           machineDeploymentClass:
@@ -467,7 +467,7 @@ spec:
   - name: nodeBootstrap
     definitions:
     - selector:
-        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
         kind: BareMetalMachineTemplate
         matchResources:
           controlPlane: true
@@ -477,7 +477,7 @@ spec:
         valueFrom:
           variable: nodeBootstrap
     - selector:
-        apiVersion: infrastructure.cluster.x-k8s.io/v1beta1
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
         kind: BareMetalMachineTemplate
         matchResources:
           machineDeploymentClass:
