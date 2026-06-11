@@ -4,6 +4,9 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.21.0
+  labels:
+    cluster.x-k8s.io/v1beta1: v1beta1
+    cluster.x-k8s.io/v1beta2: v1beta2
   name: baremetalclusters.infrastructure.cluster.x-k8s.io
 spec:
   group: infrastructure.cluster.x-k8s.io
@@ -234,7 +237,7 @@ spec:
                     properties:
                       credentialsRef:
                         description: CredentialsRef references the F5 credentials
-                          secret.
+                          secret (alternative to username/password).
                         properties:
                           name:
                             default: ""
@@ -250,9 +253,16 @@ spec:
                       host:
                         description: Host is the F5 BIG-IP management host.
                         type: string
+                      insecureSkipVerify:
+                        description: InsecureSkipVerify skips TLS certificate verification
+                          (not recommended for production).
+                        type: boolean
                       partition:
                         default: Common
                         description: Partition is the F5 partition.
+                        type: string
+                      password:
+                        description: Password is the F5 BIG-IP management password.
                         type: string
                       poolName:
                         description: PoolName is the F5 pool name.
@@ -261,6 +271,9 @@ spec:
                         default: 443
                         description: Port is the F5 BIG-IP management port.
                         type: integer
+                      username:
+                        description: Username is the F5 BIG-IP management username.
+                        type: string
                       virtualServerName:
                         description: VirtualServerName is the F5 virtual server name.
                         type: string
@@ -307,10 +320,19 @@ spec:
                         description: SSHHost is the HAProxy server SSH host (alternative
                           to Runtime API).
                         type: string
+                      sshKnownHostsFile:
+                        description: |-
+                          SSHKnownHostsFile is the path to the SSH known_hosts file for host key verification.
+                          If empty, host key verification is disabled (not recommended for production).
+                        type: string
                       sshPort:
                         default: 22
                         description: SSHPort is the HAProxy server SSH port.
                         type: integer
+                      sshUser:
+                        default: root
+                        description: SSHUser is the HAProxy server SSH username.
+                        type: string
                     type: object
                   healthCheck:
                     description: HealthCheck defines health check configuration.
@@ -369,6 +391,16 @@ spec:
                   metal-lb:
                     description: MetalLB holds MetalLB specific configuration.
                     properties:
+                      addressPool:
+                        description: AddressPool is the MetalLB address pool name
+                          (alias for IPAddressPool).
+                        type: string
+                      addresses:
+                        description: Addresses is the list of IP address ranges for
+                          the pool.
+                        items:
+                          type: string
+                        type: array
                       ipAddressPool:
                         description: IPAddressPool is the MetalLB IP address pool
                           name.

@@ -61,6 +61,8 @@ type BareMetalMachineTemplateSpecInner struct {
 	Role string `json:"role,omitempty"`
 }
 
+// +kubebuilder:metadata:labels="cluster.x-k8s.io/v1beta1=v1beta1"
+// +kubebuilder:metadata:labels="cluster.x-k8s.io/v1beta2=v1beta2"
 // +kubebuilder:object:root=true
 
 // BareMetalMachineTemplate is the Schema for the baremetalmachinetemplates API.

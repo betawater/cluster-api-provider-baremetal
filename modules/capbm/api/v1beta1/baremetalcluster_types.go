@@ -472,6 +472,8 @@ type MetalLBIPAddressPool struct {
 	Addresses []string `json:"addresses"`
 }
 
+// +kubebuilder:metadata:labels="cluster.x-k8s.io/v1beta1=v1beta1"
+// +kubebuilder:metadata:labels="cluster.x-k8s.io/v1beta2=v1beta2"
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.ready",description="BareMetalCluster is Ready"

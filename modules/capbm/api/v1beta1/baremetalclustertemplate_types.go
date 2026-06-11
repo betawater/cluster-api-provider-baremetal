@@ -47,6 +47,8 @@ type ObjectMeta struct {
 	Annotations map[string]string `json:"annotations,omitempty"`
 }
 
+// +kubebuilder:metadata:labels="cluster.x-k8s.io/v1beta1=v1beta1"
+// +kubebuilder:metadata:labels="cluster.x-k8s.io/v1beta2=v1beta2"
 // +kubebuilder:object:root=true
 
 // BareMetalClusterTemplate is the Schema for the baremetalclustertemplates API.
