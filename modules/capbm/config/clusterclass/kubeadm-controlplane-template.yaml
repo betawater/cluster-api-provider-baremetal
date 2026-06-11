@@ -19,3 +19,8 @@ spec:
             kubeletExtraArgs:
             - name: max-pods
               value: "250"
+      rollout:
+        strategy:
+          type: RollingUpdate
+          rollingUpdate:
+            maxSurge: 1
