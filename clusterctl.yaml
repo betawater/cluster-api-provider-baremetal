@@ -1,0 +1,23 @@
+# clusterctl configuration file for CAPBM
+# Usage: clusterctl init --config clusterctl.yaml --feature-gates=ClusterTopology=true
+
+providers:
+  # Core Cluster API provider
+  - name: cluster-api
+    url: https://github.com/kubernetes-sigs/cluster-api/releases/latest/core-components.yaml
+    type: CoreProvider
+
+  # Kubeadm Bootstrap provider
+  - name: kubeadm
+    url: https://github.com/kubernetes-sigs/cluster-api/releases/latest/bootstrap-components.yaml
+    type: BootstrapProvider
+
+  # Kubeadm Control Plane provider
+  - name: kubeadm
+    url: https://github.com/kubernetes-sigs/cluster-api/releases/latest/control-plane-components.yaml
+    type: ControlPlaneProvider
+
+  # CAPBM Infrastructure provider (local)
+  - name: baremetal
+    url: file://./modules/capbm/config/default/
+    type: InfrastructureProvider

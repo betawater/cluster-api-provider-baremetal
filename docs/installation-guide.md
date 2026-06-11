@@ -4,11 +4,9 @@
 
 - [1. 前置条件](#1-前置条件)
 - [2. 安装 CAPI 核心组件](#2-安装-capi-核心组件)
-- [3. 部署 CAPBM Provider](#3-部署-capbm-provider)
-- [4. 部署 ClusterClass 模板](#4-部署-clusterclass-模板)
-- [5. 验证部署](#5-验证部署)
-- [6. 配置本地 Provider 源（可选）](#6-配置本地-provider-源可选)
-- [7. 常见问题](#7-常见问题)
+- [3. 部署 ClusterClass 模板](#3-部署-clusterclass-模板)
+- [4. 验证部署](#4-验证部署)
+- [5. 常见问题](#5-常见问题)
 
 ---
 
@@ -19,9 +17,8 @@
 - Kubernetes v1.32+ 管理集群
 - `kubectl` 已配置并连接到管理集群
 - `clusterctl` v1.13+ 已安装
-- `make` 已安装
 
-### 1.2 本地开发环境
+### 1.2 本地开发环境（可选）
 
 - Go 1.25+ 已安装
 - Docker（用于构建镜像）
@@ -31,86 +28,121 @@
 
 ## 2. 安装 CAPI 核心组件
 
-首先安装 Cluster API 的核心组件（这些组件已发布到官方仓库）：
+> **重要**: ClusterClass 功能需要启用 `ClusterTopology` 功能门控。
+> 以下安装方法已自动启用此功能。
+
+### 2.1 使用自动化安装脚本（推荐）
+
+这是最简单的安装方式，脚本会自动处理所有依赖和配置：
+
+```bash
+# 下载并执行安装脚本
+curl -fsSL https://raw.githubusercontent.com/betawater/cluster-api-provider-baremetal/main/scripts/install-capbm.sh | bash
+```
+
+或者，如果你已克隆仓库：
+
+```bash
+chmod +x scripts/install-capbm.sh
+./scripts/install-capbm.sh
+```
+
+脚本会自动：
+1. 安装 CAPI 核心组件并启用 `ClusterTopology`
+2. 修复 kubeadm control plane provider 的 Feature Gates
+3. 部署 CAPBM CRDs 和 Controller
+4. 部署 ClusterClass 模板
+5. 验证安装状态
+
+### 2.2 使用 clusterctl 配置文件
+
+如果你希望手动控制安装过程，可以使用项目提供的 `clusterctl.yaml` 配置文件：
+
+```bash
+# 使用本地 clusterctl 配置安装
+clusterctl init --config clusterctl.yaml \
+  --core cluster-api \
+  --bootstrap kubeadm \
+  --control-plane kubeadm \
+  --infrastructure baremetal \
+  --feature-gates=ClusterTopology=true
+```
+
+### 2.3 手动安装（高级）
+
+如果你需要完全控制安装过程，可以按以下步骤手动安装：
+
+#### 步骤 1: 安装 CAPI 核心组件
 
 ```bash
 clusterctl init \
   --core cluster-api \
   --bootstrap kubeadm \
-  --control-plane kubeadm
+  --control-plane kubeadm \
+  --feature-gates=ClusterTopology=true
 ```
 
-验证安装：
+#### 步骤 2: 修复 kubeadm control plane provider 的 Feature Gates
+
+> **注意**: kubeadm control plane provider 默认禁用 `ClusterTopology`，需要手动启用。
 
 ```bash
-kubectl get pods -n capi-system
-kubectl get pods -n capi-kubeadm-bootstrap-system
-kubectl get pods -n capi-kubeadm-control-plane-system
+kubectl patch deployment capi-kubeadm-control-plane-controller-manager \
+  -n capi-kubeadm-control-plane-system \
+  --type='json' \
+  -p='[{"op": "replace", "path": "/spec/template/spec/containers/0/args", "value": ["--feature-gates=MachinePool=true,ClusterTopology=true,KubeadmBootstrapFormatIgnition=false,PriorityQueue=true,ReconcilerRateLimiting=true,InPlaceUpdates=false,MachineTaintPropagation=false","--leader-elect","--diagnostics-address=:8443","--insecure-diagnostics=false"]}]'
+
+# 等待 rollout 完成
+kubectl rollout status deployment capi-kubeadm-control-plane-controller-manager -n capi-kubeadm-control-plane-system
 ```
 
----
-
-## 3. 部署 CAPBM Provider
-
-由于 `baremetal` provider 是本地开发的，尚未发布到 CAPI 官方仓库，需要通过 `make deploy` 方式部署。
-
-### 3.1 部署 CAPBM Controller
+#### 步骤 3: 部署 CAPBM Provider
 
 ```bash
 # 部署 CAPBM CRDs 和 Controller
-make deploy-capbm
+kubectl apply -k modules/capbm/config/crd/
+kubectl apply -k modules/capbm/config/
 
 # 部署 CVO (Cluster Version Operator) CRDs 和 Controller
-make deploy-cvo
+kubectl apply -k modules/cvo/config/crd/
+kubectl apply -k modules/cvo/config/
 ```
 
-### 3.2 手动部署（备选）
-
-如果 `make deploy` 不可用，可以手动部署：
+### 验证安装
 
 ```bash
-# 安装 CAPBM CRDs
-kubectl apply -k modules/capbm/config/crd
+# 检查 CAPI Controllers
+kubectl get pods -n capi-system
+kubectl get pods -n capi-kubeadm-bootstrap-system
+kubectl get pods -n capi-kubeadm-control-plane-system
 
-# 部署 CAPBM Controller
-kubectl apply -k modules/capbm/config
-
-# 安装 CVO CRDs
-kubectl apply -k modules/cvo/config/crd
-
-# 部署 CVO Controller
-kubectl apply -k modules/cvo/config
-```
-
-### 3.3 验证部署
-
-```bash
-# 检查 CRDs
-kubectl get crd | grep baremetal
-kubectl get crd | grep versionmanifest
-kubectl get crd | grep upgrade
-kubectl get crd | grep clusterversion
-
-# 检查 Controller Pods
+# 检查 CAPBM Controller
 kubectl get pods -n capbm-system
-kubectl get pods -n cvo-system
 
-# 预期输出
-# NAME                                  READY   STATUS    RESTARTS   AGE
-# capbm-controller-manager-xxxxx        1/1     Running   0          30s
-# cvo-controller-manager-xxxxx          1/1     Running   0          30s
+# 检查 ClusterClass
+kubectl get clusterclass baremetal-clusterclass-v0.1.0
+```
+
+预期输出：
+
+```
+NAME                                  READY   STATUS
+capi-controller-manager-xxxxx         1/1     Running
+capi-kubeadm-bootstrap-controller-xxxxx  1/1     Running
+capi-kubeadm-control-plane-controller-xxxxx  1/1     Running
+capbm-controller-manager-xxxxx        1/1     Running
+cvo-controller-manager-xxxxx          1/1     Running
 ```
 
 ---
 
-## 4. 部署 ClusterClass 模板
+## 3. 部署 ClusterClass 模板
+
+> **注意**: 如果使用自动化安装脚本（`scripts/install-capbm.sh`），ClusterClass 模板已自动部署。
 
 ```bash
-# 使用 make 部署
-make deploy-clusterclass
-
-# 或手动部署
-kubectl apply -k modules/capbm/config/clusterclass
+# 使用 kustomize 部署
+kubectl apply -k modules/capbm/config/clusterclass/
 ```
 
 验证 ClusterClass 部署：
@@ -125,9 +157,9 @@ kubectl get kubeadmconfigtemplate
 
 ---
 
-## 5. 验证部署
+## 4. 验证部署
 
-### 5.1 检查所有 CRDs
+### 4.1 检查所有 CRDs
 
 ```bash
 # CAPBM CRDs
@@ -150,7 +182,7 @@ kubectl get crd | grep capbm.cluster.x-k8s.io
 # versionmanifests.capbm.cluster.x-k8s.io
 ```
 
-### 5.2 检查 Controller 日志
+### 4.2 检查 Controller 日志
 
 ```bash
 # 查看 CAPBM Controller 日志
@@ -162,57 +194,22 @@ kubectl logs -n cvo-system -l control-plane=controller-manager --tail=50
 
 ---
 
-## 6. 配置本地 Provider 源（可选）
-
-如果你希望使用 `clusterctl init --infrastructure baremetal` 方式安装，需要配置本地 Provider 源。
-
-### 6.1 生成 Release Manifest
-
-```bash
-make release-capbm
-# 这会生成 infrastructure-components.yaml
-```
-
-### 6.2 创建 clusterctl 配置文件
-
-创建 `~/.clusterctl.yaml` 文件：
-
-```yaml
-providers:
-  - name: baremetal
-    url: file:///path/to/cluster-api-provider-baremetal/infrastructure-components.yaml
-    type: InfrastructureProvider
-```
-
-> **注意**: 将 `/path/to/cluster-api-provider-baremetal` 替换为实际的项目路径。
-
-### 6.3 使用 clusterctl 安装
-
-```bash
-clusterctl init --infrastructure baremetal
-```
-
----
-
-## 7. 常见问题
+## 5. 常见问题
 
 ### Q1: `clusterctl init --infrastructure baremetal` 报错 "release not found"
 
 **原因**: `baremetal` provider 尚未发布到 CAPI 官方仓库。
 
-**解决方案**: 使用 `make deploy-capbm` 直接部署，或配置本地 Provider 源（见第 6 节）。
+**解决方案**: 使用自动化安装脚本（`scripts/install-capbm.sh`）或配置本地 Provider 源（见 2.2 节）。
 
 ### Q2: 部署后 CRDs 未创建
 
 **检查步骤**:
 
 ```bash
-# 检查 kustomize 是否正确安装
-make kustomize
-
 # 手动构建并应用
-kubectl apply -k modules/capbm/config/crd
-kubectl apply -k modules/capbm/config
+kubectl apply -k modules/capbm/config/crd/
+kubectl apply -k modules/capbm/config/
 ```
 
 ### Q3: Controller Pod 处于 CrashLoopBackOff 状态
@@ -232,17 +229,31 @@ kubectl logs -n capbm-system -l control-plane=controller-manager --tail=100
 - 镜像拉取失败
 - 配置错误
 
-### Q4: 如何卸载 Provider
+### Q4: `admission webhook denied the request: spec: Forbidden: can be set only if the ClusterTopology feature flag is enabled`
+
+**原因**: kubeadm control plane provider 默认禁用 `ClusterTopology`。
+
+**解决方案**: 执行步骤 2.3 中的步骤 2，patch Deployment 的 Feature Gates。
+
+### Q5: `ClusterClass water/baremetal-clusterclass-v0.1.0 not found`
+
+**原因**: ClusterClass 和 Cluster 不在同一个命名空间。
+
+**解决方案**: 确保 ClusterClass 和 Cluster 在同一个命名空间，或者在 Cluster 的 `spec.topology.classRef` 中指定 `namespace` 字段。
+
+### Q6: 如何卸载 Provider
 
 ```bash
+# 卸载 ClusterClass
+kubectl delete -k modules/capbm/config/clusterclass/
+
 # 卸载 CAPBM
-make undeploy-capbm
+kubectl delete -k modules/capbm/config/
+kubectl delete -k modules/capbm/config/crd/
 
 # 卸载 CVO
-make undeploy-cvo
-
-# 卸载 ClusterClass
-kubectl delete -k modules/capbm/config/clusterclass
+kubectl delete -k modules/cvo/config/
+kubectl delete -k modules/cvo/config/crd/
 
 # 卸载 CAPI 核心组件
 clusterctl delete --core cluster-api --bootstrap kubeadm --control-plane kubeadm
@@ -253,23 +264,34 @@ clusterctl delete --core cluster-api --bootstrap kubeadm --control-plane kubeadm
 ## 附录：完整安装流程示例
 
 ```bash
+# 1. 使用自动化脚本安装（推荐）
+./scripts/install-capbm.sh
+
+# 或者手动安装：
 # 1. 安装 CAPI 核心组件
 clusterctl init \
   --core cluster-api \
   --bootstrap kubeadm \
-  --control-plane kubeadm
+  --control-plane kubeadm \
+  --feature-gates=ClusterTopology=true
 
-# 2. 部署 CAPBM Provider
-make deploy-capbm
-make deploy-cvo
+# 2. 修复 kubeadm control plane provider 的 Feature Gates
+kubectl patch deployment capi-kubeadm-control-plane-controller-manager \
+  -n capi-kubeadm-control-plane-system \
+  --type='json' \
+  -p='[{"op": "replace", "path": "/spec/template/spec/containers/0/args", "value": ["--feature-gates=MachinePool=true,ClusterTopology=true,KubeadmBootstrapFormatIgnition=false,PriorityQueue=true,ReconcilerRateLimiting=true,InPlaceUpdates=false,MachineTaintPropagation=false","--leader-elect","--diagnostics-address=:8443","--insecure-diagnostics=false"]}]'
 
-# 3. 部署 ClusterClass
-make deploy-clusterclass
+# 3. 部署 CAPBM CRDs 和 Controller
+kubectl apply -k modules/capbm/config/crd/
+kubectl apply -k modules/capbm/config/
 
-# 4. 验证部署
+# 4. 部署 ClusterClass
+kubectl apply -k modules/capbm/config/clusterclass/
+
+# 5. 验证部署
 kubectl get crd | grep baremetal
 kubectl get pods -n capbm-system
 kubectl get clusterclass
 
-# 5. 创建机器池和集群（参考 user-guide.md）
+# 6. 创建机器池和集群（参考 single-node-guide.md）
 ```
