@@ -68,6 +68,45 @@ clusterctl init --config clusterctl.yaml \
   --feature-gates=ClusterTopology=true
 ```
 
+#### 生成集群配置
+
+```bash
+clusterctl generate cluster my-cluster \
+  --from templates/clusterclass/baremetal-clusterclass.yaml \
+  --variable CLUSTER_NAME=my-cluster \
+  --variable NAMESPACE=default \
+  --variable KUBERNETES_VERSION=v1.31.1 \
+  --variable CONTROL_PLANE_MACHINE_COUNT=3 \
+  --variable WORKER_MACHINE_COUNT=2 \
+  --variable CONTROL_PLANE_ENDPOINT_HOST=lb.example.com \
+  --variable CONTROL_PLANE_ENDPOINT_PORT=6443 \
+  --variable SSH_CREDENTIALS_SECRET=baremetal-ssh-credentials \
+  --variable SSH_USERNAME=root \
+  --variable SSH_PASSWORD=your-password \
+  --variable HOST_INVENTORY_REF=datacenter-a-hosts \
+  --variable POD_CIDR=10.244.0.0/16 \
+  --variable SERVICE_CIDR=10.96.0.0/12 \
+  > cluster.yaml
+```
+
+**变量说明**：
+
+| 变量名 | 说明 | 示例值 |
+|--------|------|--------|
+| `CLUSTER_NAME` | 集群名称 | `my-cluster` |
+| `NAMESPACE` | 命名空间 | `default` |
+| `KUBERNETES_VERSION` | Kubernetes 版本 | `v1.31.1` |
+| `CONTROL_PLANE_MACHINE_COUNT` | 控制面节点数 | `3` |
+| `WORKER_MACHINE_COUNT` | Worker 节点数 | `2` |
+| `CONTROL_PLANE_ENDPOINT_HOST` | API Server 地址 | `lb.example.com` |
+| `CONTROL_PLANE_ENDPOINT_PORT` | API Server 端口 | `6443` |
+| `SSH_CREDENTIALS_SECRET` | SSH 凭据 Secret 名称 | `baremetal-ssh-credentials` |
+| `SSH_USERNAME` | SSH 用户名 | `root` |
+| `SSH_PASSWORD` | SSH 密码 | `your-password` |
+| `HOST_INVENTORY_REF` | BareMetalHostInventory 名称 | `datacenter-a-hosts` |
+| `POD_CIDR` | Pod 网络 CIDR（可选） | `10.244.0.0/16` |
+| `SERVICE_CIDR` | Service 网络 CIDR（可选） | `10.96.0.0/12` |
+
 ### 2.3 手动安装（高级）
 
 如果你需要完全控制安装过程，可以按以下步骤手动安装：

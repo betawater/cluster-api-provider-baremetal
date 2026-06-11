@@ -13,11 +13,17 @@ spec:
     version: "${KUBERNETES_VERSION}"
     controlPlane:
       replicas: ${CONTROL_PLANE_MACHINE_COUNT}
+      metadata:
+        labels:
+          role: control-plane
     workers:
       machineDeployments:
       - class: default-worker
         name: md-0
         replicas: ${WORKER_MACHINE_COUNT}
+        metadata:
+          labels:
+            role: worker
     variables:
     - name: controlPlaneEndpoint
       value:
@@ -25,8 +31,36 @@ spec:
         port: ${CONTROL_PLANE_ENDPOINT_PORT}
     - name: credentialsSecret
       value: "${SSH_CREDENTIALS_SECRET}"
+    - name: hostInventoryRef
+      value: "${HOST_INVENTORY_REF}"
     - name: kubernetesVersion
       value: "${KUBERNETES_VERSION}"
+    - name: podCIDR
+      value: "${POD_CIDR:-10.244.0.0/16}"
+    - name: serviceCIDR
+      value: "${SERVICE_CIDR:-10.96.0.0/12}"
+    - name: preFlightChecks
+      value:
+        enabled: true
+        minDiskGB: 20
+        minMemoryGB: 2
+    - name: componentInstall
+      value:
+        enabled: true
+        strategy: "InstallIfMissing"
+    - name: firewall
+      value:
+        configure: true
+        autoDetect: true
+    - name: selinux
+      value:
+        configure: true
+    - name: nodeBootstrap
+      value:
+        enabled: true
+        disableSwap: true
+        kernelModules: ["overlay", "br_netfilter"]
+        timeSync: true
 ---
 apiVersion: v1
 kind: Secret
