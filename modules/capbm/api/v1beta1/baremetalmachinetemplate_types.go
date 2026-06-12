@@ -59,6 +59,22 @@ type BareMetalMachineTemplateSpecInner struct {
 	// Role indicates the role of this machine (control-plane or worker).
 	// +optional
 	Role string `json:"role,omitempty"`
+
+	// ComponentInstall holds configuration for automatic component installation.
+	// +optional
+	ComponentInstall *ComponentInstallConfig `json:"componentInstall,omitempty"`
+
+	// Firewall holds configuration for firewall management.
+	// +optional
+	Firewall *FirewallConfig `json:"firewall,omitempty"`
+
+	// SELinux holds configuration for SELinux management.
+	// +optional
+	SELinux *SELinuxConfig `json:"selinux,omitempty"`
+
+	// NodeBootstrap holds configuration for node bootstrapping.
+	// +optional
+	NodeBootstrap *NodeBootstrapConfig `json:"nodeBootstrap,omitempty"`
 }
 
 // +kubebuilder:metadata:labels="cluster.x-k8s.io/v1beta1=v1beta1"
