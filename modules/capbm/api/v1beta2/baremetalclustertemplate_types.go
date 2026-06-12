@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package v1beta1
+package v1beta2
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -47,7 +47,6 @@ type ObjectMeta struct {
 	Annotations map[string]string `json:"annotations,omitempty"`
 }
 
-// +kubebuilder:metadata:labels="cluster.x-k8s.io/v1beta1=v1beta1"
 // +kubebuilder:metadata:labels="cluster.x-k8s.io/v1beta2=v1beta2"
 // +kubebuilder:object:root=true
 

@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package v1beta1
+package v1beta2
 
 import (
 	corev1 "k8s.io/api/core/v1"
@@ -852,10 +852,10 @@ func (m *BareMetalMachine) SetConditions(conditions clusterv1.Conditions) {
 	m.Status.Conditions = conditions
 }
 
-// +kubebuilder:metadata:labels="cluster.x-k8s.io/v1beta1=v1beta1"
 // +kubebuilder:metadata:labels="cluster.x-k8s.io/v1beta2=v1beta2"
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:storageversion
 // +kubebuilder:printcolumn:name="Cluster",type="string",JSONPath=".metadata.labels.cluster\\.x-k8s\\.io/cluster-name",description="Cluster"
 // +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.ready",description="Machine is ready"
 // +kubebuilder:printcolumn:name="ProviderID",type="string",JSONPath=".status.providerID",description="Provider ID"

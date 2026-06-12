@@ -27,7 +27,7 @@ import (
 	"net/url"
 	"strings"
 
-	capbmv1 "github.com/BetaWater/cluster-api-provider-baremetal/modules/capbm/api/v1beta1"
+	capbmv1 "github.com/BetaWater/cluster-api-provider-baremetal/modules/capbm/api/v1beta2"
 )
 
 // F5Provider implements the Provider interface for F5 BIG-IP.

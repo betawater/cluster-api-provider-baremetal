@@ -31,7 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
-	capbmv1 "github.com/BetaWater/cluster-api-provider-baremetal/modules/capbm/api/v1beta1"
+	capbmv1 "github.com/BetaWater/cluster-api-provider-baremetal/modules/capbm/api/v1beta2"
 	"github.com/BetaWater/cluster-api-provider-baremetal/modules/capbm/internal/controllers"
 	"github.com/BetaWater/cluster-api-provider-baremetal/modules/cvo/pkg/ssh"
 )

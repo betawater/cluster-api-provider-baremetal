@@ -5,7 +5,6 @@ metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.21.0
   labels:
-    cluster.x-k8s.io/v1beta1: v1beta1
     cluster.x-k8s.io/v1beta2: v1beta2
   name: baremetalmachinetemplates.infrastructure.cluster.x-k8s.io
 spec:
@@ -17,7 +16,7 @@ spec:
     singular: baremetalmachinetemplate
   scope: Namespaced
   versions:
-  - name: v1beta1
+  - name: v1beta2
     schema:
       openAPIV3Schema:
         description: BareMetalMachineTemplate is the Schema for the baremetalmachinetemplates
@@ -66,6 +65,659 @@ spec:
                   spec:
                     description: Spec defines the desired state of BareMetalMachine.
                     properties:
+                      componentInstall:
+                        description: ComponentInstall holds configuration for automatic
+                          component installation.
+                        properties:
+                          airGap:
+                            description: AirGap defines configuration for offline/air-gapped
+                              installations.
+                            properties:
+                              binarySource:
+                                default: HTTPServer
+                                description: |-
+                                  BinarySource specifies how binaries are delivered in air-gapped mode.
+                                  Options: HTTPServer | ConfigMap | LocalPath
+                                type: string
+                              enabled:
+                                description: Enabled indicates whether air-gapped
+                                  installation mode is used.
+                                type: boolean
+                              httpServerConfig:
+                                description: HTTPServerConfig is the configuration
+                                  for HTTP binary source.
+                                properties:
+                                  basePath:
+                                    description: BasePath is the base path for serving
+                                      content.
+                                    type: string
+                                  baseUrl:
+                                    description: BaseURL is the HTTP server URL serving
+                                      binary packages.
+                                    type: string
+                                  enabled:
+                                    default: false
+                                    description: Enabled enables the HTTP server.
+                                    type: boolean
+                                  insecureSkipVerify:
+                                    description: InsecureSkipVerify skips TLS verification
+                                      (for internal CAs).
+                                    type: boolean
+                                  port:
+                                    default: 8080
+                                    description: Port is the HTTP server port.
+                                    type: integer
+                                  tlsSecretRef:
+                                    description: TLSSecretRef references a Secret
+                                      containing TLS client certificate.
+                                    type: string
+                                type: object
+                              localPath:
+                                description: LocalPath is the path on target machine
+                                  where binaries are pre-placed.
+                                type: string
+                              preloadImages:
+                                description: PreloadImages is a list of container
+                                  images to preload into containerd.
+                                items:
+                                  type: string
+                                type: array
+                            type: object
+                          cni:
+                            description: CNI defines the CNI plugin installation configuration.
+                            properties:
+                              airGap:
+                                description: AirGap defines air-gapped installation
+                                  configuration for CNI.
+                                properties:
+                                  chartArchive:
+                                    description: ChartArchive is the path to the Helm
+                                      chart archive (for Helm mode).
+                                    type: string
+                                  cniPluginsArchive:
+                                    description: CNIPluginsArchive is the path to
+                                      the CNI plugins binary archive.
+                                    type: string
+                                  enabled:
+                                    description: Enabled indicates whether air-gapped
+                                      installation is used.
+                                    type: boolean
+                                  httpServerConfig:
+                                    description: HTTPServerConfig is the HTTP server
+                                      configuration.
+                                    properties:
+                                      basePath:
+                                        description: BasePath is the base path for
+                                          serving content.
+                                        type: string
+                                      baseUrl:
+                                        description: BaseURL is the HTTP server URL
+                                          serving binary packages.
+                                        type: string
+                                      enabled:
+                                        default: false
+                                        description: Enabled enables the HTTP server.
+                                        type: boolean
+                                      insecureSkipVerify:
+                                        description: InsecureSkipVerify skips TLS
+                                          verification (for internal CAs).
+                                        type: boolean
+                                      port:
+                                        default: 8080
+                                        description: Port is the HTTP server port.
+                                        type: integer
+                                      tlsSecretRef:
+                                        description: TLSSecretRef references a Secret
+                                          containing TLS client certificate.
+                                        type: string
+                                    type: object
+                                  localPath:
+                                    description: LocalPath is the local path for manifest
+                                      files.
+                                    type: string
+                                  manifestSource:
+                                    default: HTTPServer
+                                    description: ManifestSource is the source for
+                                      manifest files (HTTPServer or LocalPath).
+                                    type: string
+                                type: object
+                              config:
+                                description: Config holds CNI-specific configuration.
+                                properties:
+                                  calico:
+                                    description: Calico holds Calico-specific configuration.
+                                    properties:
+                                      bgp:
+                                        description: BGP holds BGP peering configuration.
+                                        properties:
+                                          enabled:
+                                            description: Enabled enables BGP peering.
+                                            type: boolean
+                                          peerIPs:
+                                            description: PeerIPs is the list of BGP
+                                              peer IPs.
+                                            items:
+                                              type: string
+                                            type: array
+                                        type: object
+                                      ipam:
+                                        default: CalicoIPAM
+                                        description: IPAM is the IP address management
+                                          mode (CalicoIPAM or HostLocal).
+                                        type: string
+                                      mtu:
+                                        description: MTU is the network MTU (0 = auto-detect).
+                                        type: integer
+                                      typha:
+                                        description: Typha holds Typha deployment
+                                          configuration.
+                                        properties:
+                                          enabled:
+                                            description: Enabled enables Typha deployment.
+                                            type: boolean
+                                          replicas:
+                                            description: Replicas is the number of
+                                              Typha replicas.
+                                            type: integer
+                                        type: object
+                                    type: object
+                                  cilium:
+                                    description: Cilium holds Cilium-specific configuration.
+                                    properties:
+                                      hubble:
+                                        description: Hubble holds Hubble observability
+                                          configuration.
+                                        properties:
+                                          enabled:
+                                            description: Enabled enables Hubble observability.
+                                            type: boolean
+                                          relay:
+                                            description: Relay enables Hubble Relay.
+                                            type: boolean
+                                          ui:
+                                            description: UI enables Hubble UI.
+                                            type: boolean
+                                        type: object
+                                      ipv4NativeRoutingCIDR:
+                                        description: IPv4NativeRoutingCIDR is the
+                                          native routing CIDR.
+                                        type: string
+                                      kubeProxyReplacement:
+                                        default: partial
+                                        description: KubeProxyReplacement enables
+                                          kube-proxy replacement.
+                                        type: string
+                                      routingMode:
+                                        default: tunnel
+                                        description: RoutingMode is the routing mode
+                                          (native or tunnel).
+                                        type: string
+                                    type: object
+                                  flannel:
+                                    description: Flannel holds Flannel-specific configuration.
+                                    properties:
+                                      backend:
+                                        default: vxlan
+                                        description: Backend is the backend type (vxlan,
+                                          host-gw, wireguard).
+                                        type: string
+                                      mtu:
+                                        description: MTU is the network MTU (0 = auto-detect).
+                                        type: integer
+                                    type: object
+                                  podCIDR:
+                                    description: PodCIDR is the Pod network CIDR (auto-detected
+                                      from Cluster if empty).
+                                    type: string
+                                type: object
+                              enabled:
+                                default: true
+                                description: Enabled indicates whether CNI installation
+                                  is enabled.
+                                type: boolean
+                              installMode:
+                                default: Manifest
+                                description: InstallMode defines how the CNI plugin
+                                  is installed (Manifest or Helm).
+                                type: string
+                              type:
+                                default: calico
+                                description: Type is the CNI plugin type (calico,
+                                  cilium, flannel).
+                                type: string
+                              upgradeStrategy:
+                                default: RollingUpdate
+                                description: UpgradeStrategy defines the upgrade strategy
+                                  for CNI plugin.
+                                type: string
+                              version:
+                                description: Version is the desired CNI plugin version.
+                                type: string
+                            type: object
+                          containerRuntime:
+                            description: ContainerRuntime specifies the container
+                              runtime configuration.
+                            properties:
+                              config:
+                                description: |-
+                                  Config holds runtime-specific configuration.
+                                  Applied during installation/upgrade.
+                                properties:
+                                  maxConcurrentDownloads:
+                                    description: MaxConcurrentDownloads sets max concurrent
+                                      downloads.
+                                    type: integer
+                                  rawConfig:
+                                    description: RawConfig is raw TOML configuration
+                                      appended to the final config.
+                                    type: string
+                                  registryMirrors:
+                                    description: RegistryMirrors declares registry
+                                      mirror configuration.
+                                    items:
+                                      description: RegistryMirrorEntry declares a
+                                        registry mirror configuration.
+                                      properties:
+                                        endpoints:
+                                          description: Endpoints is the list of mirror
+                                            endpoints.
+                                          items:
+                                            type: string
+                                          type: array
+                                        host:
+                                          description: Host is the registry host to
+                                            mirror.
+                                          type: string
+                                      required:
+                                      - endpoints
+                                      - host
+                                      type: object
+                                    type: array
+                                  sandboxImage:
+                                    description: SandboxImage is the pause/sandbox
+                                      image.
+                                    type: string
+                                  systemdCgroup:
+                                    description: SystemdCgroup enables systemd cgroup
+                                      driver.
+                                    type: boolean
+                                type: object
+                              registryMirrors:
+                                description: RegistryMirrors is a list of registry
+                                  mirror URLs (legacy, use Config instead).
+                                items:
+                                  type: string
+                                type: array
+                              type:
+                                default: containerd
+                                description: Type is the container runtime type (containerd,
+                                  cri-o, docker).
+                                type: string
+                              version:
+                                description: Version is the desired version of the
+                                  container runtime.
+                                type: string
+                            type: object
+                          csi:
+                            description: CSI defines the CSI driver installation configuration.
+                            properties:
+                              airGap:
+                                description: AirGap defines air-gapped installation
+                                  configuration for CSI.
+                                properties:
+                                  chartArchive:
+                                    description: ChartArchive is the path to the Helm
+                                      chart archive.
+                                    type: string
+                                  enabled:
+                                    description: Enabled indicates whether air-gapped
+                                      installation is used.
+                                    type: boolean
+                                  httpServerConfig:
+                                    description: HTTPServerConfig is the HTTP server
+                                      configuration.
+                                    properties:
+                                      basePath:
+                                        description: BasePath is the base path for
+                                          serving content.
+                                        type: string
+                                      baseUrl:
+                                        description: BaseURL is the HTTP server URL
+                                          serving binary packages.
+                                        type: string
+                                      enabled:
+                                        default: false
+                                        description: Enabled enables the HTTP server.
+                                        type: boolean
+                                      insecureSkipVerify:
+                                        description: InsecureSkipVerify skips TLS
+                                          verification (for internal CAs).
+                                        type: boolean
+                                      port:
+                                        default: 8080
+                                        description: Port is the HTTP server port.
+                                        type: integer
+                                      tlsSecretRef:
+                                        description: TLSSecretRef references a Secret
+                                          containing TLS client certificate.
+                                        type: string
+                                    type: object
+                                  localPath:
+                                    description: LocalPath is the local path for manifest
+                                      files.
+                                    type: string
+                                  manifestSource:
+                                    description: ManifestSource is the source for
+                                      manifest files.
+                                    type: string
+                                type: object
+                              config:
+                                description: Config holds CSI driver specific configuration.
+                                properties:
+                                  cephCsi:
+                                    description: CephCsi holds Ceph-CSI configuration.
+                                    properties:
+                                      cephfs:
+                                        description: CephFS holds CephFS configuration.
+                                        properties:
+                                          enabled:
+                                            description: Enabled enables CephFS support.
+                                            type: boolean
+                                          fuseMount:
+                                            description: FuseMount enables FUSE mount.
+                                            type: boolean
+                                          kernelMount:
+                                            description: KernelMount enables kernel
+                                              mount.
+                                            type: boolean
+                                        type: object
+                                      clusterID:
+                                        description: ClusterID is the Ceph cluster
+                                          ID.
+                                        type: string
+                                      monitors:
+                                        description: Monitors is the list of Ceph
+                                          monitor endpoints.
+                                        items:
+                                          type: string
+                                        type: array
+                                      rbd:
+                                        description: RBD holds RBD configuration.
+                                        properties:
+                                          enabled:
+                                            description: Enabled enables RBD support.
+                                            type: boolean
+                                          pool:
+                                            description: Pool is the Ceph RBD pool
+                                              name.
+                                            type: string
+                                        type: object
+                                      storageClass:
+                                        description: StorageClass defines the StorageClass
+                                          to create.
+                                        properties:
+                                          fsType:
+                                            description: FSType is the filesystem
+                                              type.
+                                            type: string
+                                          mountOptions:
+                                            description: MountOptions is the list
+                                              of mount options.
+                                            items:
+                                              type: string
+                                            type: array
+                                          name:
+                                            description: Name is the StorageClass
+                                              name.
+                                            type: string
+                                          parameters:
+                                            additionalProperties:
+                                              type: string
+                                            description: Parameters is the storage
+                                              class parameters.
+                                            type: object
+                                          reclaimPolicy:
+                                            default: Delete
+                                            description: ReclaimPolicy is the reclaim
+                                              policy (Delete or Retain).
+                                            type: string
+                                          volumeBindingMode:
+                                            description: VolumeBindingMode is the
+                                              volume binding mode.
+                                            type: string
+                                        required:
+                                        - name
+                                        type: object
+                                    required:
+                                    - clusterID
+                                    - monitors
+                                    type: object
+                                  cinderCsi:
+                                    description: CinderCsi holds Cinder-CSI configuration.
+                                    properties:
+                                      openstackCloudConfigSecret:
+                                        description: OpenstackCloudConfigSecret references
+                                          the Secret containing cloud-config.
+                                        type: string
+                                      storageClass:
+                                        description: StorageClass defines the StorageClass
+                                          to create.
+                                        properties:
+                                          fsType:
+                                            description: FSType is the filesystem
+                                              type.
+                                            type: string
+                                          mountOptions:
+                                            description: MountOptions is the list
+                                              of mount options.
+                                            items:
+                                              type: string
+                                            type: array
+                                          name:
+                                            description: Name is the StorageClass
+                                              name.
+                                            type: string
+                                          parameters:
+                                            additionalProperties:
+                                              type: string
+                                            description: Parameters is the storage
+                                              class parameters.
+                                            type: object
+                                          reclaimPolicy:
+                                            default: Delete
+                                            description: ReclaimPolicy is the reclaim
+                                              policy (Delete or Retain).
+                                            type: string
+                                          volumeBindingMode:
+                                            description: VolumeBindingMode is the
+                                              volume binding mode.
+                                            type: string
+                                        required:
+                                        - name
+                                        type: object
+                                    required:
+                                    - openstackCloudConfigSecret
+                                    type: object
+                                  localCsi:
+                                    description: LocalCsi holds Local-CSI configuration.
+                                    properties:
+                                      storageClass:
+                                        description: StorageClass defines the StorageClass
+                                          to create.
+                                        properties:
+                                          fsType:
+                                            description: FSType is the filesystem
+                                              type.
+                                            type: string
+                                          mountOptions:
+                                            description: MountOptions is the list
+                                              of mount options.
+                                            items:
+                                              type: string
+                                            type: array
+                                          name:
+                                            description: Name is the StorageClass
+                                              name.
+                                            type: string
+                                          parameters:
+                                            additionalProperties:
+                                              type: string
+                                            description: Parameters is the storage
+                                              class parameters.
+                                            type: object
+                                          reclaimPolicy:
+                                            default: Delete
+                                            description: ReclaimPolicy is the reclaim
+                                              policy (Delete or Retain).
+                                            type: string
+                                          volumeBindingMode:
+                                            description: VolumeBindingMode is the
+                                              volume binding mode.
+                                            type: string
+                                        required:
+                                        - name
+                                        type: object
+                                    type: object
+                                  nfsCsi:
+                                    description: NfsCsi holds NFS-CSI configuration.
+                                    properties:
+                                      server:
+                                        description: Server is the NFS server address.
+                                        type: string
+                                      share:
+                                        description: Share is the NFS export path.
+                                        type: string
+                                      storageClass:
+                                        description: StorageClass defines the StorageClass
+                                          to create.
+                                        properties:
+                                          fsType:
+                                            description: FSType is the filesystem
+                                              type.
+                                            type: string
+                                          mountOptions:
+                                            description: MountOptions is the list
+                                              of mount options.
+                                            items:
+                                              type: string
+                                            type: array
+                                          name:
+                                            description: Name is the StorageClass
+                                              name.
+                                            type: string
+                                          parameters:
+                                            additionalProperties:
+                                              type: string
+                                            description: Parameters is the storage
+                                              class parameters.
+                                            type: object
+                                          reclaimPolicy:
+                                            default: Delete
+                                            description: ReclaimPolicy is the reclaim
+                                              policy (Delete or Retain).
+                                            type: string
+                                          volumeBindingMode:
+                                            description: VolumeBindingMode is the
+                                              volume binding mode.
+                                            type: string
+                                        required:
+                                        - name
+                                        type: object
+                                    required:
+                                    - server
+                                    - share
+                                    type: object
+                                type: object
+                              driver:
+                                description: Driver is the CSI driver type (ceph-csi,
+                                  cinder-csi, local-csi, nfs-csi).
+                                type: string
+                              enabled:
+                                description: Enabled indicates whether CSI installation
+                                  is enabled.
+                                type: boolean
+                              installMode:
+                                default: Helm
+                                description: InstallMode defines how the CSI driver
+                                  is installed (Manifest or Helm).
+                                type: string
+                              version:
+                                description: Version is the desired CSI driver version.
+                                type: string
+                            type: object
+                          enabled:
+                            default: true
+                            description: Enabled indicates whether automatic component
+                              installation is enabled.
+                            type: boolean
+                          kubernetes:
+                            description: Kubernetes specifies the Kubernetes components
+                              configuration.
+                            properties:
+                              config:
+                                description: |-
+                                  Config holds kubernetes component configuration.
+                                  Applied during installation/upgrade.
+                                properties:
+                                  kubelet:
+                                    description: Kubelet holds kubelet-specific configuration.
+                                    properties:
+                                      cgroupDriver:
+                                        default: systemd
+                                        description: CgroupDriver sets the cgroup
+                                          driver (cgroupfs or systemd).
+                                        type: string
+                                      extraArgs:
+                                        additionalProperties:
+                                          type: string
+                                        description: ExtraArgs declares additional
+                                          kubelet command-line arguments.
+                                        type: object
+                                      maxPods:
+                                        description: MaxPods sets the maximum number
+                                          of pods.
+                                        type: integer
+                                      rawConfig:
+                                        description: RawConfig is raw kubelet configuration
+                                          (YAML format).
+                                        type: string
+                                    type: object
+                                type: object
+                              repository:
+                                description: Repository is the custom package repository
+                                  configuration.
+                                properties:
+                                  baseUrl:
+                                    description: BaseURL is the base URL of the package
+                                      repository.
+                                    type: string
+                                  gpgKey:
+                                    description: GPGKey is the URL to the GPG key
+                                      for the repository.
+                                    type: string
+                                type: object
+                              version:
+                                description: Version is the desired Kubernetes version.
+                                type: string
+                            type: object
+                          maxRetries:
+                            default: 3
+                            description: MaxRetries is the maximum number of retries
+                              for installation.
+                            type: integer
+                          rollbackOnError:
+                            description: RollbackOnError indicates whether to rollback
+                              on installation failure.
+                            type: boolean
+                          strategy:
+                            default: InstallIfMissing
+                            description: Strategy defines the installation strategy.
+                            type: string
+                          timeout:
+                            description: Timeout is the maximum time to wait for installation
+                              to complete.
+                            type: string
+                        type: object
                       credentialsRef:
                         description: CredentialsRef references the Secret containing
                           SSH credentials.
@@ -81,6 +733,42 @@ spec:
                             type: string
                         type: object
                         x-kubernetes-map-type: atomic
+                      firewall:
+                        description: Firewall holds configuration for firewall management.
+                        properties:
+                          additionalPorts:
+                            description: AdditionalPorts is a list of additional ports
+                              to open.
+                            items:
+                              description: PortRule defines a port to open in the
+                                firewall.
+                              properties:
+                                description:
+                                  description: Description is a human-readable description
+                                    of the port.
+                                  type: string
+                                port:
+                                  description: Port is the port number.
+                                  type: integer
+                                protocol:
+                                  default: tcp
+                                  description: Protocol is the protocol (tcp/udp).
+                                  type: string
+                              required:
+                              - port
+                              type: object
+                            type: array
+                          autoDetect:
+                            default: true
+                            description: AutoDetect indicates whether to auto-detect
+                              the firewall manager.
+                            type: boolean
+                          configure:
+                            default: true
+                            description: Configure indicates whether to automatically
+                              configure firewall rules.
+                            type: boolean
+                        type: object
                       hostInventoryRef:
                         description: HostInventoryRef references the BareMetalHostInventory
                           to allocate a host from.
@@ -96,6 +784,62 @@ spec:
                             type: string
                         type: object
                         x-kubernetes-map-type: atomic
+                      nodeBootstrap:
+                        description: NodeBootstrap holds configuration for node bootstrapping.
+                        properties:
+                          disableSwap:
+                            default: true
+                            description: DisableSwap indicates whether to disable
+                              swap.
+                            type: boolean
+                          enabled:
+                            default: true
+                            description: Enabled indicates whether node bootstrapping
+                              is enabled.
+                            type: boolean
+                          hostname:
+                            description: |-
+                              Hostname is the desired hostname for the node.
+                              If empty, uses the hostName from spec.
+                            type: string
+                          hostsEntries:
+                            description: HostsEntries is a list of additional /etc/hosts
+                              entries.
+                            items:
+                              description: HostsEntry defines a /etc/hosts entry.
+                              properties:
+                                hostnames:
+                                  description: Hostnames is the list of hostnames
+                                    for this IP.
+                                  items:
+                                    type: string
+                                  type: array
+                                ip:
+                                  description: IP is the IP address.
+                                  type: string
+                              required:
+                              - hostnames
+                              - ip
+                              type: object
+                            type: array
+                          kernelModules:
+                            description: KernelModules is a list of kernel modules
+                              to load.
+                            items:
+                              type: string
+                            type: array
+                          sysctlParams:
+                            additionalProperties:
+                              type: string
+                            description: SysctlParams is a list of sysctl parameters
+                              to configure.
+                            type: object
+                          timeSync:
+                            default: true
+                            description: TimeSync indicates whether to configure time
+                              synchronization.
+                            type: boolean
+                        type: object
                       powerManagement:
                         description: PowerManagement holds optional power management
                           configuration.
@@ -131,6 +875,15 @@ spec:
                         description: Role indicates the role of this machine (control-plane
                           or worker).
                         type: string
+                      selinux:
+                        description: SELinux holds configuration for SELinux management.
+                        properties:
+                          configure:
+                            default: true
+                            description: Configure indicates whether to automatically
+                              configure SELinux.
+                            type: boolean
+                        type: object
                       sshPort:
                         default: 22
                         description: SSHPort is the SSH port to connect to.

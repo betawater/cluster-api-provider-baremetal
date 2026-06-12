@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package v1beta1
+package v1beta2
 
 import (
 	corev1 "k8s.io/api/core/v1"
@@ -96,10 +96,10 @@ type BareMetalHostInventoryStatus struct {
 	HostsStatus []HostStatusEntry `json:"hostsStatus,omitempty"`
 }
 
-// +kubebuilder:metadata:labels="cluster.x-k8s.io/v1beta1=v1beta1"
 // +kubebuilder:metadata:labels="cluster.x-k8s.io/v1beta2=v1beta2"
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:storageversion
 // +kubebuilder:printcolumn:name="Total",type="integer",JSONPath=".status.totalHosts",description="Total hosts"
 // +kubebuilder:printcolumn:name="Available",type="integer",JSONPath=".status.availableHosts",description="Available hosts"
 // +kubebuilder:printcolumn:name="Allocated",type="integer",JSONPath=".status.allocatedHosts",description="Allocated hosts"

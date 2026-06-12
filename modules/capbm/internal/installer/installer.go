@@ -22,7 +22,7 @@ import (
 	"strings"
 	"time"
 
-	capbmv1 "github.com/BetaWater/cluster-api-provider-baremetal/modules/capbm/api/v1beta1"
+	capbmv1 "github.com/BetaWater/cluster-api-provider-baremetal/modules/capbm/api/v1beta2"
 	
 	cfov1 "github.com/BetaWater/cluster-api-provider-baremetal/modules/cvo/api/v1beta1"
 	sshclient "github.com/BetaWater/cluster-api-provider-baremetal/modules/cvo/pkg/ssh"

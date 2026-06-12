@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package v1beta1
+package v1beta2
 
 import (
 	corev1 "k8s.io/api/core/v1"
@@ -472,10 +472,10 @@ type MetalLBIPAddressPool struct {
 	Addresses []string `json:"addresses"`
 }
 
-// +kubebuilder:metadata:labels="cluster.x-k8s.io/v1beta1=v1beta1"
 // +kubebuilder:metadata:labels="cluster.x-k8s.io/v1beta2=v1beta2"
 // +kubebuilder:object:root=true
 // +kubebuilder:subresource:status
+// +kubebuilder:storageversion
 // +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.ready",description="BareMetalCluster is Ready"
 // +kubebuilder:printcolumn:name="Endpoint",type="string",JSONPath=".spec.controlPlaneEndpoint.host",description="API endpoint host"
 // +kubebuilder:printcolumn:name="Port",type="integer",JSONPath=".spec.controlPlaneEndpoint.port",description="API endpoint port"

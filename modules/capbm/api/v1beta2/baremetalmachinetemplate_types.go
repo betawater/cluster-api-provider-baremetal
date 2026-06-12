@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package v1beta1
+package v1beta2
 
 import (
 	corev1 "k8s.io/api/core/v1"
@@ -77,9 +77,9 @@ type BareMetalMachineTemplateSpecInner struct {
 	NodeBootstrap *NodeBootstrapConfig `json:"nodeBootstrap,omitempty"`
 }
 
-// +kubebuilder:metadata:labels="cluster.x-k8s.io/v1beta1=v1beta1"
 // +kubebuilder:metadata:labels="cluster.x-k8s.io/v1beta2=v1beta2"
 // +kubebuilder:object:root=true
+// +kubebuilder:storageversion
 
 // BareMetalMachineTemplate is the Schema for the baremetalmachinetemplates API.
 type BareMetalMachineTemplate struct {

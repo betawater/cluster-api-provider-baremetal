@@ -20,7 +20,7 @@ import (
 	"context"
 	"fmt"
 
-	capbmv1 "github.com/BetaWater/cluster-api-provider-baremetal/modules/capbm/api/v1beta1"
+	capbmv1 "github.com/BetaWater/cluster-api-provider-baremetal/modules/capbm/api/v1beta2"
 	"github.com/BetaWater/cluster-api-provider-baremetal/modules/cvo/pkg/ssh"
 )
 
